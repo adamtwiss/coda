@@ -1,1 +1,1 @@
-https://github.com/adamtwiss/coda/releases/download/v0.9.1-nets/net-520C4DB4.nnue
+https://github.com/adamtwiss/coda/releases/download/v0.9.3-nets/net-DB9B5605.nnue

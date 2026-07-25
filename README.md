@@ -6,7 +6,7 @@ Coda is a strong UCI chess engine, developed entirely through human-AI collabora
 
 ## Features
 
-- **NNUE evaluation** — a from-scratch NNUE whose input layer combines HalfKA-style piece-square features (16 king buckets) with ~67k explicit threat and x-ray attack features — the network sees not just where pieces stand but what they attack — feeding a 1024-wide per-perspective accumulator with pairwise activation, then two small int8 hidden layers (32→32) with material-bucketed output heads. Networks are trained from scratch on a mix of the full LC0 dataset (hundreds of billions of positions) and self-generated data, using a customized Bullet trainer. Inference is fully incremental (lazy accumulator, Finny tables, incremental threat deltas) with runtime-dispatched AVX2/AVX-512-VNNI/NEON SIMD kernels.
+- **NNUE evaluation** — a from-scratch NNUE whose input layer combines HalfKA-style piece-square features (16 king buckets) with explicit threat features — the network sees not just where pieces stand but what they attack — feeding a 1024-wide per-perspective accumulator with pairwise activation, then two small int8 hidden layers (32→32) with material-bucketed output heads. Networks are trained from scratch on a mix of the full LC0 dataset (hundreds of billions of positions) and self-generated data, using a customized Bullet trainer. Inference is fully incremental (lazy accumulator, Finny tables, incremental threat deltas) with runtime-dispatched AVX2/AVX-512-VNNI/NEON SIMD kernels.
 - **Search** — principal-variation alpha-beta with iterative deepening and aspiration windows, carrying the full modern battery: null-move pruning with verification, reverse futility (with a depth-aware knee), razoring, futility and late-move pruning, SEE pruning for quiets and captures, ProbCut, internal iterative reductions, late-move reductions shaped by history/complexity/threat signals, and singular extensions with double and negative variants. Repetition handling goes beyond the rules with cuckoo-table upcoming-cycle detection.
 - **Move ordering & history** — a staged move picker driven by an unusually rich history stack: threat-aware 4D main history, capture history, four-ply continuation history, and pawn-structure history, plus tactical ordering bonuses (threat escapes, discovered attacks, safe checks). A multi-source **correction history** (pawn / non-pawn / continuation / transition tables) continuously corrects the static eval from search feedback.
 - **Multi-threading & transposition table** — Lazy SMP over a lockless, XOR-verified transposition table (5-slot cache-line buckets, huge-page backed). Fully atomic with acquire/release ordering, so SMP is correct on ARM as well as x86 — Apple Silicon and ARM servers are first-class targets.
@@ -44,8 +44,9 @@ cargo install cargo-pgo
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| Hash | spin (1-4096) | 64 | Transposition table size in MB |
+| Hash | spin (1-65536) | 64 | Transposition table size in MB (up to 64 GB) |
 | Threads | spin (1-256) | 1 | Lazy SMP thread count |
+| MultiPV | spin (1-256) | 1 | Number of principal variations to report |
 | NNUEFile | string | | Path to .nnue network file |
 | OwnBook | check | true | Use opening book |
 | BookFile | string | | Path to Polyglot .bin book |
