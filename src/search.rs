@@ -2018,7 +2018,7 @@ fn cont_corr_value(info: &SearchInfo, ply: usize) -> i64 {
         if ply >= off {
             let pp = info.moved_piece_stack[ply - off] as usize;
             let pt = info.moved_to_stack[ply - off] as usize;
-            if pp != 0 && pp < 13 && pt < 64 {
+            if pp != 0 && pp < crate::movepicker::CONT_PLANES && pt < 64 {
                 sum += info.cont_corr[pp][pt][cur_p][cur_t] as i64;
             }
         }
@@ -2131,12 +2131,12 @@ fn update_correction_history(info: &mut SearchInfo, board: &Board, search_score:
     if ply >= 2 {
         let cur_p = info.moved_piece_stack[ply - 1] as usize;
         let cur_t = info.moved_to_stack[ply - 1] as usize;
-        if cur_p != 0 && cur_p < 13 && cur_t < 64 {
+        if cur_p != 0 && cur_p < crate::movepicker::CONT_PLANES && cur_t < 64 {
             for off in [2usize, 4] {
                 if ply >= off {
                     let pp = info.moved_piece_stack[ply - off] as usize;
                     let pt = info.moved_to_stack[ply - off] as usize;
-                    if pp != 0 && pp < 13 && pt < 64 {
+                    if pp != 0 && pp < crate::movepicker::CONT_PLANES && pt < 64 {
                         update_corr_entry(&mut info.cont_corr[pp][pt][cur_p][cur_t], scaled_err, cap_div);
                     }
                 }
@@ -4626,8 +4626,8 @@ fn negamax(
                             let our_gp = info.moved_piece_stack[ply_u - 2] as usize;
                             let opp_to = info.moved_to_stack[ply_u - 1] as usize;
                             let our_to = info.moved_to_stack[ply_u - 2] as usize;
-                            if opp_gp > 0 && opp_gp < 13
-                                && our_gp > 0 && our_gp < 13
+                            if opp_gp > 0 && opp_gp < crate::movepicker::CONT_PLANES
+                                && our_gp > 0 && our_gp < crate::movepicker::CONT_PLANES
                                 && opp_to < 64 && our_to < 64
                             {
                                 let malus = -((155 * depth).min(385));
@@ -6121,7 +6121,7 @@ fn negamax(
                             if ply_u >= off {
                                 let prior_piece = info.moved_piece_stack[ply_u - off] as usize;
                                 let prior_to = info.moved_to_stack[ply_u - off] as usize;
-                                if prior_piece > 0 && prior_piece < 13 && prior_to < 64 {
+                                if prior_piece > 0 && prior_piece < crate::movepicker::CONT_PLANES && prior_to < 64 {
                                     // B1 (audit 2026-05-19): uniform bonus across offsets
                                     // {1,2,4,6}. Coda was unique in [bonus, b/2, b/2, b/2]
                                     // shape; Berserk/Alexandria/Stormphrax use
@@ -6271,7 +6271,7 @@ fn negamax(
                                 if ply_u >= off {
                                     let prior_piece = info.moved_piece_stack[ply_u - off] as usize;
                                     let prior_to = info.moved_to_stack[ply_u - off] as usize;
-                                    if prior_piece > 0 && prior_piece < 13 && prior_to < 64 {
+                                    if prior_piece > 0 && prior_piece < crate::movepicker::CONT_PLANES && prior_to < 64 {
                                         // B1: uniform bonus (see LMR nudge site above).
                                         let ch_bonus = bonus;
                                         let cur_cont = info.history.cont_hist[prior_piece][prior_to][gp_mv][to as usize] as i32;
@@ -6317,7 +6317,7 @@ fn negamax(
                                         if ply_u >= off {
                                             let prior_piece = info.moved_piece_stack[ply_u - off] as usize;
                                             let prior_to = info.moved_to_stack[ply_u - off] as usize;
-                                            if prior_piece > 0 && prior_piece < 13 && prior_to < 64 {
+                                            if prior_piece > 0 && prior_piece < crate::movepicker::CONT_PLANES && prior_to < 64 {
                                                 // B1: uniform penalty (see bonus site above).
                                                 let ch_pen = -malus;
                                                 let cur_cont = info.history.cont_hist[prior_piece][prior_to][gp_q][qt as usize] as i32;
@@ -6491,8 +6491,8 @@ fn negamax(
                 let our_gp = info.moved_piece_stack[ply_u - 2] as usize;
                 let opp_to = info.moved_to_stack[ply_u - 1] as usize;
                 let our_to = info.moved_to_stack[ply_u - 2] as usize;
-                if opp_gp > 0 && opp_gp < 13
-                    && our_gp > 0 && our_gp < 13
+                if opp_gp > 0 && opp_gp < crate::movepicker::CONT_PLANES
+                    && our_gp > 0 && our_gp < crate::movepicker::CONT_PLANES
                     && opp_to < 64 && our_to < 64
                 {
                     let bonus = history_bonus(depth) * tp(&FAIL_LOW_PREV_BONUS_PCT) / 100;

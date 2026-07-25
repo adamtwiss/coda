@@ -35,7 +35,7 @@ pub struct History {
     pub capture: [[[i16; 7]; 64]; 13],
     /// Continuation history: [piece 1-12][to][piece 1-12][to]
     /// piece uses 1-12 indexing (slot 0 unused).
-    pub cont_hist: [[[[i16; 64]; 13]; 64]; 13],
+    pub cont_hist: [[[[i16; 64]; 13]; 64]; CONT_PLANES],
 }
 
 impl History {
@@ -78,7 +78,7 @@ impl History {
     pub fn clear(&mut self) {
         self.main = [[[[0; 64]; 64]; 2]; 2];
         self.capture = [[[0i16; 7]; 64]; 13];
-        self.cont_hist = [[[[0; 64]; 13]; 64]; 13];
+        self.cont_hist = [[[[0; 64]; 13]; 64]; CONT_PLANES];
     }
 
     /// Copy all table contents from `src`. Used to seed Lazy SMP
@@ -143,6 +143,18 @@ impl History {
         *entry = new_val.clamp(-32000, 32000) as i16;
     }
 }
+
+/// Number of continuation-history *planes* — the size of `cont_hist`'s FIRST
+/// dimension, which selects the sub-table by the PRIOR move.
+///
+/// Every cont-hist read and write derives its sub-table from
+/// `moved_piece_stack[ply]`, so this constant is the single source of truth for
+/// the bound check at each of those sites. They previously hardcoded `< 13`;
+/// a plane-count change that missed even one of them would have silently
+/// dropped writes into the new planes instead of failing loudly, which is the
+/// exact failure mode the 2026-07-21 history audit flagged. Bound-check against
+/// this constant (or `cont_hist.len()`), never a literal.
+pub const CONT_PLANES: usize = 13;
 
 /// Map a Coda piece (0-11, color*6+pt) to history piece index (1-12).
 /// White 1-6 (Pawn..King), Black 7-12 (Pawn..King).
@@ -263,7 +275,7 @@ impl MovePicker {
             if ply >= off && ply - off < moved_piece_stack.len() && ply - off < moved_to_stack.len() {
                 let prior_piece = moved_piece_stack[ply - off] as usize;
                 let prior_to = moved_to_stack[ply - off] as usize;
-                if prior_piece > 0 && prior_piece < 13 && prior_to < 64 {
+                if prior_piece > 0 && prior_piece < CONT_PLANES && prior_to < 64 {
                     cont_hist_subs[i] = Some(&history.cont_hist[prior_piece][prior_to] as *const [[i16; 64]; 13]);
                 }
             }
@@ -365,7 +377,7 @@ impl MovePicker {
             if ply >= off && ply - off < moved_piece_stack.len() && ply - off < moved_to_stack.len() {
                 let prior_piece = moved_piece_stack[ply - off] as usize;
                 let prior_to = moved_to_stack[ply - off] as usize;
-                if prior_piece > 0 && prior_piece < 13 && prior_to < 64 {
+                if prior_piece > 0 && prior_piece < CONT_PLANES && prior_to < 64 {
                     cont_hist_subs[i] = Some(&history.cont_hist[prior_piece][prior_to] as *const [[i16; 64]; 13]);
                 }
             }
@@ -1667,5 +1679,95 @@ mod attackers_probe {
         eprintln!("white attackers of e8: {:#018x}", atk & b.colors[WHITE as usize]);
         assert!(atk & b.colors[WHITE as usize] & (1u64 << 51) != 0,
             "d7 white pawn (sq 51) must attack e8");
+    }
+}
+
+/// Continuation-history read/write SYMMETRY guardrail (2026-07-21 history audit).
+///
+/// Every cont-hist read and write picks its sub-table from
+/// `moved_piece_stack[ply - off]`, bound-checked against `CONT_PLANES`. If the
+/// plane count is ever changed (e.g. adding an in-check or capture dimension)
+/// and a bound check is left at the old literal, writes into the new planes are
+/// SILENTLY DROPPED — no panic, no test failure, just missing history. These
+/// tests make that loud.
+#[cfg(test)]
+mod cont_hist_symmetry_tests {
+    use super::*;
+    use crate::board::Board;
+
+    fn init() { crate::init(); }
+
+    /// The declared plane count and the actual array extent must agree.
+    #[test]
+    fn cont_planes_matches_array_extent() {
+        let h = Box::new(History {
+            main: [[[[0; 64]; 64]; 2]; 2],
+            capture: [[[0; 7]; 64]; 13],
+            cont_hist: [[[[0; 64]; 13]; 64]; CONT_PLANES],
+        });
+        assert_eq!(h.cont_hist.len(), CONT_PLANES,
+            "CONT_PLANES ({}) disagrees with cont_hist's first dimension ({})",
+            CONT_PLANES, h.cont_hist.len());
+    }
+
+    /// EVERY valid plane must survive the round trip: a value written at
+    /// cont_hist[plane][to] must be reachable through the sub-table pointer the
+    /// MovePicker derives for that same (plane, to). A bound guard left at a
+    /// stale literal shows up here as a None sub-table on the high planes.
+    #[test]
+    fn every_plane_round_trips_through_movepicker() {
+        init();
+        let board = Board::from_fen("r1bqkb1r/pp3ppp/2n1pn2/2pp4/3P4/2P1PN2/PP1N1PPP/R1BQK2R w KQkq - 0 6");
+        let ply = 7usize;
+        for plane in 1..CONT_PLANES {
+            for &prior_to in &[0usize, 27, 63] {
+                let mut h = Box::new(History {
+                    main: [[[[0; 64]; 64]; 2]; 2],
+                    capture: [[[0; 7]; 64]; 13],
+                    cont_hist: [[[[0; 64]; 13]; 64]; CONT_PLANES],
+                });
+                // Sentinel unique per (plane, prior_to) so a mis-derived pointer
+                // reads the wrong number rather than coincidentally matching.
+                let sentinel = (plane as i16) * 100 + prior_to as i16 + 1;
+                h.cont_hist[plane][prior_to][3][17] = sentinel;
+
+                let mut mps = [0u8; 64];
+                let mut mts = [0u8; 64];
+                mps[ply - 1] = plane as u8;
+                mts[ply - 1] = prior_to as u8;
+
+                let mp = MovePicker::new(
+                    &board, NO_MOVE, ply, 0, 0, &h, NO_MOVE, None,
+                    Default::default(), 0, &mps, &mts,
+                );
+
+                let sub = mp.cont_hist_subs[0].unwrap_or_else(|| panic!(
+                    "plane {plane} (prior_to {prior_to}) produced NO cont-hist sub-table — \
+                     a bound guard is still using a stale literal instead of CONT_PLANES"));
+                let got = unsafe { (*sub)[3][17] };
+                assert_eq!(got, sentinel,
+                    "plane {plane} (prior_to {prior_to}) round-tripped to the WRONG slot");
+            }
+        }
+    }
+
+    /// The null-move sentinel (piece 0) must never select a plane — otherwise a
+    /// null move would share plane 0 with real moves.
+    #[test]
+    fn null_sentinel_selects_no_plane() {
+        init();
+        let board = Board::from_fen("r1bqkb1r/pp3ppp/2n1pn2/2pp4/3P4/2P1PN2/PP1N1PPP/R1BQK2R w KQkq - 0 6");
+        let h = Box::new(History {
+            main: [[[[0; 64]; 64]; 2]; 2],
+            capture: [[[0; 7]; 64]; 13],
+            cont_hist: [[[[0; 64]; 13]; 64]; CONT_PLANES],
+        });
+        let mps = [0u8; 64];
+        let mts = [0u8; 64];
+        let mp = MovePicker::new(
+            &board, NO_MOVE, 7, 0, 0, &h, NO_MOVE, None,
+            Default::default(), 0, &mps, &mts,
+        );
+        assert!(mp.cont_hist_subs[0].is_none(), "null sentinel must not select a plane");
     }
 }
