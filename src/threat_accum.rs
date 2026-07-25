@@ -14,6 +14,16 @@
 use crate::threats::{RawThreatDelta, MAX_THREAT_DELTAS};
 use crate::types::*;
 
+/// Experiment predicate (env CODA_THREAT_REFRESH_ALWAYS, read once): replace
+/// the delta-generation + walkback-replay pipeline with full re-enumeration
+/// at every materialization. search.rs also consults this to skip
+/// `generate_threat_deltas`, so generation and replay stay consistent.
+#[inline]
+pub fn refresh_always() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("CODA_THREAT_REFRESH_ALWAYS").is_ok())
+}
+
 const MAX_PLY: usize = 256;
 
 /// Maximum FT (threat-accumulator) hidden size we support inline.
@@ -104,6 +114,9 @@ pub struct ThreatEntry {
     pub moved_pt: u8,
     /// Color that moved (for per-perspective king mirror check)
     pub moved_color: u8,
+    /// Diagnostic (profile-threats only): whether this generation instance's
+    /// deltas were ever replayed. Sized into struct padding; unused in prod.
+    pub consumed: bool,
 }
 
 impl Default for ThreatEntry {
@@ -121,6 +134,7 @@ impl ThreatEntry {
             mv: NO_MOVE,
             moved_pt: NO_PIECE_TYPE,
             moved_color: WHITE,
+            consumed: false,
         }
     }
 }
@@ -182,6 +196,8 @@ impl ThreatStack {
         entry.delta.clear();
         entry.mv = mv;
         entry.moved_pt = moved_pt;
+        #[cfg(feature = "profile-threats")]
+        { entry.consumed = false; }
     }
 
     /// Pop: decrement index. Saturates at 0 — if push/pop balance is
@@ -345,6 +361,12 @@ impl ThreatStack {
         for ply in (ancestor + 1)..=self.index {
             let entry_mv = self.stack[ply].mv;
 
+            #[cfg(feature = "profile-threats")]
+            if entry_mv != NO_MOVE && !self.stack[ply].consumed {
+                self.stack[ply].consumed = true;
+                crate::threats::apply_stats::record_first_consume();
+            }
+
             if entry_mv == NO_MOVE || self.stack[ply].delta.is_empty() {
                 // Null move or no deltas: copy from previous
                 let (prev, curr) = self.stack.split_at_mut(ply);
@@ -391,6 +413,12 @@ impl ThreatStack {
         for ply in (ancestor + 1)..=self.index {
             let entry_mv = self.stack[ply].mv;
 
+            #[cfg(feature = "profile-threats")]
+            if entry_mv != NO_MOVE && !self.stack[ply].consumed {
+                self.stack[ply].consumed = true;
+                crate::threats::apply_stats::record_first_consume();
+            }
+
             let (prev, curr) = self.stack.split_at_mut(ply);
             let prev_entry = &prev[ply - 1];
             let entry = &mut curr[0];
@@ -435,6 +463,22 @@ impl ThreatStack {
     pub fn ensure_computed(&mut self, net_weights: &[i8], num_features: usize,
                           board: &crate::board::Board) {
         if !self.active { return; }
+
+        // Experiment (CODA_THREAT_REFRESH_ALWAYS): bypass the walkback/replay
+        // machinery and re-enumerate from the board every time. Paired with
+        // skipping delta generation in make_move (search.rs reads the same
+        // predicate), this measures whether the replay path earns its keep —
+        // avg active features/position (~6.8) is close to avg delta rows per
+        // replayed edge (~7.4), so refresh may cost about the same as a
+        // single-edge replay while deleting all generation work.
+        if refresh_always() {
+            for pov in [WHITE, BLACK] {
+                if !self.stack[self.index].accurate[pov as usize] {
+                    self.refresh(net_weights, num_features, board, pov);
+                }
+            }
+            return;
+        }
 
         let idx = self.index;
         if !self.stack[idx].accurate[WHITE as usize] && !self.stack[idx].accurate[BLACK as usize] {

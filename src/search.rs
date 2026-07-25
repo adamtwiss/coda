@@ -2860,7 +2860,8 @@ pub(crate) fn search_helper(board: &mut Board, info: &mut SearchInfo, _limits: &
 
     // Mirror search()'s threat setup — helpers must evaluate consistently
     // with main or shared-TT entries disagree and search diverges at T>1.
-    board.generate_threat_deltas = info.nnue_net.as_ref().is_some_and(|n| n.has_threats);
+    board.generate_threat_deltas = info.nnue_net.as_ref().is_some_and(|n| n.has_threats)
+        && !crate::threat_accum::refresh_always();
     if info.threat_stack.active {
         info.threat_stack.reset();
         if let Some(ref net) = info.nnue_net {
@@ -3011,7 +3012,8 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     init_feature_flags();
 
     // Enable threat delta generation if we have a threat net
-    board.generate_threat_deltas = info.nnue_net.as_ref().is_some_and(|n| n.has_threats);
+    board.generate_threat_deltas = info.nnue_net.as_ref().is_some_and(|n| n.has_threats)
+        && !crate::threat_accum::refresh_always();
 
     // Initialize root position threat accumulator
     if info.threat_stack.active {

@@ -76,12 +76,23 @@ pub mod apply_stats {
     // This is the architecture-pure "threat-model density" number.
     static GEN_MOVES: AtomicU64 = AtomicU64::new(0);
     static GEN_DELTAS: AtomicU64 = AtomicU64::new(0);
+    // Laziness sizing: how many generated entries are ever REPLAYED (unique —
+    // first walkback visit only, dual counts once). generated - consumed =
+    // delta-generation work that lazy generation could skip entirely.
+    static GEN_CONSUMED: AtomicU64 = AtomicU64::new(0);
 
     /// Record per-move generated delta count (once per make_move, at absorb).
     #[inline(always)]
     pub fn record_generated(n: usize) {
         GEN_MOVES.fetch_add(1, Ordering::Relaxed);
         GEN_DELTAS.fetch_add(n as u64, Ordering::Relaxed);
+    }
+
+    /// Record first replay consumption of a generated entry (unique per
+    /// push/absorb generation instance; update_dual marks once).
+    #[inline(always)]
+    pub fn record_first_consume() {
+        GEN_CONSUMED.fetch_add(1, Ordering::Relaxed);
     }
 
     // Replay-gap distribution: plies replayed per materialization (index -
@@ -196,6 +207,13 @@ pub mod apply_stats {
         eprintln!(
             "  GENERATED (caching-immune): {} moves, {} deltas, avg {:.2} deltas/move (vs deltas/apply-call above which lazy-replay inflates)",
             gm, gd, gd as f64 / gm.max(1) as f64
+        );
+        let gc = GEN_CONSUMED.load(Ordering::Relaxed);
+        eprintln!(
+            "  CONSUMED (unique first-replay): {} of {} generated = {:.1}% (remainder = {:.1}% of delta-generation work a lazy scheme could skip)",
+            gc, gm,
+            100.0 * gc as f64 / gm.max(1) as f64,
+            100.0 * (gm.saturating_sub(gc)) as f64 / gm.max(1) as f64
         );
         let rc = REPLAY_CALLS.load(Ordering::Relaxed);
         let g2p = REPLAY_GAP2P.load(Ordering::Relaxed);
