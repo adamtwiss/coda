@@ -1878,6 +1878,10 @@ mod tests {
     /// forfeited-ponder class the fallback exists to cut).
     #[test]
     fn tt_ponder_hint_recovers_after_real_search() {
+        // Loading a net mutates the process-global EMIT_XRAY
+        // (NNUENet::load -> set_emit_xray), so hold the guard for the whole body.
+        let _xray = crate::threats::XRAY_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
         init();
         let net_path = match crate::search::test_net_path() {
             Some(p) => p,

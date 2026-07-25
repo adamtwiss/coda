@@ -34,7 +34,15 @@ pub fn emit_xray() -> bool {
 /// (the x-ray-OFF fuzzers) and any test that *depends* on its default value
 /// (threat enumeration/consistency tests) MUST hold this lock for their whole
 /// body, or the mutator's window corrupts a concurrent reader (spurious
-/// failures — see the x-ray-off test-isolation fix). Acquire with
+/// failures — see the x-ray-off test-isolation fix).
+///
+/// **LOADING A NET IS A MUTATION.** `NNUENet::load` calls `set_emit_xray` with
+/// the net's `xray_trained` flag, so ANY test that calls `load_nnue` must hold
+/// this lock too. That was latent for as long as production nets were
+/// x-ray-trained (the store wrote `true`, matching the default, so it was a
+/// no-op). Promoting the x-ray-free v9.3 net made those stores write `false`
+/// mid-run and turned the whole suite ~50% flaky, failing in
+/// `threat_accum::fuzz_random_walk_*` with an incr-vs-scratch divergence. Acquire with
 /// `.lock().unwrap_or_else(|e| e.into_inner())` so a genuinely-failing test's
 /// poison doesn't cascade into unrelated panics.
 #[cfg(test)]
