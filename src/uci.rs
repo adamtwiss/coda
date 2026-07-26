@@ -464,6 +464,7 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>) {
                             // See feedback_egtb_drawn_tiebreak_unfixable_via_sprt.md.
                             // Lichess game I4qJhfQw m103 and VE9mvCIG m~67 both
                             // exhibited Coda skipping the IM-terminal recapture.
+                            let tb_pv_original_first = tb_pv.first().cloned();
                             if wdl == 0 && !tb_pv.is_empty() {
                                 tb_pv[0] = pick_drawn_tb_move(&board, &tb_pv[0], Some(&**tb));
                             }
@@ -492,9 +493,41 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>) {
                             // (tb.rs probe_root_pv_only_legal_moves) — the
                             // corruption is introduced here, after that boundary.
                             //
-                            // Walk the chain and truncate at the first move that
-                            // is not legal in the position reached, mirroring the
-                            // search PV guard in build_pv_string.
+                            // If a tiebreak REPLACED the first move, everything
+                            // after it is the reply chain to the move we just
+                            // discarded, and is meaningless for the line we will
+                            // actually play — even where it happens to remain
+                            // legal (a king move, a capture elsewhere: legality
+                            // need not depend on what the first move did). A
+                            // legality filter alone would keep those and report a
+                            // legal-but-wrong PV. Treat the tail as invalid by
+                            // construction and rebuild it by re-probing from the
+                            // position the substituted move actually reaches.
+                            if tb_pv_original_first.as_deref() != tb_pv.first().map(|s| s.as_str())
+                                && !tb_pv.is_empty()
+                            {
+                                let head = tb_pv[0].clone();
+                                let mut child = board.clone();
+                                let rebuilt = parse_uci_move(&child, &head)
+                                    .filter(|mv| child.is_legal(*mv, child.pinned(), child.checkers()))
+                                    .map(|mv| {
+                                        child.make_move(mv);
+                                        match tb.probe_root_pv(&child, 31) {
+                                            Some((cont, _)) => {
+                                                let mut v = vec![head.clone()];
+                                                v.extend(cont);
+                                                v
+                                            }
+                                            None => vec![head.clone()],
+                                        }
+                                    })
+                                    .unwrap_or_else(|| vec![head.clone()]);
+                                tb_pv = rebuilt;
+                            }
+                            // Belt-and-braces: walk the (now correctly-sourced)
+                            // chain and truncate at the first move that is not
+                            // legal in the position reached, mirroring the search
+                            // PV guard in build_pv_string.
                             {
                                 let mut walk = board.clone();
                                 let mut keep = 0usize;
