@@ -48,3 +48,14 @@ coda-*
 debug_*.go
 run_*.sh
 scripts/__pycache__/
+
+# Research / tuning tooling belongs in the PRIVATE research repo, never here.
+# This public repo is the engine: source, build, tests, and licensing docs.
+# SPSA specs in particular must NEVER be committed — they drift from the
+# tunables! macro the moment a tune is applied, and `coda tune-spec` emits the
+# live values on demand, so a checked-in copy is always the stale one.
+# (2026-07-26: removed 10 tracked tune_*.txt in which 15 of 57 parameters had
+# drifted and 10 no longer existed as tunables at all.)
+/scripts/
+/threat_channels.csv
+tune_*.txt

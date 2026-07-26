@@ -1,6 +1,0 @@
-FUT_BASE, int, 80, 0, 200, 9, 0.002
-FUT_PER_DEPTH, int, 96, 40, 250, 10.5, 0.002
-FUT_LMR_DEPTH, int, 15, 6, 24, 2, 0.002
-SEE_QUIET_MULT, int, 29, 5, 80, 3.75, 0.002
-LMP_BASE, int, 6, 1, 15, 2, 0.002
-LMP_DEPTH, int, 7, 4, 20, 2, 0.002

@@ -7,6 +7,16 @@ Coda is a UCI chess engine in Rust, rewritten from GoChess.
 > cross-engine research, tooling, and the Claude skills live in a **separate
 > private research repository**. This public repo is the engine: source, build,
 > tests, and the licensing docs (`docs/license_analysis_2026-07-13.md`).
+>
+> **Never add scripts or tuning artefacts to this repo.** There is no `scripts/`
+> directory and there should not be one — it is `.gitignore`d, along with
+> `tune_*.txt`. Research tooling, launchers, analysis scripts and SPSA specs all
+> belong in the private repo. If a tool seems to need to live here, it is almost
+> certainly a `coda` subcommand instead (`bench`, `perft`, `epd`, `tune-spec`,
+> `fetch-net`), which is how this project ships tooling. **SPSA specs especially
+> must never be committed**: they drift from the `tunables!` macro as soon as a
+> tune is applied, and `coda tune-spec` emits the live values on demand, so a
+> checked-in copy is guaranteed to be the stale one.
 
 ## Supported CPU families
 
