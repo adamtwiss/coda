@@ -99,7 +99,7 @@ tunables!(
     // clamped at the top. Lifting lets SPSA find the true optimum.
     (NMP_DEPTH_DIV_10X, 63, 10, 200, 15.0, true),
     (NMP_EVAL_DIV, 83, 50, 400, 17.5, true),
-    (NMP_EVAL_MAX_10X, 35, 10, 60, 5.0, true),
+    (NMP_EVAL_MAX_10X, 35, 10, 60, 5.0, false),
     // Lifted 74 → 120 (eff 8 → 12, toward consensus 14-16): at 74 the verify
     // gate sat below the old min-depth gate, so 100% of NMP cutoffs paid a
     // verification re-search — NMP never had a cheap cutoff. #1901 measured
@@ -118,7 +118,7 @@ tunables!(
     // worthless depth). Inactive at STC (root_depth < thresh) by construction
     // -> STC-neutral; relaxes deep RFP at LTC. SPSA tunes both.
     (RFP_ROOT_THRESH, 16, 6, 30, 1.5, true),
-    (RFP_ROOT_COEF, 17, 0, 150, 7.5, true),
+    (RFP_ROOT_COEF, 17, 0, 150, 7.5, false),
     // Additional depth-local RFP relaxation: current main already scales RFP
     // by overall root depth; this term raises the margin for high remaining
     // depth regardless of TC. Consensus engines either cap RFP around d9-11
@@ -130,7 +130,7 @@ tunables!(
     // Razoring (re-added 2026-06-11, audit T2.6). Consensus band:
     // Obsidian 352/d<=5, Berserk 214/d<=5, Clover 145/d<=2,
     // Stormphrax ~290/d<=4.
-    (RAZOR_MULT, 286, 100, 500, 20.0, true),
+    (RAZOR_MULT, 286, 100, 500, 20.0, false),
     (RAZOR_DEPTH_10X, 39, 10, 80, 5.0, true),
     // Futility margin widened after the pruning audit: 80/110 H1'd at STC
     // (#2018 +3.5) and was flat at LTC (#2019), with focused SPSA #2020
@@ -276,7 +276,7 @@ tunables!(
     // after #2594/#2596 H0'd at full strength — our ln(d)·ln(m) base keeps
     // its move-count term (the source battery omits one) so those constants
     // double-count; ranges run to 0 so SPSA can kill dead terms.
-    (LMR_WINBETA_CENTI, 32, 0, 250, 12.0, true),
+    (LMR_WINBETA_CENTI, 32, 0, 250, 12.0, false),
     (LMR_TTALPHA_CENTI, 25, 0, 150, 8.0, true),
     (LMR_TTDEPTH_CENTI, 9, 0, 150, 8.0, true),
     (LMR_EXPECT_MULT, 25, 0, 120, 6.0, true),
@@ -304,7 +304,7 @@ tunables!(
     // (diminishing returns — at LTC the reduced re-search is cheap vs the
     // budget and a wrong reduction costs more). Inactive at STC by
     // construction -> STC-neutral. SPSA tunes both.
-    (LMR_ROOT_THRESH, 15, 6, 30, 1.5, true),
+    (LMR_ROOT_THRESH, 15, 6, 30, 1.5, false),
     (LMR_ROOT_COEF_10X, 50, 0, 800, 40.0, true),
     (BAD_NOISY_MARGIN, 85, 30, 150, 6.0, true),
     (PROBCUT_MARGIN, 124, 80, 300, 11.0, true),
@@ -319,7 +319,7 @@ tunables!(
     // shallow root depths, then fade back to current main as root depth grows.
     (PROBCUT_ROOT_THRESH, 16, 8, 28, 1.5, true),
     (PROBCUT_ROOT_FADE_10X, 31, 10, 120, 10.0, true),
-    (PROBCUT_ROOT_MARGIN, 69, 0, 120, 8.0, true),
+    (PROBCUT_ROOT_MARGIN, 69, 0, 120, 8.0, false),
     (HINDSIGHT_THRESH, 180, 50, 400, 17.5, true),
     (UNSTABLE_THRESH, 310, 50, 500, 22.5, false),
     (QS_DELTA_MARGIN, 340, 100, 500, 20.0, true),
@@ -419,8 +419,8 @@ tunables!(
     // (#787 H0, SPSA #792 no basin) showed signal-not-there for Coda's
     // regime; bundling it into #815 dragged the result negative. Tested
     // alone in this branch.
-    (DEXT_MARGIN_PV, 169, 50, 400, 15.0, true),
-    (DEXT_MARGIN_QUIET, 17, 0, 100, 4.0, true),
+    (DEXT_MARGIN_PV, 169, 50, 400, 15.0, false),
+    (DEXT_MARGIN_QUIET, 17, 0, 100, 4.0, false),
     (DEXT_MARGIN_CORR, 22, 0, 64, 3.0, true),
     (DEXT_MARGIN_BASE, 27, -50, 150, 6.0, true),
     (DEXT_CAP, 13, 4, 32, 2.0, true),
@@ -494,7 +494,7 @@ tunables!(
     // (alpha_raises reduction, a known LMR refinement). Fixed-point ×10: reduction += raises *
     // VALUE/10. Only fires at PV nodes (cut nodes break on the first fail-high
     // before alpha is raised). Default 10 = +1.0 reduction per prior alpha-raise.
-    (LMR_ALPHA_RAISE_10X, 5, 0, 40, 5.0, true),
+    (LMR_ALPHA_RAISE_10X, 5, 0, 40, 5.0, false),
     (FUT_THREATS_MARGIN, 33, 0, 200, 10.0, true),
     (DISCOVERED_ATTACK_BONUS, 3534, 0, 30000, 1500.0, false),
     // BATTERY_BONUS removed 2026-05-17: ablation #1278 at [0, 3] H0
@@ -560,7 +560,7 @@ tunables!(
     // ProbCut floor lifted from 30 → 10 (audit 2026-05-19): SPSA at 32,
     // ~2% from floor. Lifting to 10 (eff 1) allows exploration of more
     // aggressive ProbCut activation.
-    (PROBCUT_MIN_DEPTH_10X, 15, 10, 120, 15.0, true),     // was hardcoded 5 (ProbCut activation gate)
+    (PROBCUT_MIN_DEPTH_10X, 15, 10, 120, 15.0, false),     // was hardcoded 5 (ProbCut activation gate)
     (PROBCUT_ROOT_MIN_DEPTH_10X, 27, 0, 80, 8.0, true),
     (SEE_CAP_DEPTH_10X, 90, 30, 150, 15.0, true),         // was hardcoded 6 (SEE capture prune depth cap)
     // Capture-SEE prune margin, SF-shaped (search.cpp): margin = depth*MULT +
@@ -573,7 +573,7 @@ tunables!(
     // 130 cost +17% bench nodes). Base 110 (1.1 pawn/depth, toward SF's 0.84);
     // HIST 11 ≈ SF's 34/1024 rescaled for Coda's ±16384 capt-hist. Audit #3.
     (SEE_CAP_MULT, 90, 40, 250, 12.0, true),
-    (SEE_CAP_HIST, 8, 0, 40, 2.0, true),
+    (SEE_CAP_HIST, 8, 0, 40, 2.0, false),
     (BAD_NOISY_DEPTH_10X, 96, 40, 150, 15.0, true),       // was hardcoded 4 (BNFP depth cap)
     // Second pass — additional gates exposed for the feature-utility
     // audit tune. Widened ranges allow SPSA to reach disable-endpoint
