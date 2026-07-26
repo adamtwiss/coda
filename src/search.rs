@@ -4521,6 +4521,50 @@ fn negamax(
     let alpha_orig = alpha;
     let tt_entry = info.tt.probe(board.hash);
     let tt_hit = tt_entry.hit;
+
+    // Prefetch the five correction-history rows corrected_eval will read
+    // (~240 lines / a few hundred cycles from here on the common paths).
+    // The tables total ~3MB (cont_corr alone 2.8MB) and are evicted by
+    // NNUE weight traffic between nodes, so these reads otherwise miss.
+    // All indices derive from board state available right now. Wasted on
+    // TT-cutoff / in-check exits — measured +0.5% median cycles, 63/100
+    // positive pairs, sign-test p=0.006 (same-binary toggle protocol,
+    // 2026-07-26).
+    #[cfg(target_arch = "x86_64")]
+    {
+        use std::arch::x86_64::{_mm_prefetch, _MM_HINT_T0};
+        let stm = board.side_to_move as usize;
+        unsafe {
+            let pawn_idx = (board.pawn_hash as usize) & (CORR_HIST_SIZE - 1);
+            _mm_prefetch(&info.pawn_corr[stm][pawn_idx] as *const i32 as *const i8, _MM_HINT_T0);
+            let wnp_idx = (board.non_pawn_key[WHITE as usize] as usize) & (CORR_HIST_SIZE - 1);
+            _mm_prefetch(&info.np_corr[stm][WHITE as usize][wnp_idx] as *const i32 as *const i8, _MM_HINT_T0);
+            let bnp_idx = (board.non_pawn_key[BLACK as usize] as usize) & (CORR_HIST_SIZE - 1);
+            _mm_prefetch(&info.np_corr[stm][BLACK as usize][bnp_idx] as *const i32 as *const i8, _MM_HINT_T0);
+            if let Some(last) = board.undo_stack.last() {
+                if last.mv != NO_MOVE {
+                    let trans_idx = ((board.hash ^ last.hash) as usize) & (CORR_HIST_SIZE - 1);
+                    _mm_prefetch(&info.trans_corr[stm][trans_idx] as *const i32 as *const i8, _MM_HINT_T0);
+                }
+            }
+            // cont_corr rows: same index derivation as cont_corr_value.
+            if ply_u >= 2 {
+                let cur_p = info.moved_piece_stack[ply_u - 1] as usize;
+                let cur_t = info.moved_to_stack[ply_u - 1] as usize;
+                if cur_p != 0 && cur_p < 13 && cur_t < 64 {
+                    for off in [2usize, 4] {
+                        if ply_u >= off {
+                            let pp = info.moved_piece_stack[ply_u - off] as usize;
+                            let pt = info.moved_to_stack[ply_u - off] as usize;
+                            if pp != 0 && pp < crate::movepicker::CONT_PLANES && pt < 64 {
+                                _mm_prefetch(&info.cont_corr[pp][pt][cur_p][cur_t] as *const i32 as *const i8, _MM_HINT_T0);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
     let tt_cur_gen = info.tt.current_generation();
     let tt_cross_gen = tt_hit && tt_entry.generation != tt_cur_gen;
     info.stats.tt_probes += 1;
