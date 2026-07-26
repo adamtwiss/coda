@@ -173,6 +173,40 @@ impl<T: Default + Copy> AlignedVec<T> {
         #[cfg(target_os = "linux")]
         unsafe {
             let size = n * std::mem::size_of::<T>();
+
+            // Tier 1: explicit hugetlb pool (`sysctl vm.nr_hugepages=N`) —
+            // deterministic 2 MiB pages, immune to the broken-THP kernels
+            // where the madvise path below silently yields zero huge pages
+            // (Ubuntu HWE 6.8: AnonHugePages measured 0 kB for the 65 MiB
+            // threat table on both Atlas and the lichess host; same failure
+            // tt.rs documents for the TT). mmap reserves from the pool up
+            // front, so it fails cleanly (→ fall through) when the pool is
+            // absent or exhausted. CODA_NO_HUGETLB skips the tier — the
+            // same-binary A/B toggle for the paired measurement protocol.
+            if std::env::var("CODA_NO_HUGETLB").is_err() {
+                let htlb_size = (size + Self::HUGE_PAGE - 1) & !(Self::HUGE_PAGE - 1);
+                let raw = libc::mmap(
+                    std::ptr::null_mut(),
+                    htlb_size,
+                    libc::PROT_READ | libc::PROT_WRITE,
+                    libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_HUGETLB,
+                    -1,
+                    0,
+                );
+                if raw != libc::MAP_FAILED {
+                    // Drop munmaps `cap * size_of::<T>()`; the kernel rounds
+                    // the length up to the VMA's page size (2 MiB here), so
+                    // the full mapping is released.
+                    return Self {
+                        ptr: raw as *mut T,
+                        len: n,
+                        cap: n,
+                        align: Self::HUGE_PAGE,
+                        mmapped: true,
+                    };
+                }
+            }
+
             // Over-allocate by one huge page so the base can be aligned up
             // to a 2 MiB boundary (mmap only guarantees 4 KiB alignment;
             // PMD-size THP only backs 2 MiB-aligned virtual extents).
