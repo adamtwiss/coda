@@ -5982,7 +5982,21 @@ mod tests {
         let mut loaded = None;
         for p in &candidates {
             match NNUENet::load(p) {
-                Ok(n) => { loaded = Some((n, p.clone())); break; }
+                // The exact-explanation model below covers DIRECT same-type
+                // mutual contacts only. X-ray-trained nets also emit x-ray
+                // threats, whose same-type mutual geometries (e.g. doubled
+                // majors x-raying through a blocker) hit the same designed
+                // skip but are not in the explanation set — extending it is
+                // future work if x-ray nets return to prod. Select no-x-ray
+                // nets (the production family); reject x-ray-trained ones.
+                Ok(n) => {
+                    if crate::threats::emit_xray() {
+                        eprintln!("eval-mirror oracle: candidate {} is x-ray-trained (not covered by the exact model), trying next", p);
+                        continue;
+                    }
+                    loaded = Some((n, p.clone()));
+                    break;
+                }
                 Err(e) => eprintln!("eval-mirror oracle: candidate {} unloadable ({}), trying next", p, e),
             }
         }
