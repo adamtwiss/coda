@@ -941,6 +941,15 @@ pub struct PruneStats {
     pub rfp_audit_var_fp: [u64; 3],
     pub cut_quiet_rank1: u64,
     pub cut_quiet_rank_sum: u64,
+    // Candidate-B probe: fail-low nodes histogrammed by
+    // [depth band 0-2][margin band 0-3][quiet-count band 0-3]:
+    // depth {<=4, 5-8, >=9}, margin {<50, 50-150, 150-300, >=300}cp,
+    // quiets {0-2, 3-5, 6-9, 10+}. _nodes counts nodes, _quiets sums
+    // quiets tried, _late sums max(quiets-2, 0) (the prunable tail).
+    pub b_probe_nodes: [[u64; 16]; 3],
+    pub b_probe_quiets: [[u64; 16]; 3],
+    pub b_probe_late: [[u64; 16]; 3],
+    pub moves_searched: u64,
     // Move ordering quality: sum of move_count² at beta cutoff (lower = better ordering)
     pub cutoff_movecount_sq_sum: u64,
     pub cutoff_movecount_sum: u64,
@@ -5495,6 +5504,7 @@ fn negamax(
         // Pruned moves still count for LMR/LMP purposes — later moves in the ordering
         // should be reduced more regardless of whether earlier moves were pruned.
         move_count += 1;
+        info.stats.moves_searched += 1;
 
         let from = move_from(mv);
         let to = move_to(mv);
@@ -6551,6 +6561,20 @@ fn negamax(
             TT_FLAG_EXACT
         };
 
+        // Candidate-B probe (stats only): fail-low nodes by depth/margin/quiets.
+        if flag == TT_FLAG_UPPER && move_count > 0 && best_score.abs() < MATE_IN_MAX_PLY {
+            let d_band = if depth <= 4 { 0 } else if depth <= 8 { 1 } else { 2 };
+            let margin = (alpha_orig - best_score).max(0);
+            let m_band = if margin < 50 { 0 } else if margin < 150 { 1 }
+                else if margin < 300 { 2 } else { 3 };
+            let q_band = if quiets_count <= 2 { 0 } else if quiets_count <= 5 { 1 }
+                else if quiets_count <= 9 { 2 } else { 3 };
+            let idx = m_band * 4 + q_band;
+            info.stats.b_probe_nodes[d_band][idx] += 1;
+            info.stats.b_probe_quiets[d_band][idx] += quiets_count as u64;
+            info.stats.b_probe_late[d_band][idx] += (quiets_count.saturating_sub(2)) as u64;
+        }
+
         // Adjust mate score for storage (relative to this position)
         let store_score = score_to_tt(best_score, ply);
 
@@ -7370,6 +7394,14 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
         }
         total_stats.cut_quiet_rank1 += info.stats.cut_quiet_rank1;
         total_stats.cut_quiet_rank_sum += info.stats.cut_quiet_rank_sum;
+        for d in 0..3 {
+            for i in 0..16 {
+                total_stats.b_probe_nodes[d][i] += info.stats.b_probe_nodes[d][i];
+                total_stats.b_probe_quiets[d][i] += info.stats.b_probe_quiets[d][i];
+                total_stats.b_probe_late[d][i] += info.stats.b_probe_late[d][i];
+            }
+        }
+        total_stats.moves_searched += info.stats.moves_searched;
         total_stats.cutoff_movecount_sum += info.stats.cutoff_movecount_sum;
         total_stats.cutoff_movecount_sq_sum += info.stats.cutoff_movecount_sq_sum;
         for d in 0..24 {
@@ -7457,6 +7489,31 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
         }
         eprintln!("Move ordering:  avg cutoff pos {:.2}, avg pos² {:.1}, first-move {:.1}%",
             avg_pos, avg_sq, first_pct);
+        {
+            let bn: u64 = s.b_probe_nodes.iter().flatten().sum();
+            if bn > 0 && s.moves_searched > 0 {
+                eprintln!("--- Candidate-B probe: fail-low nodes (total moves searched {}) ---", s.moves_searched);
+                let dnames = ["d<=4", "d5-8", "d>=9"];
+                let mnames = ["m<50", "m50-150", "m150-300", "m>=300"];
+                for d in 0..3 {
+                    for m in 0..4 {
+                        let mut nodes = 0u64; let mut quiets = 0u64; let mut late = 0u64;
+                        for q in 0..4 {
+                            let i = m * 4 + q;
+                            nodes += s.b_probe_nodes[d][i];
+                            quiets += s.b_probe_quiets[d][i];
+                            late += s.b_probe_late[d][i];
+                        }
+                        if nodes > 0 {
+                            eprintln!("B[{} {}]: {} nodes, {} quiets tried ({:.2}/node), late(>2) {} = {:.2}% of all moves",
+                                dnames[d], mnames[m], nodes, quiets,
+                                quiets as f64 / nodes as f64, late,
+                                100.0 * late as f64 / s.moves_searched as f64);
+                        }
+                    }
+                }
+            }
+        }
     }
     // Effective branching factor: geometric mean of node ratios between consecutive depths
     // Accumulated across all bench positions for a robust estimate
