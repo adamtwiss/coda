@@ -429,7 +429,16 @@ tunables!(
     // into the first-searched slot. Margin on Coda's pawn=100 SEE scale:
     // a check that loses more than this by SEE gets no ordering bonus.
     (QUIET_CHECK_SEE_MARGIN, 90, 0, 300, 12.0, true),
-    (CORR_HIST_DIV, 279, 256, 4096, 192.0, true),
+    // Floor lowered 256 -> 64 (2026-07-27). SPSA pinned this at the old floor
+    // for three consecutive applied tunes (#2664 450, #2733 372, #2794 279)
+    // while the weights kept ~70% headroom, so the bound — not the optimum —
+    // was setting the value. Effective correction magnitude is
+    // sum(W) / (DIV * GRAIN_T); the descent since the corrhist reworks is a
+    // real ~1.7x strengthening, not a walk along the weights/divisor
+    // degeneracy (the weight sum fell only 25% against the divisor's 73%).
+    // c_end 192 -> 64: at an operating point near 279 a 192 perturbation is
+    // ~69% of the value and would clamp against the new floor constantly.
+    (CORR_HIST_DIV, 279, 64, 4096, 64.0, true),
     // 4 -> 16 with T2.4: the floor-pin at 4 was calibrated for the
     // sign-only (err-clamped) regime; consensus weights ~depth uncapped.
     (CORR_UPDATE_WEIGHT_MAX, 17, 4, 48, 2.2, true),
