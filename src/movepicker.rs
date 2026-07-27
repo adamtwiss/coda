@@ -606,6 +606,15 @@ impl MovePicker {
         let pw = crate::search::tp10(&crate::search::PAWN_HIST_MULT_10X);
         let null_threat_escape_bonus = crate::search::NULL_THREAT_ESCAPE_BONUS.load(Ordering::Relaxed);
         let escape_bonus_q = crate::search::ESCAPE_BONUS_Q.load(Ordering::Relaxed);
+        // Squares adjacent to our own king: a pawn sitting here is holding cover.
+        // Hoisted out of the per-move loop. Evasions deliberately skip this — in
+        // check, getting out is the governing concern, not structure.
+        let king_shield_malus = crate::search::KING_SHIELD_MALUS.load(Ordering::Relaxed);
+        let king_shield_mask = if king_shield_malus != 0 {
+            crate::attacks::king_attacks(board.king_sq(board.side_to_move) as u32)
+        } else {
+            0
+        };
         let escape_bonus_r = crate::search::ESCAPE_BONUS_R.load(Ordering::Relaxed);
         let escape_bonus_minor = crate::search::ESCAPE_BONUS_MINOR.load(Ordering::Relaxed);
         let quiet_check_bonus = crate::search::QUIET_CHECK_BONUS.load(Ordering::Relaxed);
@@ -657,6 +666,12 @@ impl MovePicker {
                     let ph = unsafe { &*ph_ptr };
                     score += pw * ph[go_piece(piece)][to as usize] as i32;
                 }
+            }
+
+            // Advancing a pawn that stands beside our own king gives up cover.
+            // History has no notion of that structural cost, so price it here.
+            if pt == 0 && king_shield_mask & (1u64 << from) != 0 {
+                score -= king_shield_malus;
             }
 
             // Null-move threat: bonus for escaping the threatened square

@@ -424,6 +424,12 @@ tunables!(
     (DEXT_MARGIN_BASE, 27, -50, 150, 6.0, true),
     (DEXT_CAP, 13, 4, 32, 2.0, true),
     (QUIET_CHECK_BONUS, 14805, 2000, 30000, 1400.0, false),
+    // Ordering malus for advancing a pawn that stands next to our own king.
+    // Such a pawn is holding cover; moving it opens lines toward our king, and
+    // the quiet-history tables have no notion of that structural cost. Scale is
+    // set against our own quiet-score span (history sums reach ~+-80k), so this
+    // nudges ordering rather than dominating it.
+    (KING_SHIELD_MALUS, 4000, 0, 20000, 1500.0, false),
     // SEE gate on the quiet check bonus (SF movepick.cpp: check bonus only
     // applies when see_ge(m, -75)). Without it Coda orders losing check-sacs
     // into the first-searched slot. Margin on Coda's pawn=100 SEE scale:
