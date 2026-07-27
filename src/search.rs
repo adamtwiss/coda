@@ -278,7 +278,6 @@ tunables!(
     // double-count; ranges run to 0 so SPSA can kill dead terms.
     (LMR_WINBETA_CENTI, 32, 0, 250, 12.0, false),
     (LMR_TTALPHA_CENTI, 25, 0, 150, 8.0, true),
-    (LMR_TTDEPTH_CENTI, 0, 0, 150, 8.0, true),
     (LMR_EXPECT_MULT, 25, 0, 120, 6.0, true),
     // cutoff_count LMR terms (T1.2).
     // Child ply failed high >2 times under this node -> reduce late moves
@@ -5912,11 +5911,6 @@ fn negamax(
                     if tt_score_node <= alpha {
                         reduction += tp(&LMR_TTALPHA_CENTI);
                     }
-                    // (c) TT guidance is shallower than the current search —
-                    //     weaker move-ordering confidence, reduce more.
-                    if (tt_entry.depth as i32) < depth {
-                        reduction += tp(&LMR_TTDEPTH_CENTI);
-                    }
                 }
                 // (d) Quiet expectation gap: eval far below alpha → this node is
                 //     underperforming its window, reduce late quiets more (and
@@ -6042,9 +6036,6 @@ fn negamax(
                         let tt_score_node = score_from_tt(tt_entry.score, ply, board.halfmove);
                         if tt_score_node <= alpha {
                             reduction += tp(&LMR_TTALPHA_CENTI);
-                        }
-                        if (tt_entry.depth as i32) < depth {
-                            reduction += tp(&LMR_TTDEPTH_CENTI);
                         }
                     }
 
