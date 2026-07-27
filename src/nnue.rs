@@ -5949,35 +5949,47 @@ mod tests {
         use crate::board::Board;
         use crate::movegen::generate_legal_moves;
 
+        // EMIT_XRAY is process-global and NNUENet::load mutates it. This
+        // test both loads a net (mutator) and compares evals in two halves
+        // that require a stable flag (victim) — hold XRAY_TEST_LOCK for the
+        // whole test like every other net-loading/flag-sensitive test.
+        // (Flakiness found by Hercules 2026-07-27: 3/3 full-suite failures,
+        // 5/5 in isolation, different FEN each run — a concurrent net load
+        // flipped the flag between the two halves of a mirror comparison.)
+        let _xray = crate::threats::XRAY_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
         crate::init();
 
-        let net_path = if let Ok(p) = std::env::var("CODA_TEST_NET") {
-            if !std::path::Path::new(&p).exists() {
-                eprintln!("Skipping eval-mirror oracle: CODA_TEST_NET path missing: {}", p);
-                return;
-            }
-            p
+        // Candidate nets: CODA_TEST_NET override, else every net*.nnue in
+        // the repo root (sorted, newest-style hash names included). Try each
+        // until one LOADS — stale/unsupported-layout files in the root must
+        // not silently disarm the tripwire (a first-match version skipped on
+        // Atlas because read_dir happened to yield a retired kb10 net first).
+        let candidates: Vec<String> = if let Ok(p) = std::env::var("CODA_TEST_NET") {
+            vec![p]
         } else {
-            let found = std::fs::read_dir(".").ok().and_then(|e| {
-                e.filter_map(|f| f.ok())
-                    .find(|f| {
-                        let n = f.file_name().to_string_lossy().to_string();
-                        n.starts_with("net") && n.ends_with(".nnue")
-                    })
-                    .map(|f| f.path().to_string_lossy().to_string())
-            });
-            match found {
-                Some(p) => p,
-                None => {
-                    eprintln!("Skipping eval-mirror oracle: no .nnue found");
-                    return;
-                }
-            }
+            let mut v: Vec<String> = std::fs::read_dir(".")
+                .map(|e| {
+                    e.filter_map(|f| f.ok())
+                        .map(|f| f.file_name().to_string_lossy().to_string())
+                        .filter(|n| n.starts_with("net") && n.ends_with(".nnue"))
+                        .collect()
+                })
+                .unwrap_or_default();
+            v.sort();
+            v
         };
-        let net = match NNUENet::load(&net_path) {
-            Ok(n) => n,
-            Err(e) => {
-                eprintln!("Skipping eval-mirror oracle: {}", e);
+        let mut loaded = None;
+        for p in &candidates {
+            match NNUENet::load(p) {
+                Ok(n) => { loaded = Some((n, p.clone())); break; }
+                Err(e) => eprintln!("eval-mirror oracle: candidate {} unloadable ({}), trying next", p, e),
+            }
+        }
+        let (net, net_path) = match loaded {
+            Some(x) => x,
+            None => {
+                eprintln!("Skipping eval-mirror oracle: no loadable .nnue among {} candidates", candidates.len());
                 return;
             }
         };
@@ -7427,6 +7439,9 @@ mod tests {
     #[test]
     #[ignore]
     fn measure_threat_weight_norms() {
+        // Net loading mutates the process-global EMIT_XRAY — serialize with
+        // every other net-loading test (see fuzz_eval_mirror_symmetry).
+        let _xray = crate::threats::XRAY_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let net_path = "nets/net-v9-768th16x32-w15-e800s800-xray.nnue";
         let net = match NNUENet::load(net_path) {
             Ok(n) => n,
@@ -7513,6 +7528,9 @@ mod tests {
     /// net (e.g. the v9 net to cover the threat + pairwise VNNI path).
     #[test]
     fn test_simd_scalar_consistency() {
+        // Net loading mutates the process-global EMIT_XRAY — serialize with
+        // every other net-loading test (see fuzz_eval_mirror_symmetry).
+        let _xray = crate::threats::XRAY_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         use crate::board::Board;
 
         crate::init();
@@ -7825,6 +7843,9 @@ mod tests {
     /// prints all positions + diffs for triage.
     #[test]
     fn test_eval_color_symmetry() {
+        // Net loading mutates the process-global EMIT_XRAY — serialize with
+        // every other net-loading test (see fuzz_eval_mirror_symmetry).
+        let _xray = crate::threats::XRAY_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         use crate::board::Board;
         use crate::threat_accum::ThreatStack;
 
@@ -7922,6 +7943,9 @@ mod tests {
     /// mis-selection producing non-monotone evals at material boundaries.
     #[test]
     fn test_eval_piece_value_monotonicity() {
+        // Net loading mutates the process-global EMIT_XRAY — serialize with
+        // every other net-loading test (see fuzz_eval_mirror_symmetry).
+        let _xray = crate::threats::XRAY_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         use crate::board::Board;
         use crate::threat_accum::ThreatStack;
 
@@ -8010,6 +8034,9 @@ mod tests {
     /// PSQ (king-piece-square) half of the net.
     #[test]
     fn fuzz_psq_accumulator() {
+        // Net loading mutates the process-global EMIT_XRAY — serialize with
+        // every other net-loading test (see fuzz_eval_mirror_symmetry).
+        let _xray = crate::threats::XRAY_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         use crate::board::Board;
         use crate::movegen::generate_legal_moves;
         use crate::search::build_dirty_piece;
