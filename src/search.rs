@@ -939,6 +939,8 @@ pub struct PruneStats {
     // RFP-audit FP bucketed by corr-source spread (cp): [<8, 8-24, >=24]
     pub rfp_audit_var_attempts: [u64; 3],
     pub rfp_audit_var_fp: [u64; 3],
+    pub cut_quiet_rank1: u64,
+    pub cut_quiet_rank_sum: u64,
     // Move ordering quality: sum of move_count² at beta cutoff (lower = better ordering)
     pub cutoff_movecount_sq_sum: u64,
     pub cutoff_movecount_sum: u64,
@@ -6293,6 +6295,12 @@ fn negamax(
                             else if is_cap || is_promo { 1 } else { 2 };
                         info.stats.cut_by_source[cls] += 1;
                         if move_count == 1 { info.stats.first_cut_by_source[cls] += 1; }
+                        // True quiet-stage ordering quality: the cutter's rank
+                        // AMONG QUIETS (quiets_tried includes the cutter).
+                        if cls == 2 && quiets_count > 0 {
+                            info.stats.cut_quiet_rank_sum += quiets_count as u64;
+                            if quiets_count == 1 { info.stats.cut_quiet_rank1 += 1; }
+                        }
                         let had_tt = (tt_move != NO_MOVE) as usize;
                         info.stats.cut_by_ttpresence[had_tt] += 1;
                         if move_count == 1 { info.stats.first_cut_by_ttpresence[had_tt] += 1; }
@@ -7360,6 +7368,8 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
             total_stats.cut_by_ttpresence[i] += info.stats.cut_by_ttpresence[i];
             total_stats.first_cut_by_ttpresence[i] += info.stats.first_cut_by_ttpresence[i];
         }
+        total_stats.cut_quiet_rank1 += info.stats.cut_quiet_rank1;
+        total_stats.cut_quiet_rank_sum += info.stats.cut_quiet_rank_sum;
         total_stats.cutoff_movecount_sum += info.stats.cutoff_movecount_sum;
         total_stats.cutoff_movecount_sq_sum += info.stats.cutoff_movecount_sq_sum;
         for d in 0..24 {
@@ -7421,6 +7431,12 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
                     names[i], 100.0 * s.first_cut_by_source[i] as f64 / c as f64,
                     s.cut_by_source[i],
                     100.0 * s.cut_by_source[i] as f64 / s.beta_cutoffs.max(1) as f64);
+            }
+            if s.cut_by_source[2] > 0 {
+                eprintln!("fh1[quiet-RANK]: rank1 {:.1}%, avg quiet-rank {:.2} (of {} quiet cutoffs)",
+                    100.0 * s.cut_quiet_rank1 as f64 / s.cut_by_source[2] as f64,
+                    s.cut_quiet_rank_sum as f64 / s.cut_by_source[2] as f64,
+                    s.cut_by_source[2]);
             }
             for (i, name) in ["no-tt-move", "has-tt-move"].iter().enumerate() {
                 let c = s.cut_by_ttpresence[i].max(1);
