@@ -326,9 +326,9 @@ tunables!(
     // delta/SEE-pruned moves against the budget, so SPSA detuned the cap
     // to near-off. Counting searched-only, consensus is 3 (Obsidian) to ~"2 extra" (SF moveCount > 2).
     (QS_MAX_CAPTURES, 5, 2, 32, 2.0, false),
-    (CORR_W_PAWN, 226, 100, 600, 25.0, true),
+    (CORR_W_PAWN, 211, 100, 600, 25.0, true),
     // Floor lifted from 50 → 0 (audit 2026-05-20): pinned at 63, 4% from floor.
-    (CORR_W_NP, 111, 0, 400, 17.5, true),
+    (CORR_W_NP, 115, 0, 400, 17.5, true),
     // CORR_W_MINOR / CORR_W_MAJOR were dropped 2026-05-18 (ablated to 0
     // via #1318 H1; minor_key/major_key are strict subsets of
     // non_pawn_key, so the contributions were redundant with np_corr).
@@ -339,12 +339,12 @@ tunables!(
     // Floor on CORR_W_CONT lifted from 30 → 0 (audit 2026-05-19): SPSA
     // converged 33, ~1% from floor. Lifting allows finding true optimum
     // including disabling cont-corr if SPSA wants. Default unchanged.
-    (CORR_W_CONT, 120, 0, 400, 18.5, true),
+    (CORR_W_CONT, 121, 0, 400, 18.5, true),
     // Transition (zobrist-delta) correction weight (Cinder idea): correction
     // keyed by hash(ply-1) ^ hash(ply) — a hash of the last move IN CONTEXT
     // (from+to+captured+side), richer than cont_corr's [piece][to]. Captures
     // "this structural CHANGE tends to be mis-evaluated."
-    (CORR_W_TRANS, 83, 0, 400, 18.5, true),
+    (CORR_W_TRANS, 79, 0, 400, 18.5, true),
     (FH_BLEND_DEPTH_10X, 33, 0, 80, 15.0, false),
     // Re-expose 4 hardcoded search constants (audit 2026-05-21).
     // All bench-neutral at current defaults.
@@ -438,19 +438,19 @@ tunables!(
     // degeneracy (the weight sum fell only 25% against the divisor's 73%).
     // c_end 192 -> 64: at an operating point near 279 a 192 perturbation is
     // ~69% of the value and would clamp against the new floor constantly.
-    (CORR_HIST_DIV, 295, 64, 4096, 64.0, true),
+    (CORR_HIST_DIV, 323, 64, 4096, 64.0, true),
     // 4 -> 16 with T2.4: the floor-pin at 4 was calibrated for the
     // sign-only (err-clamped) regime; consensus weights ~depth uncapped.
     (CORR_UPDATE_WEIGHT_MAX, 14, 4, 48, 2.2, true),
     // Was 32 (tp10→3). Now FIXED-POINT. Default 30 → eff 3.0 ≡ old behavior.
-    (CORR_BONUS_CAP_DIV_10X, 35, 10, 160, 15.0, false),
+    (CORR_BONUS_CAP_DIV_10X, 38, 10, 160, 15.0, false),
     (CORR_HIST_GRAIN_T, 13, 1, 32, 1.55, false),
     // Floor lifted from 10 → 0 (audit 2026-05-19): SPSA converged 25, ~2%
     // from the floor. Lifting allows exploration of looser clamps.
     // T2.4: CORR_HIST_ERR_MAX (±3cp input pre-clamp) replaced by output
     // scaling: bonus = err*(depth+1).min(W)/CORR_ERR_DIV, clamped at the
     // gravity cap only. Obsidian err*depth/8; SF err*depth*12/128.
-    (CORR_ERR_DIV_10X, 53, 20, 640, 30.0, false),
+    (CORR_ERR_DIV_10X, 55, 20, 640, 30.0, false),
     // ESCAPE_BONUS_Q / _MINOR removed 2026-05-17: ablations #1256/#1255
     // H0 at [-3, 3]. Slightly load-bearing (central -0.6/-1.3 to ablate),
     // hardcoded at current SPSA values in movepicker.rs.
