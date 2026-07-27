@@ -278,7 +278,7 @@ tunables!(
     // double-count; ranges run to 0 so SPSA can kill dead terms.
     (LMR_WINBETA_CENTI, 32, 0, 250, 12.0, false),
     (LMR_TTALPHA_CENTI, 25, 0, 150, 8.0, true),
-    (LMR_TTDEPTH_CENTI, 9, 0, 150, 8.0, true),
+    (LMR_TTDEPTH_CENTI, 0, 0, 150, 8.0, true),
     (LMR_EXPECT_MULT, 25, 0, 120, 6.0, true),
     // cutoff_count LMR terms (T1.2).
     // Child ply failed high >2 times under this node -> reduce late moves
