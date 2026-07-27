@@ -930,6 +930,15 @@ pub struct PruneStats {
     pub qnodes: u64,
     pub beta_cutoffs: u64,
     pub first_move_cutoffs: u64,
+    // fh1 source split: [tt_move, noisy, quiet]
+    pub cut_by_source: [u64; 3],
+    pub first_cut_by_source: [u64; 3],
+    // fh1 conditioned on TT-move presence: [no_tt, has_tt]
+    pub cut_by_ttpresence: [u64; 2],
+    pub first_cut_by_ttpresence: [u64; 2],
+    // RFP-audit FP bucketed by corr-source spread (cp): [<8, 8-24, >=24]
+    pub rfp_audit_var_attempts: [u64; 3],
+    pub rfp_audit_var_fp: [u64; 3],
     // Move ordering quality: sum of move_count² at beta cutoff (lower = better ordering)
     pub cutoff_movecount_sq_sum: u64,
     pub cutoff_movecount_sum: u64,
@@ -5044,6 +5053,34 @@ fn negamax(
                 {
                     let d_idx = depth.clamp(0, 23) as usize;
                     info.stats.rfp_audit_attempts[d_idx] += 1;
+                    // Candidate-A validation: bucket this audited cutoff by the
+                    // SPREAD of the five correction-source cp contributions
+                    // (disagreement = low eval confidence). Computed only under
+                    // RFP_AUDIT — zero production cost.
+                    let var_bucket = {
+                        let stm = board.side_to_move as usize;
+                        let div = tp(&CORR_HIST_DIV) as i64;
+                        let grain = tp(&CORR_HIST_GRAIN_T) as i64;
+                        let scale = (div * grain).max(1);
+                        let pawn_idx = (board.pawn_hash as usize) & (CORR_HIST_SIZE - 1);
+                        let c1 = info.pawn_corr[stm][pawn_idx] as i64 * tp(&CORR_W_PAWN) as i64 / scale;
+                        let wnp = (board.non_pawn_key[WHITE as usize] as usize) & (CORR_HIST_SIZE - 1);
+                        let c2 = info.np_corr[stm][WHITE as usize][wnp] as i64 * tp(&CORR_W_NP) as i64 / scale;
+                        let bnp = (board.non_pawn_key[BLACK as usize] as usize) & (CORR_HIST_SIZE - 1);
+                        let c3 = info.np_corr[stm][BLACK as usize][bnp] as i64 * tp(&CORR_W_NP) as i64 / scale;
+                        let c4 = cont_corr_value(info, ply_u) * tp(&CORR_W_CONT) as i64 / scale;
+                        let c5 = if let Some(last) = board.undo_stack.last() {
+                            if last.mv != NO_MOVE {
+                                let ti = ((board.hash ^ last.hash) as usize) & (CORR_HIST_SIZE - 1);
+                                info.trans_corr[stm][ti] as i64 * tp(&CORR_W_TRANS) as i64 / scale
+                            } else { 0 }
+                        } else { 0 };
+                        let mx = c1.max(c2).max(c3).max(c4).max(c5);
+                        let mn = c1.min(c2).min(c3).min(c4).min(c5);
+                        let spread = mx - mn;
+                        if spread < 8 { 0 } else if spread < 24 { 1 } else { 2 }
+                    };
+                    info.stats.rfp_audit_var_attempts[var_bucket] += 1;
                     let mut r = tp10(&NMP_BASE_R_10X) + depth / tp10(&NMP_DEPTH_DIV_10X);
                     if static_eval > beta {
                         let eval_r = ((static_eval - beta) / tp(&NMP_EVAL_DIV)).min(tp10(&NMP_EVAL_MAX_10X));
@@ -5065,6 +5102,7 @@ fn negamax(
                     info.rfp_audit_active = false;
                     if null_score < beta && !info.stop.load(Ordering::Relaxed) {
                         info.stats.rfp_audit_fp[d_idx] += 1;
+                        info.stats.rfp_audit_var_fp[var_bucket] += 1;
                     }
                 }
                 return static_eval - margin;
@@ -6246,6 +6284,19 @@ fn negamax(
                     if move_count == 1 { info.stats.first_move_cutoffs += 1; }
                     info.stats.cuts_by_depth[ts_bucket] += 1;
                     if move_count == 1 { info.stats.first_cuts_by_depth[ts_bucket] += 1; }
+                    // fh1 source split (Phase-1 scoreboard, 2026-07-27):
+                    // class 0 = cutoff move is the TT move, 1 = noisy
+                    // (capture/promo), 2 = quiet; separately condition on
+                    // whether a TT move existed at this node at all.
+                    {
+                        let cls = if mv == tt_move { 0 }
+                            else if is_cap || is_promo { 1 } else { 2 };
+                        info.stats.cut_by_source[cls] += 1;
+                        if move_count == 1 { info.stats.first_cut_by_source[cls] += 1; }
+                        let had_tt = (tt_move != NO_MOVE) as usize;
+                        info.stats.cut_by_ttpresence[had_tt] += 1;
+                        if move_count == 1 { info.stats.first_cut_by_ttpresence[had_tt] += 1; }
+                    }
                     info.stats.cutoff_movecount_sum += move_count as u64;
                     info.stats.cutoff_movecount_sq_sum += (move_count as u64) * (move_count as u64);
 
@@ -7299,6 +7350,16 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
         total_stats.qnodes += info.stats.qnodes;
         total_stats.beta_cutoffs += info.stats.beta_cutoffs;
         total_stats.first_move_cutoffs += info.stats.first_move_cutoffs;
+        for i in 0..3 {
+            total_stats.cut_by_source[i] += info.stats.cut_by_source[i];
+            total_stats.first_cut_by_source[i] += info.stats.first_cut_by_source[i];
+            total_stats.rfp_audit_var_attempts[i] += info.stats.rfp_audit_var_attempts[i];
+            total_stats.rfp_audit_var_fp[i] += info.stats.rfp_audit_var_fp[i];
+        }
+        for i in 0..2 {
+            total_stats.cut_by_ttpresence[i] += info.stats.cut_by_ttpresence[i];
+            total_stats.first_cut_by_ttpresence[i] += info.stats.first_cut_by_ttpresence[i];
+        }
         total_stats.cutoff_movecount_sum += info.stats.cutoff_movecount_sum;
         total_stats.cutoff_movecount_sq_sum += info.stats.cutoff_movecount_sq_sum;
         for d in 0..24 {
@@ -7352,6 +7413,32 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
         let avg_pos = s.cutoff_movecount_sum as f64 / s.beta_cutoffs as f64;
         let avg_sq = s.cutoff_movecount_sq_sum as f64 / s.beta_cutoffs as f64;
         let first_pct = s.first_move_cutoffs as f64 / s.beta_cutoffs as f64 * 100.0;
+        {
+            let names = ["tt-move", "noisy", "quiet"];
+            for i in 0..3 {
+                let c = s.cut_by_source[i].max(1);
+                eprintln!("fh1[{}]: {:.1}% of {} cutoffs ({:.1}% of all cuts)",
+                    names[i], 100.0 * s.first_cut_by_source[i] as f64 / c as f64,
+                    s.cut_by_source[i],
+                    100.0 * s.cut_by_source[i] as f64 / s.beta_cutoffs.max(1) as f64);
+            }
+            for (i, name) in ["no-tt-move", "has-tt-move"].iter().enumerate() {
+                let c = s.cut_by_ttpresence[i].max(1);
+                eprintln!("fh1[{}]: {:.1}% of {} cutoffs", name,
+                    100.0 * s.first_cut_by_ttpresence[i] as f64 / c as f64,
+                    s.cut_by_ttpresence[i]);
+            }
+            let va: u64 = s.rfp_audit_var_attempts.iter().sum();
+            if va > 0 {
+                let names = ["spread<8cp", "8-24cp", ">=24cp"];
+                for i in 0..3 {
+                    let a = s.rfp_audit_var_attempts[i].max(1);
+                    eprintln!("RFP-FP[{}]: {:.1}% of {} audited",
+                        names[i], 100.0 * s.rfp_audit_var_fp[i] as f64 / a as f64,
+                        s.rfp_audit_var_attempts[i]);
+                }
+            }
+        }
         eprintln!("Move ordering:  avg cutoff pos {:.2}, avg pos² {:.1}, first-move {:.1}%",
             avg_pos, avg_sq, first_pct);
     }
