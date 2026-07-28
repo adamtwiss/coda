@@ -110,7 +110,7 @@ tunables!(
     (RFP_DEPTH, 19, 2, 20, 2.0, true),
     // Floors lifted to 0 (audit 2026-05-20): both pinned within ~10% of floor.
     (RFP_MARGIN_IMP, 21, 0, 150, 6.0, true),
-    (RFP_MARGIN_NOIMP, 42, 0, 200, 7.5, true),
+    (RFP_MARGIN_NOIMP, 40, 0, 200, 7.5, true),
     // Root-depth-aware RFP relaxation (single-set, self-adapts STC<->LTC):
     // demand MORE static-eval confidence to RFP-cut as the OVERALL search
     // depth grows past RFP_ROOT_THRESH (diminishing-returns of depth — the
@@ -125,8 +125,8 @@ tunables!(
     // or use a quadratic/deepening margin so static eval does not keep
     // cheaply pruning d12+ nodes.
     (RFP_DEEP_KNEE_10X, 47, 40, 170, 20.0, true),
-    (RFP_DEEP_LINEAR, 43, 0, 200, 10.0, true),
-    (RFP_DEEP_QUAD_10X, 39, 0, 800, 50.0, true),
+    (RFP_DEEP_LINEAR, 44, 0, 200, 10.0, true),
+    (RFP_DEEP_QUAD_10X, 30, 0, 800, 50.0, true),
     // Razoring (re-added 2026-06-11, audit T2.6). Consensus band:
     // Obsidian 352/d<=5, Berserk 214/d<=5, Clover 145/d<=2,
     // Stormphrax ~290/d<=4.
@@ -240,7 +240,7 @@ tunables!(
     (TM_SUBTREE_MULT_100, 140, 90, 200, 4.0, false),      // (base-frac) * N/100
     (TM_FORCED_MARGIN_WEAK, 170, 80, 320, 8.0, false),    // weak-forced cp margin
     (TM_FORCED_MARGIN_STRONG, 400, 200, 620, 12.0, false),// strong-forced cp margin
-    (LMR_HIST_DIV, 19357, 2000, 100000, 4900.0, true),
+    (LMR_HIST_DIV, 19421, 2000, 100000, 4900.0, true),
     // 2026-05-18 audit (outlier #2 deep-dive): capture-LMR was using a
     // step function (±1 at |capt_hist|>2000), while quiet-LMR uses
     // continuous `hist_score / LMR_HIST_DIV`. Obsidian uses continuous
@@ -249,9 +249,9 @@ tunables!(
     // of quiet — single-source capt_hist needs smaller divisor for
     // equivalent reduction magnitude). Coda's quiet div is 7736; same
     // ratio gives ~4500. Defaulting 5000 as a starting point.
-    (LMR_HIST_DIV_CAP, 2654, 1000, 20000, 1500.0, true),
-    (LMR_C_QUIET, 158, 40, 300, 13.0, true),
-    (LMR_C_CAP, 178, 80, 350, 12.5, true),
+    (LMR_HIST_DIV_CAP, 2461, 1000, 20000, 1500.0, true),
+    (LMR_C_QUIET, 163, 40, 300, 13.0, true),
+    (LMR_C_CAP, 186, 80, 350, 12.5, true),
     // 3-DOF LMR shape reform (Titan Track B + Zeus's shape-vs-shift point,
     // 2026-07-07). BASE shifts the curve's intercept (Berserk +0.23,
     // Obsidian dBase, SF +1027/1024 — never validly tested on Coda: the
@@ -269,7 +269,7 @@ tunables!(
     // Explicit cut-node LMR bump (P1.1 / #2065). Cut nodes reduce by
     // LMR_CUTNODE_BUMP (+1 more with no TT move); all-nodes keep +1. Default 2
     // is a halfway step toward SF's larger cut-node reduction; SPSA can push it.
-    (LMR_CUTNODE_BUMP_CENTI, 259, 100, 500, 40.0, true),
+    (LMR_CUTNODE_BUMP_CENTI, 255, 100, 500, 40.0, true),
     // LMR correction battery (T1.1).
     // Sub-ply centi-ply terms — need the fractional LMR accumulator to express.
     // Reseeded at HALF the converted values (full: 100/45/32/41)
@@ -278,7 +278,7 @@ tunables!(
     // double-count; ranges run to 0 so SPSA can kill dead terms.
     (LMR_WINBETA_CENTI, 32, 0, 250, 12.0, false),
     (LMR_TTALPHA_CENTI, 25, 0, 150, 8.0, true),
-    (LMR_EXPECT_MULT, 25, 0, 120, 6.0, true),
+    (LMR_EXPECT_MULT, 23, 0, 120, 6.0, true),
     // cutoff_count LMR terms (T1.2).
     // Child ply failed high >2 times under this node -> reduce late moves
     // more (+extra at non-PV all-nodes). Defaults = the source's tuned
