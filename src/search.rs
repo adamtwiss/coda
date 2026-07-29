@@ -20,12 +20,24 @@ use crate::types::*;
 /// Public because MovePicker and History share the cap for fixed-size
 /// ply-indexed arrays (pv_table, moved_piece_stack, etc.).
 ///
-/// Tried 128 to lift the iterative-deepening cap to depth 64, but the
-/// resulting pv_table grew from ~17 KB to ~67 KB per SearchInfo, spilled
-/// L1 on the hot pv-copy path, and regressed STC by ~-13 Elo (OB #664).
-/// Keeping 64 — the original crash is fixed by the ply clamp in qsearch
-/// + bounds check in MovePicker, not by raising the ceiling.
-pub const MAX_PLY: usize = 128;
+/// The iterative-deepening cap is `MAX_PLY / 2` (see `effective_max`), so
+/// this value is twice the deepest nominal depth; the other half is headroom
+/// for extensions and QS running ahead of nominal depth.
+///
+/// History: 64 (depth 32) → 128 (depth 64) on 2026-05-20 to fix the
+/// depth-cap bug (`project_max_ply_depth_cap_bug.md`). An earlier attempt at
+/// 128 regressed STC ~-13 Elo (OB #664) because `pv_table` is O(MAX_PLY²)
+/// and spilled L1 on the hot pv-copy path — but that was measured when
+/// `Move` was 4 bytes (17 KB → 67 KB). `Move` is now `u16`, halving the
+/// footprint (128 → 32.5 KB), so the cache pressure that drove #664 is
+/// materially smaller.
+///
+/// UPPER BOUND — do not exceed 199. `MATE_IN_MAX_PLY = MATE_SCORE - MAX_PLY`
+/// (tt.rs) must stay strictly above `TB_WIN = 28800`, or tablebase scores are
+/// misclassified as mates by `is_mate_score`. At 160 the mate band starts at
+/// 28840, clearing TB by 40cp; at 256 it would be 28744 and the whole TB band
+/// would read as mate. A unit test in tt.rs asserts this invariant.
+pub const MAX_PLY: usize = 160;
 const INFINITY: i32 = 30000;
 // Contempt removed 2026-04-19 (SPRT #508 H1 +2.53).
 

@@ -627,15 +627,15 @@ pub const MATE_SCORE: i32 = 29000; // distinct from Infinity = 30000
 pub const TB_WIN: i32 = 28800;
 
 /// Lowest magnitude a true mate score can take. A mate found at ply `p` is
-/// stored as `MATE_SCORE - p`, and the search caps ply at `MAX_PLY` (=128,
-/// search.rs), so the deepest mate is `MATE_SCORE - MAX_PLY` = 28872.
+/// stored as `MATE_SCORE - p`, and the search caps ply at `MAX_PLY` (=160,
+/// search.rs), so the deepest mate is `MATE_SCORE - MAX_PLY` = 28840.
 ///
 /// Mate-recognition guards MUST compare against this, NOT a hardcoded
 /// `MATE_SCORE - 100` (=28900): that bound sits ABOVE the deepest mate, so
-/// mates at ply 100..=128 (mate-in-~50..64 — reachable now that searches hit
-/// depth 50-64) fall in `[28872, 28900)` and were misclassified as ordinary
+/// mates at ply 100..=160 (mate-in-~50..80 — reachable now that searches hit
+/// depth 50-80) fall in `[28840, 28900)` and were misclassified as ordinary
 /// scores (mis-scaled, NMP/pruned, mis-reported). Stays clear of the TB band
-/// (`TB_WIN` = 28800): the gap `[28800, 28872)` is empty, so this never
+/// (`TB_WIN` = 28800): the gap `[28800, 28840)` is empty, so this never
 /// admits a TB score as a mate. (`MATE_SCORE - 100` is also why
 /// `is_decisive` exists — TB scores slip under it; that helper is unchanged.)
 pub const MATE_IN_MAX_PLY: i32 = MATE_SCORE - crate::search::MAX_PLY as i32;
@@ -646,7 +646,7 @@ pub fn is_mate_score(score: i32) -> bool {
 }
 
 /// True for any decisive score: mate OR tablebase range. The widespread
-/// `|s| < MATE_IN_MAX_PLY` (= 28872) mate guards admit TB scores (TB_WIN =
+/// `|s| < MATE_IN_MAX_PLY` (= 28840) mate guards admit TB scores (TB_WIN =
 /// 28800, stored as TB_WIN - ply, sits below the mate band) — use this where
 /// TB scores must also be excluded (SF/Stormphrax is_decisive;
 /// 2026-06-11 audit T2.3).
@@ -735,7 +735,7 @@ mod tests {
     /// The mate-recognition boundary must (a) catch the deepest possible mate
     /// (`MATE_SCORE - MAX_PLY`, mate-in-~64), and (b) never admit a TB score.
     /// Regressing to a hardcoded `MATE_SCORE - 100` reintroduces the
-    /// misclassification of mates at ply 100..=128.
+    /// misclassification of mates at ply 100..=160.
     #[test]
     fn test_mate_in_max_ply_boundary() {
         let max_ply = crate::search::MAX_PLY as i32;
