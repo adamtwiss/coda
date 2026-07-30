@@ -332,7 +332,7 @@ tunables!(
     (PROBCUT_ROOT_FADE_10X, 31, 10, 120, 10.0, true),
     (PROBCUT_ROOT_MARGIN, 69, 0, 120, 8.0, false),
     (HINDSIGHT_THRESH, 180, 50, 400, 17.5, true),
-    (UNSTABLE_THRESH, 310, 50, 500, 22.5, false),
+    (UNSTABLE_THRESH, 307, 50, 500, 22.5, false),
     (QS_DELTA_MARGIN, 340, 100, 500, 20.0, true),
     // 24 -> 5 with the T2.10 counting fix: the old counter charged
     // delta/SEE-pruned moves against the budget, so SPSA detuned the cap
@@ -357,18 +357,18 @@ tunables!(
     // (from+to+captured+side), richer than cont_corr's [piece][to]. Captures
     // "this structural CHANGE tends to be mis-evaluated."
     (CORR_W_TRANS, 79, 0, 400, 18.5, true),
-    (FH_BLEND_DEPTH_10X, 33, 0, 80, 15.0, false),
+    (FH_BLEND_DEPTH_10X, 21, 0, 80, 15.0, false),
     // Re-expose 4 hardcoded search constants (audit 2026-05-21).
     // All bench-neutral at current defaults.
     //
     // TT_DAMP_TT_WEIGHT: weight of tt_score in TT-LOWER non-PV cutoff score
     // dampening. Formula: (W*tt_score + beta) / (W+1). Old hardcoded W=3.
-    (TT_DAMP_TT_WEIGHT_10X, 30, 10, 100, 5.0, false),
+    (TT_DAMP_TT_WEIGHT_10X, 31, 10, 100, 5.0, false),
     // PROBCUT_TT_DEPTH_SLACK: TT depth must be >= current depth - SLACK for
     // ProbCut-TT-noshot to consider the entry. Old hardcoded 3.
     (PROBCUT_TT_DEPTH_SLACK, 3, 0, 10, 0.5, false),
-    (HIST_BONUS_MULT, 285, 50, 400, 17.5, true),
-    (HIST_BONUS_MAX, 1521, 500, 3000, 125.0, true),
+    (HIST_BONUS_MULT, 294, 50, 400, 17.5, true),
+    (HIST_BONUS_MAX, 1478, 500, 3000, 125.0, true),
     // Shape experiment 1 (Titan's shape_experiments_proposal_2026-04-19):
     // history bonus adopts Stockfish/cap-hist offset shape:
     //   old: min(MAX, MULT * d)
@@ -378,7 +378,7 @@ tunables!(
     // wider depth discrimination. cap-history already uses the offset
     // shape (CAP_HIST_MULT * d - CAP_HIST_BASE) — main history is the
     // only inconsistent one. Starting offset 72 mirrors SF.
-    (HIST_BONUS_OFFSET, 24, 0, 400, 25.0, false),
+    (HIST_BONUS_OFFSET, 18, 0, 400, 25.0, false),
     (CAP_HIST_MULT, 324, 50, 400, 17.5, true),
     (CAP_HIST_MAX, 1743, 500, 3000, 125.0, true),
     // Malus split (2026-06-11 move-ordering audit): 14/16 stronger engines
@@ -388,9 +388,9 @@ tunables!(
     // -bonus, so SPSA never had this axis (#1922 confirmed symmetric is
     // Coda's optimum at STC). Defaults track the live bonus values
     // (tune-#1915 era) so behavior == the tested -bonus parity.
-    (HIST_MALUS_MULT, 370, 50, 900, 40.0, true),
-    (HIST_MALUS_OFFSET, 24, 0, 400, 25.0, false),
-    (HIST_MALUS_MAX, 1326, 500, 4000, 175.0, true),
+    (HIST_MALUS_MULT, 386, 50, 900, 40.0, true),
+    (HIST_MALUS_OFFSET, 30, 0, 400, 25.0, false),
+    (HIST_MALUS_MAX, 1259, 500, 4000, 175.0, true),
     (CAP_HIST_MALUS_MULT, 300, 50, 900, 40.0, true),
     (CAP_HIST_MALUS_BASE, 42, 0, 400, 25.0, false),
     (CAP_HIST_MALUS_MAX, 1912, 500, 4000, 175.0, true),
@@ -400,10 +400,10 @@ tunables!(
     // numFailHighs multiplicative scaling (#1020 / Starzix T1 #1):
     // bonus = raw + raw * min(num_fail_highs, NFH_CAP) / NFH_DIV.
     // 0..NFH_CAP cascades produce 1.0× .. (1 + NFH_CAP/NFH_DIV)× bonus.
-    (NFH_CAP_10X, 31, 10, 60, 10.0, false),
+    (NFH_CAP_10X, 33, 10, 60, 10.0, false),
     // Was 47 (tp10→5). Now consumed as FIXED-POINT (stored/10) so SPSA's
     // sub-integer precision is preserved. Default 50 → eff 5.0 ≡ old behavior.
-    (NFH_DIV_10X, 50, 20, 120, 10.0, false),
+    (NFH_DIV_10X, 49, 20, 120, 10.0, false),
     // Sibling-count history-bonus scaling (SF 645b636d). At non-PV cutoffs,
     // amplify the best move's bonus by (quiets+caps searched)/HIST_SIBLING_DIV:
     // a move that cut off after more competition proved itself more strongly.
@@ -542,13 +542,13 @@ tunables!(
     // the value to the floor across tunes. Widened to allow 0× (full disable)
     // so SPSA can find the genuine optimum. CLAUDE.md previously claimed
     // "3× in move ordering" — stale; corrected to "1× current SPSA basin".
-    (CONT_HIST_MULT_10X, 20, 0, 80, 15.0, true),
+    (CONT_HIST_MULT_10X, 22, 0, 80, 15.0, true),
     // Pawn-history weight in quiet move ordering. Was hardcoded at 1×;
     // making tunable lets SPSA find the right pawn-structure weighting
     // relative to main/cont/etc. Default 10 = eff 1× (bench-neutral).
     // core: false — newly exposed, not yet validated Elo-positive (mini-tune
     // #1385 was flat). Keep out of --core to avoid loose-knob false gradients.
-    (PAWN_HIST_MULT_10X, 10, 0, 80, 10.0, false),
+    (PAWN_HIST_MULT_10X, 14, 0, 80, 10.0, false),
     (KNIGHT_FORK_BONUS, 8722, 0, 20000, 1000.0, false),
     // LMR endgame gate: skip LMR when popcount(occupied) <= this value.
     // +5.0 Elo H1 in SPRT #583. Fixes endgame-conversion blunders where
@@ -619,7 +619,7 @@ tunables!(
     (EVAL_SCALE_PCT, 100, 50, 200, 5.0, false),
     // Fail-low prior-countermove cont-hist bonus, % of history_bonus(depth)
     // (SF fail-low history harvesting, simple core — audit 2026-07-05 T1#2).
-    (FAIL_LOW_PREV_BONUS_PCT, 60, 0, 150, 15.0, false),
+    (FAIL_LOW_PREV_BONUS_PCT, 59, 0, 150, 15.0, false),
     // Cross-MOVE score-trend TM coefficient (×1e-4). Folds the deterioration
     // across MOVES (prev-`go` final score − current running score) into the
     // score-trend multiplier, giving more time when the position has been
