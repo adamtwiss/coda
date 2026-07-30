@@ -481,12 +481,16 @@ const PIECE_INTERACTION_MAP: [[i32; 6]; 6] = [
     [0,  1,  2,  3, -1, -1],  // Bishop attacks:  P, N, B, R, _, _
     [0,  1,  2,  3, -1, -1],  // Rook attacks:    P, N, B, R, _, _
     [0,  1,  2,  3,  4, -1],  // Queen attacks:   P, N, B, R, Q, _
-    [0,  1,  2,  3, -1, -1],  // King attacks:    P, N, B, R, _, _
+    [-1, -1, -1, -1, -1, -1], // King attacks:    NONE — king-as-attacker removed to
+                              //   match SF (SFNNv13 full_threats.h king row is all -1)
+                              //   and Hobbes 3.0. Drops the derived count 66864 -> 60144,
+                              //   byte-identical to SF's Full_Threats Dimensions.
+                              //   King-as-VICTIM was already excluded (every column above).
 ];
 
 /// Per-attacker target count (friendly + enemy combined).
 /// Pawn: 3 target types × 2 sides = 6, Knight: 5 × 2 = 10, etc.
-const PIECE_TARGET_COUNT: [i32; 6] = [6, 10, 8, 8, 10, 8];
+const PIECE_TARGET_COUNT: [i32; 6] = [6, 10, 8, 8, 10, 0];  // King=0 — king-as-attacker removed
 
 /// Number of colored pieces (white P, white N, ..., black K).
 const NUM_COLORED_PIECES: usize = 12;

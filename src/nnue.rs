@@ -3193,6 +3193,28 @@ impl NNUENet {
                 self.hidden_size, crate::threat_accum::MAX_FT_SIZE,
             ));
         }
+        // The net's threat feature count MUST match the enumerator's. They are two
+        // independent definitions of the same index space: the net supplies weight
+        // rows, `threats::num_threat_features()` decides which row each (attacker,
+        // from, victim, to) maps to. If they disagree the weights are indexed by the
+        // wrong space and eval is silently garbage — no crash, no warning, just a
+        // wrong engine. This bites whenever the feature set changes (e.g.
+        // king-as-attacker removal moves 66864 -> 60144), so mismatched nets are
+        // rejected unless LoadAnyway is set for deliberate diagnostics.
+        if self.has_threats {
+            let expected = crate::threats::num_threat_features();
+            if self.num_threat_features != expected
+                && !LOAD_ANYWAY.load(std::sync::atomic::Ordering::Relaxed)
+            {
+                return Err(format!(
+                    "threat feature-count mismatch: net has {} but this build's \
+                     enumerator produces {}. The weights would be indexed by a \
+                     different feature space and evaluate garbage. Use a net trained \
+                     against this feature set, or pass --load-anyway to override.",
+                    self.num_threat_features, expected,
+                ));
+            }
+        }
         let _ = LOAD_ANYWAY.load(std::sync::atomic::Ordering::Relaxed);
         Ok(())
     }
