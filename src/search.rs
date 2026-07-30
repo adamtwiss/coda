@@ -7719,9 +7719,6 @@ mod tests {
     /// `net.nnue`, else a `net-v*.nnue`.
     #[test]
     fn test_corrhist_fortress_no_drift() {
-        // Loading a net mutates the process-global EMIT_XRAY
-        // (NNUENet::load -> set_emit_xray), so hold the guard for the whole body.
-        let _xray = crate::threats::XRAY_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
         use crate::board::Board;
         crate::init();
@@ -7781,9 +7778,6 @@ mod tests {
     /// against future regressions.
     #[test]
     fn test_excluded_move_cleared_after_search() {
-        // Loading a net mutates the process-global EMIT_XRAY
-        // (NNUENet::load -> set_emit_xray), so hold the guard for the whole body.
-        let _xray = crate::threats::XRAY_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
         use crate::board::Board;
 

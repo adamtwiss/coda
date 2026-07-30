@@ -8,26 +8,6 @@
 /// interaction map and target counts below follow Stockfish's tables.
 /// Total features: ~66,864 (depends on piece-pair filtering).
 
-/// X-ray threat emission gate. Coda's threat enumeration emits X-ray features
-/// (a slider's threat THROUGH one blocker) that SF/Reckless do NOT. A net
-/// trained `--xray 0` never saw these features, so its inference MUST skip them
-/// (else mismatch corrupts eval). Set at net load from `xray_trained`; an env
-/// override (`CODA_NO_XRAY=1`) forces off on ANY net. Default ON →
-/// bit-identical for X-ray-trained (prod) nets.
-static EMIT_XRAY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
-
-/// Set X-ray emission from the loaded net's `xray_trained` flag (folds in the
-/// `CODA_NO_XRAY` env override). Called once per `NNUENet::load`.
-pub fn set_emit_xray(net_xray_trained: bool) {
-    let env_off = std::env::var("CODA_NO_XRAY").is_ok();
-    EMIT_XRAY.store(net_xray_trained && !env_off, std::sync::atomic::Ordering::Release);
-}
-
-/// Whether X-ray threat features should be emitted.
-#[inline(always)]
-pub fn emit_xray() -> bool {
-    EMIT_XRAY.load(std::sync::atomic::Ordering::Relaxed)
-}
 
 /// Test-only serialization guard for the process-global `EMIT_XRAY`.
 /// `cargo test` runs tests concurrently; any test that *mutates* `EMIT_XRAY`
@@ -36,17 +16,6 @@ pub fn emit_xray() -> bool {
 /// body, or the mutator's window corrupts a concurrent reader (spurious
 /// failures — see the x-ray-off test-isolation fix).
 ///
-/// **LOADING A NET IS A MUTATION.** `NNUENet::load` calls `set_emit_xray` with
-/// the net's `xray_trained` flag, so ANY test that calls `load_nnue` must hold
-/// this lock too. That was latent for as long as production nets were
-/// x-ray-trained (the store wrote `true`, matching the default, so it was a
-/// no-op). Promoting the x-ray-free v9.3 net made those stores write `false`
-/// mid-run and turned the whole suite ~50% flaky, failing in
-/// `threat_accum::fuzz_random_walk_*` with an incr-vs-scratch divergence. Acquire with
-/// `.lock().unwrap_or_else(|e| e.into_inner())` so a genuinely-failing test's
-/// poison doesn't cascade into unrelated panics.
-#[cfg(test)]
-pub(crate) static XRAY_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[cfg(feature = "profile-threats")]
 pub mod apply_stats {
@@ -801,10 +770,6 @@ pub fn enumerate_threats<F: FnMut(usize)>(
                     }
                 }
 
-                // X-ray threats: for sliders, find the second piece on each ray
-                // (the piece behind the directly attacked piece). Matches Bullet
-                // training enumeration at ebdf398.
-                // Gated for no-X-ray nets (emit_xray / set_emit_xray).
             }
         }
     }
@@ -875,42 +840,6 @@ pub fn enumerate_threats_bullet_ref<F: FnMut(usize)>(
                     }
                 }
 
-                // X-ray threats — same closest-revealed-piece logic as
-                // `enumerate_threats`, but with bf-frame semi-excl.
-                if pt == BISHOP || pt == ROOK || pt == QUEEN {
-                    let mut direct_targets = attacks & occ;
-                    while direct_targets != 0 {
-                        let blocker_sq = direct_targets.trailing_zeros();
-                        direct_targets &= direct_targets - 1;
-                        let occ_without = occ & !(1u64 << blocker_sq);
-                        let attacks_through = piece_attacks_occ(pt, color, sq, occ_without);
-                        let revealed = attacks_through & !attacks & occ_without;
-                        if revealed == 0 { continue; }
-                        let xray_sq = if sq < blocker_sq {
-                            let above = revealed & !((1u64 << (blocker_sq + 1)) - 1);
-                            if above != 0 { above.trailing_zeros() } else { 64 }
-                        } else {
-                            let below = revealed & ((1u64 << blocker_sq) - 1);
-                            if below != 0 { 63 - below.leading_zeros() } else { 64 }
-                        };
-                        if xray_sq < 64 {
-                            let xpt = mailbox[xray_sq as usize];
-                            if xpt < 6 {
-                                let xcolor = if white_bb & (1u64 << xray_sq) != 0 { WHITE } else { BLACK };
-                                let xcp = colored_piece(xcolor, xpt);
-                                let xray_bf = xray_sq ^ bf_flip;
-                                let idx = threat_index_bullet_ref(
-                                    cp, sq, sq_bf,
-                                    xcp, xray_sq, xray_bf,
-                                    mirrored, pov,
-                                );
-                                if idx >= 0 {
-                                    callback(idx as usize);
-                                }
-                            }
-                        }
-                    }
-                }
             }
         }
     }
@@ -1041,47 +970,6 @@ pub fn enumerate_threats_bullet_postfix_ref<F: FnMut(usize)>(
                     }
                 }
 
-                if pt == BISHOP || pt == ROOK || pt == QUEEN {
-                    let mut direct_targets = attacks & bf_occ;
-                    while direct_targets != 0 {
-                        let blocker_sq = direct_targets.trailing_zeros();
-                        direct_targets &= direct_targets - 1;
-                        let occ_without = bf_occ & !(1u64 << blocker_sq);
-                        let attacks_through =
-                            piece_attacks_occ(pt, pov_for_attack, sq_bf, occ_without);
-                        let revealed = attacks_through & !attacks & occ_without;
-                        if revealed == 0 { continue; }
-                        let xray_sq = if sq_bf < blocker_sq {
-                            let above = revealed & !((1u64 << (blocker_sq + 1)) - 1);
-                            if above != 0 { above.trailing_zeros() } else { 64 }
-                        } else {
-                            let below = revealed & ((1u64 << blocker_sq) - 1);
-                            if below != 0 { 63 - below.leading_zeros() } else { 64 }
-                        };
-                        if xray_sq >= 64 { continue; }
-                        let xpt = bf_mailbox[xray_sq as usize];
-                        if xpt >= 6 { continue; }
-                        let xbf_color: u8 =
-                            if (bf_colors[0] >> xray_sq) & 1 != 0 { 0 } else { 1 };
-                        let xreal_color: Color =
-                            if xbf_color == 0 { real_stm } else { 1 - real_stm };
-                        let xcp = colored_piece(xreal_color, xpt);
-                        let xray_phys = xray_sq ^ bf_flip;
-
-                        let is_pawn = pt == PAWN;
-                        let same_type = pt == xpt;
-                        let semi_excl_pair =
-                            same_type && (bf_color != xbf_color || !is_pawn);
-                        if semi_excl_pair && (sq_bf ^ phys_flip) < (xray_sq ^ phys_flip) {
-                            continue;
-                        }
-
-                        let idx = threat_index(cp, sq_phys, xcp, xray_phys, mirrored, pov);
-                        if idx >= 0 {
-                            callback(idx as usize);
-                        }
-                    }
-                }
             }
         }
     }
@@ -1218,12 +1106,6 @@ fn push_threats_for_piece(
         deltas.len() as u64 - s1_deltas_before,
     );
 
-    // 1b. X-ray threats FROM this piece, if it's a slider. For each
-    // direct target (blocker), find the next occupant on the same ray
-    // STRICTLY BEYOND the blocker. Previously recomputed full attacks
-    // with the blocker removed per-iteration (one magic lookup each).
-    // Now uses the precomputed RAY_EXTENSION table: one array read
-    // replaces the per-blocker magic lookup.
     #[cfg(feature = "profile-threats")]
     let s1b_start = crate::threats::thr_stats::rdtsc();
     #[cfg(feature = "profile-threats")]
