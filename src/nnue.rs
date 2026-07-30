@@ -2626,13 +2626,6 @@ pub struct NNUENet {
     pub threat_weights: AlignedVec<i8>,  // [num_threat_features × hidden_size] i8 weights, 64-B rows, hugepage-backed
     pub num_threat_features: usize,
     pub has_threats: bool,
-    /// Whether the net was trained WITH xray threat features. Coda inference
-    /// always emits xrays, so nets with `xray_trained=false` will produce
-    /// garbage eval (weights were learned against direct-attack signal only,
-    /// but inference multiplies them in xray contexts too). v10+ nets record
-    /// this in the header; v9 and earlier default to true (legacy assumption
-    /// since all pre-v10 threat nets were trained with --xray 1 / default).
-    pub xray_trained: bool,
     /// Number of king buckets in this net (16 for uniform/consensus).
     /// PSQ weight block is sized `num_king_buckets * 768 * hidden_size`.
     pub num_king_buckets: usize,
@@ -2738,7 +2731,6 @@ impl NNUENet {
         let mut kb_layout = KbLayout::Uniform;
         // v10+: xray_trained from training_flags byte. v9 legacy default = true
         // (all pre-v10 threat nets were --xray 1 / default at training time).
-        let mut xray_trained: bool = true;
         let hidden_size: usize;
 
         match version {
@@ -2838,14 +2830,25 @@ impl NNUENet {
                 // (all pre-v10 production nets were --xray 1 / default).
                 if version >= 10 {
                     let training_flags = read_u8(reader)?;
-                    xray_trained = training_flags & 1 != 0;
+                    if training_flags & 1 != 0 {
+                        return Err("net was trained WITH x-ray threat features, which \
+                                    Coda no longer enumerates (removed after 0.9.3 — see \
+                                    the v0.9.3 release notes). Its weights were learned \
+                                    against a feature set inference can no longer \
+                                    produce, so it would evaluate garbage. Retrain with \
+                                    --xray 0.".to_string());
+                    }
                     if training_flags & 2 != 0 {
                         return Err("net was trained with a non-uniform output-bucket \
                                     layout that Coda no longer supports; retrain with \
                                     the default uniform output buckets".to_string());
                     }
-                } else {
-                    xray_trained = true;
+                } else if has_threats {
+                    // Every pre-v10 threat net was trained with x-ray features
+                    // (--xray 1 was the default), so none can be inferred now.
+                    return Err("legacy pre-v10 threat net: all such nets were trained \
+                                WITH x-ray threat features, which Coda no longer \
+                                enumerates. Retrain with --xray 0.".to_string());
                 }
                 hidden_size = ft_size;
             }
@@ -3153,7 +3156,6 @@ impl NNUENet {
             threat_weights,
             num_threat_features,
             has_threats,
-            xray_trained,
             num_king_buckets,
             kb_layout,
             king_bucket: king_bucket_tbl,
@@ -3191,13 +3193,7 @@ impl NNUENet {
                 self.hidden_size, crate::threat_accum::MAX_FT_SIZE,
             ));
         }
-        // X-ray emission is GATED on the net's xray_trained flag
-        // (threats::emit_xray, set here). A net trained with --xray 0 thus has
-        // its inference skip X-ray to match training — no mismatch, and the
-        // X-ray generation cost is reclaimed. (LOAD_ANYWAY retained as a CLI/UCI
-        // escape but no longer needed for no-xray nets.)
         let _ = LOAD_ANYWAY.load(std::sync::atomic::Ordering::Relaxed);
-        crate::threats::set_emit_xray(self.xray_trained);
         Ok(())
     }
 
@@ -5951,12 +5947,6 @@ mod tests {
 
         // EMIT_XRAY is process-global and NNUENet::load mutates it. This
         // test both loads a net (mutator) and compares evals in two halves
-        // that require a stable flag (victim) — hold XRAY_TEST_LOCK for the
-        // whole test like every other net-loading/flag-sensitive test.
-        // (Flakiness found by Hercules 2026-07-27: 3/3 full-suite failures,
-        // 5/5 in isolation, different FEN each run — a concurrent net load
-        // flipped the flag between the two halves of a mirror comparison.)
-        let _xray = crate::threats::XRAY_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
         crate::init();
 
@@ -5990,10 +5980,6 @@ mod tests {
                 // future work if x-ray nets return to prod. Select no-x-ray
                 // nets (the production family); reject x-ray-trained ones.
                 Ok(n) => {
-                    if crate::threats::emit_xray() {
-                        eprintln!("eval-mirror oracle: candidate {} is x-ray-trained (not covered by the exact model), trying next", p);
-                        continue;
-                    }
                     loaded = Some((n, p.clone()));
                     break;
                 }
@@ -7455,7 +7441,6 @@ mod tests {
     fn measure_threat_weight_norms() {
         // Net loading mutates the process-global EMIT_XRAY — serialize with
         // every other net-loading test (see fuzz_eval_mirror_symmetry).
-        let _xray = crate::threats::XRAY_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let net_path = "nets/net-v9-768th16x32-w15-e800s800-xray.nnue";
         let net = match NNUENet::load(net_path) {
             Ok(n) => n,
@@ -7544,7 +7529,6 @@ mod tests {
     fn test_simd_scalar_consistency() {
         // Net loading mutates the process-global EMIT_XRAY — serialize with
         // every other net-loading test (see fuzz_eval_mirror_symmetry).
-        let _xray = crate::threats::XRAY_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         use crate::board::Board;
 
         crate::init();
@@ -7859,7 +7843,6 @@ mod tests {
     fn test_eval_color_symmetry() {
         // Net loading mutates the process-global EMIT_XRAY — serialize with
         // every other net-loading test (see fuzz_eval_mirror_symmetry).
-        let _xray = crate::threats::XRAY_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         use crate::board::Board;
         use crate::threat_accum::ThreatStack;
 
@@ -7959,7 +7942,6 @@ mod tests {
     fn test_eval_piece_value_monotonicity() {
         // Net loading mutates the process-global EMIT_XRAY — serialize with
         // every other net-loading test (see fuzz_eval_mirror_symmetry).
-        let _xray = crate::threats::XRAY_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         use crate::board::Board;
         use crate::threat_accum::ThreatStack;
 
@@ -8050,7 +8032,6 @@ mod tests {
     fn fuzz_psq_accumulator() {
         // Net loading mutates the process-global EMIT_XRAY — serialize with
         // every other net-loading test (see fuzz_eval_mirror_symmetry).
-        let _xray = crate::threats::XRAY_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         use crate::board::Board;
         use crate::movegen::generate_legal_moves;
         use crate::search::build_dirty_piece;

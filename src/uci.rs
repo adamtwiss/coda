@@ -1711,7 +1711,7 @@ fn parse_option(tokens: &[&str], info: &mut SearchInfo, num_threads: &mut usize,
         }
         "LoadAnyway" => {
             // Diagnostic override — load nets even on training/inference
-            // mismatch (e.g. xray-disabled-trained net). MUST be set
+            // mismatch. MUST be set
             // BEFORE the NNUEFile setoption that triggers load. Default
             // false (refuse to load on mismatch — protects against silent
             // corruption in SPRT / OB / Lichess where log noise is
@@ -1911,9 +1911,6 @@ mod tests {
     /// forfeited-ponder class the fallback exists to cut).
     #[test]
     fn tt_ponder_hint_recovers_after_real_search() {
-        // Loading a net mutates the process-global EMIT_XRAY
-        // (NNUENet::load -> set_emit_xray), so hold the guard for the whole body.
-        let _xray = crate::threats::XRAY_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
         init();
         let net_path = match crate::search::test_net_path() {

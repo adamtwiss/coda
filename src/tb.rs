@@ -600,9 +600,6 @@ mod tests {
     /// move that doesn't apply to the position after `e4f4`.
     #[test]
     fn search_pv_legal_oezkrut_move79() {
-        // Loading a net mutates the process-global EMIT_XRAY
-        // (NNUENet::load -> set_emit_xray), so hold the guard for the whole body.
-        let _xray = crate::threats::XRAY_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
         crate::init();
         let tb = match make_tb() {
