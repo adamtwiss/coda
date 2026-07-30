@@ -24,7 +24,21 @@ pub fn refresh_always() -> bool {
     *V.get_or_init(|| std::env::var("CODA_THREAT_REFRESH_ALWAYS").is_ok())
 }
 
-const MAX_PLY: usize = 256;
+/// Pre-allocated depth of the threat accumulator stack.
+///
+/// Derived from the search's own ply cap rather than hardcoded: `search::MAX_PLY`
+/// bounds the search stack, so entries beyond it were unreachable. The old 256
+/// was 96 entries of pure waste — and not cheap waste: `ThreatEntry` is ~4.6 KB
+/// (2 x FT i16 accumulators + a 128-entry DeltaVec), so the stack was ~1158 KB,
+/// which EXCEEDS the ~1 MB per-process share of a 16 MB L3 at conc=16. Every
+/// make/unmake writes into this structure, so it competes directly with the NNUE
+/// weight rows for the same cache — and weight eviction is the measured cause of
+/// our contended-NPS deficit (misses/Kinstr 0.100 -> 2.525 from conc1 to conc16).
+///
+/// `+8` is slack for QS chains that recurse past the nominal cap. Under-sizing is
+/// safe regardless: `push()` grows the Vec on demand, so exceeding this costs one
+/// reallocation, never correctness.
+const MAX_PLY: usize = crate::search::MAX_PLY + 8;
 
 /// Maximum FT (threat-accumulator) hidden size we support inline.
 /// Production v9 uses 768; FT=1024 architecture probes need 1024.
