@@ -7,7 +7,7 @@ wordmark is near-black in the light set and off-white in the dark set.
 | File | Size | Use |
 |---|---|---|
 | `coda-logo-wide.png` / `coda-logo-wide-light.png` | 1600×460 | **Horizontal lockup** — README banners, rating lists (CCRL), site headers |
-| `coda-logo.png` / `coda-logo-light.png` | 1254×1254 | **Square lockup** — social cards, splash images |
+| `coda-logo.png` / `coda-logo-light.png` | 1000×1000 | **Square lockup** — social cards, splash images |
 | `coda-mark.png` / `coda-mark-light.png` | 236×262 | **Mark only** (pawn + ring, no wordmark) — avatars, favicons |
 | `coda-mark-256.png` / `coda-mark-light-256.png` | 256×256 | Mark, pre-scaled square |
 
