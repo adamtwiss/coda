@@ -45,6 +45,7 @@ nets/
 # Old test artifacts
 *.log
 coda-*
+!assets/coda-*.png
 debug_*.go
 run_*.sh
 scripts/__pycache__/

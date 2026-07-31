@@ -1,6 +1,14 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/coda-logo-wide.png">
+    <source media="(prefers-color-scheme: light)" srcset="assets/coda-logo-wide-light.png">
+    <img alt="Coda — Chess Optimised, Developed Agentically" src="assets/coda-logo-wide-light.png" width="620">
+  </picture>
+</p>
+
 # Coda
 
-**Chess Optimised, Developed Agentically** — a UCI chess engine written in Rust.
+A UCI chess engine written in Rust.
 
 Coda is a strong UCI chess engine, developed entirely through human-AI collaboration: every line of code was written by Claude Code, with direction, testing and review by a human. It started in late January 2026 as [GoChess](https://github.com/adamtwiss/gochess) (built the same way) before being rewritten in Rust in late March. I had written a few hobby engines in the past, and I wanted to see how far I could get with a new engine with the help of Claude.
 
