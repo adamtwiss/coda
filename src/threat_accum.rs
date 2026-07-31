@@ -320,6 +320,8 @@ impl ThreatStack {
             let entry = &self.stack[i + 1];
             if entry.mv != NO_MOVE {
                 if entry.delta.overflowed() {
+                    #[cfg(feature = "profile-threats")]
+                    crate::threats::apply_stats::record_refresh_cause(2);
                     return None;
                 }
                 if entry.moved_pt == KING && entry.moved_color == pov {
@@ -327,6 +329,8 @@ impl ThreatStack {
                     let to = move_to(entry.mv);
                     if (from % 8 >= 4) != (to % 8 >= 4) {
                         // This perspective's king crossed e-file — mirroring changed.
+                        #[cfg(feature = "profile-threats")]
+                        crate::threats::apply_stats::record_refresh_cause(0);
                         return None;
                     }
                 }
@@ -336,6 +340,8 @@ impl ThreatStack {
                 return Some(i);
             }
         }
+        #[cfg(feature = "profile-threats")]
+        crate::threats::apply_stats::record_refresh_cause(1);
         None
     }
 

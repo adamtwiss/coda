@@ -72,6 +72,14 @@ pub mod apply_stats {
         GEN_CONSUMED.fetch_add(1, Ordering::Relaxed);
     }
 
+    // Refresh-cause split (walkback/Finny scoping, 2026-07-31):
+    // 0 = king mirror crossing, 1 = no accurate ancestor, 2 = delta overflow.
+    static REFRESH_CAUSE: [AtomicU64; 3] = [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)];
+    #[inline(always)]
+    pub fn record_refresh_cause(c: usize) {
+        REFRESH_CAUSE[c.min(2)].fetch_add(1, Ordering::Relaxed);
+    }
+
     // Replay-gap distribution: plies replayed per materialization (index -
     // ancestor). double_inc_update (SF cross-ply cancellation) can ONLY help
     // when gap >= 2; gap == 1 has zero cross-ply opportunity. Bounds the lever.
@@ -185,6 +193,14 @@ pub mod apply_stats {
             "  GENERATED (caching-immune): {} moves, {} deltas, avg {:.2} deltas/move (vs deltas/apply-call above which lazy-replay inflates)",
             gm, gd, gd as f64 / gm.max(1) as f64
         );
+        {
+            let mc = REFRESH_CAUSE[0].load(Ordering::Relaxed);
+            let na = REFRESH_CAUSE[1].load(Ordering::Relaxed);
+            let ov = REFRESH_CAUSE[2].load(Ordering::Relaxed);
+            let tot = (mc + na + ov).max(1);
+            eprintln!("  REFRESH CAUSES (can_update=None): mirror-cross {} ({:.1}%), no-ancestor {} ({:.1}%), overflow {} ({:.1}%)",
+                mc, 100.0*mc as f64/tot as f64, na, 100.0*na as f64/tot as f64, ov, 100.0*ov as f64/tot as f64);
+        }
         let gc = GEN_CONSUMED.load(Ordering::Relaxed);
         eprintln!(
             "  CONSUMED (unique first-replay): {} of {} generated = {:.1}% (remainder = {:.1}% of delta-generation work a lazy scheme could skip)",
@@ -1284,6 +1300,12 @@ fn push_threats_for_piece(
     let mut s2b_sq_emits = 0u64;
     #[cfg(feature = "profile-threats")]
     let mut s2b_no_w = 0u64;
+    // Repair 2026-07-31: this local's feeding code went with the splat/x-ray
+    // cleanup but record_s2b_reasons still takes it; keep it declared (always
+    // 0) so the profile-threats feature compiles. Stale-diagnostic tidy-up is
+    // a separate change.
+    #[cfg(feature = "profile-threats")]
+    let s2b_w_emits = 0u64;
 
 
     #[cfg(feature = "profile-threats")]
