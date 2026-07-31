@@ -318,6 +318,7 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>) {
                 println!("option name SyzygyPath type string default <empty>");
                 println!("option name TBHash type spin default 16 min 0 max 1024");
                 println!("option name SyzygyProbeDepth type spin default 4 min 1 max 100");
+                println!("option name ScoreScale type spin default 43 min 25 max 200");
                 // Internal/dev options — advertised only in tuning builds
                 // (`make openbench` / `--features tune`) so they don't clutter GUI
                 // option lists in normal/release builds. The `setoption` handlers
@@ -568,13 +569,11 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>) {
                                 }
                             }
                             if tb_valid {
-                                let score_str = if wdl > 0 {
-                                    format!("score cp {}", crate::tt::TB_WIN)
-                                } else if wdl < 0 {
-                                    format!("score cp -{}", crate::tt::TB_WIN)
-                                } else {
-                                    "score cp 0".to_string()
-                                };
+                                let score_str = crate::tt::format_uci_score(
+                                    if wdl > 0 { crate::tt::TB_WIN }
+                                    else if wdl < 0 { -crate::tt::TB_WIN }
+                                    else { 0 },
+                                );
                                 let pv_str = tb_pv.join(" ");
                                 let depth = tb_pv.len().max(1);
                                 println!("info depth {} seldepth {} {} tbhits 1 pv {}",
@@ -1047,13 +1046,11 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>) {
                                         stop_flag = info.stop.clone();
                                     }
                                 }
-                                let score_str = if wdl > 0 {
-                                    format!("score cp {}", crate::tt::TB_WIN)
-                                } else if wdl < 0 {
-                                    format!("score cp -{}", crate::tt::TB_WIN)
-                                } else {
-                                    "score cp 0".to_string()
-                                };
+                                let score_str = crate::tt::format_uci_score(
+                                    if wdl > 0 { crate::tt::TB_WIN }
+                                    else if wdl < 0 { -crate::tt::TB_WIN }
+                                    else { 0 },
+                                );
                                 println!("info depth 1 seldepth 1 {} tbhits 1 pv {}", score_str, tb_move_str);
                                 println!("bestmove {}", tb_move_str);
                                 continue;
@@ -1682,6 +1679,18 @@ fn parse_option(tokens: &[&str], info: &mut SearchInfo, num_threads: &mut usize,
         "MoveOverhead" => {
             if let Ok(ms) = value.parse::<u64>() {
                 info.move_overhead = ms.min(5000);
+            }
+        }
+        // Display-only scale for reported `score cp` (100 = unscaled). Does NOT
+        // affect search — see tt::format_uci_score. Matters for tournaments whose
+        // rules key off the printed score (one-sided resign adjudication,
+        // "opening too lopsided" rejection), because Coda's cp are denominated
+        // on LC0's scale rather than the field's.
+        "ScoreScale" => {
+            if let Ok(v) = value.parse::<i32>() {
+                let v = v.clamp(25, 200);
+                crate::tt::REPORT_SCALE_PCT.store(v, std::sync::atomic::Ordering::Relaxed);
+                println!("info string ScoreScale = {}", v);
             }
         }
         "SyzygyProbeDepth" => {
