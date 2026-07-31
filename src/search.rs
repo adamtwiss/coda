@@ -1456,7 +1456,19 @@ impl SearchInfo {
                     return true;
                 }
                 Err(e) => {
-                    eprintln!("WARNING: embedded NNUE corrupt: {}", e);
+                    // FATAL, not a warning: an embedded-net build whose net
+                    // fails to load (corruption OR the feature-count guard,
+                    // e.g. a 66864-feature net embedded into a 60144-feature
+                    // build) is a misbuild. Falling through to disk discovery
+                    // is environment-dependent roulette: it can pick up the
+                    // same mismatched net (refused -> netless panic mid-run)
+                    // or an unrelated stale net.nnue and "bench entirely
+                    // normally" on wrong weights — the -305-Elo class the
+                    // handoff doc warns bench cannot detect. Found by the
+                    // Zeus session running exactly that path, 2026-07-31.
+                    eprintln!("FATAL: embedded NNUE failed to load: {}", e);
+                    eprintln!("This binary was built with an incompatible or corrupt embedded net; rebuild with a matching CODA_EVALFILE.");
+                    std::process::exit(1);
                 }
             }
         }
