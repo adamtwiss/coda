@@ -476,6 +476,16 @@ fn x86_simd_tier() -> u8 {
     })
 }
 
+
+/// TEMP measurement toggle (env CODA_ENUM_SCALAR, read once): force the
+/// scalar enumeration paths so the SIMD enumerator can be A/B'd within one
+/// binary (same-binary paired protocol; cross-binary NPS is not trustworthy).
+#[inline(always)]
+fn enum_simd_off() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("CODA_ENUM_SCALAR").is_ok())
+}
+
 /// Piece interaction map: which attacker×victim pairs are tracked.
 /// Rows = attacker piece type (P/N/B/R/Q/K), columns = victim piece type.
 /// -1 = excluded (not tracked). Non-negative values index into target buckets.
@@ -824,7 +834,7 @@ fn emit_direct_indices<F: FnMut(usize)>(
     if batch.len == 0 {
         return;
     }
-    if batch.len < 4 {
+    if batch.len < 4 || enum_simd_off() {
         emit_direct_indices_scalar(batch, attacker_cp, from, mirrored, pov, callback);
         return;
     }
@@ -1491,6 +1501,10 @@ fn push_direct_deltas(
     add: bool,
 ) {
     if batch.len == 0 {
+        return;
+    }
+    if enum_simd_off() {
+        push_direct_deltas_scalar(deltas, batch, attacker_cp, from, add);
         return;
     }
     #[cfg(all(
