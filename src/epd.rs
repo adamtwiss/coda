@@ -16,6 +16,37 @@ pub struct EpdPosition {
     pub id: String,
 }
 
+/// Resolve the NNUE net for an EPD run.
+///
+/// Mirrors every other subcommand (`bench`, `datagen`, `eval-fens`): an explicit
+/// `-n` wins and is fatal if it fails to load, otherwise fall back to the shared
+/// `auto_discover_nnue` (embedded net > ./net.nnue > net.txt discovery).
+///
+/// `epd` used to skip the fallback entirely, so on a `make` build — which HAS a
+/// net embedded — `coda epd file.epd` ran with no net at all and panicked deep
+/// inside the search ("no NNUE net loaded", search.rs) on the first evaluate.
+/// It was the only subcommand missing the fallback.
+///
+/// Returns Err with a ready-to-print message instead of exiting, so the failure
+/// paths are testable.
+pub(crate) fn resolve_net(info: &mut SearchInfo, nnue_path: Option<&str>) -> Result<(), String> {
+    if let Some(path) = nnue_path {
+        // An EXPLICIT override that fails must be fatal: silently falling back
+        // to the embedded net produces plausible-looking but wrong suite results.
+        return info
+            .load_nnue(path)
+            .map_err(|e| format!("failed to load NNUE '{}': {}", path, e));
+    }
+    if !info.auto_discover_nnue() {
+        return Err(
+            "no NNUE net found (looked for an embedded net, ./net.nnue, and net.txt \
+             discovery). Build with `make` to embed one, or pass -n <path>."
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
 /// Parse an EPD file into positions.
 pub fn parse_epd(path: &str) -> Vec<EpdPosition> {
     let content = fs::read_to_string(path).expect("Failed to read EPD file");
@@ -190,13 +221,9 @@ pub fn run_epd(path: &str, time_per_pos: u64, max_positions: usize, nnue_path: O
     println!();
 
     let mut info = SearchInfo::new(64);
-    if let Some(path) = nnue_path {
-        if let Err(e) = info.load_nnue(path) {
-            // Explicit override failing is fatal — silently falling back to the
-            // embedded net produces plausible-looking but wrong suite results.
-            eprintln!("FATAL: failed to load NNUE '{}': {}", path, e);
-            std::process::exit(2);
-        }
+    if let Err(e) = resolve_net(&mut info, nnue_path) {
+        eprintln!("FATAL: {}", e);
+        std::process::exit(2);
     }
     let mut passed = 0;
     let mut failed = 0;
@@ -277,6 +304,36 @@ fn reset_epd_position_state(info: &mut SearchInfo) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Regression guard for the bug where `coda epd` skipped auto-discovery.
+    ///
+    /// It was the only subcommand that did not fall back to the shared
+    /// `auto_discover_nnue`, so on a `make` build (which embeds a net) it ran
+    /// with NO net and panicked inside the search on the first evaluate rather
+    /// than reporting anything useful. The contract this locks down: resolution
+    /// either loads a net or returns a clean Err — it never leaves `info`
+    /// netless while claiming success, and it never panics.
+    #[test]
+    fn epd_net_resolution_never_leaves_info_netless_on_ok() {
+        // Explicit path that cannot load -> clean Err, not a panic.
+        let mut info = SearchInfo::new(1);
+        let err = resolve_net(&mut info, Some("/nonexistent/definitely-not-a.nnue"));
+        assert!(err.is_err(), "a bad explicit -n must be an error");
+        assert!(info.nnue_net.is_none(), "failed load must not leave a net behind");
+
+        // No explicit path -> MUST attempt auto-discovery. Whether a net is
+        // found depends on the environment, so assert the invariant rather than
+        // the outcome: Ok implies a net really is loaded (the old code could
+        // reach the search with none), and Err carries a message.
+        let mut info2 = SearchInfo::new(1);
+        match resolve_net(&mut info2, None) {
+            Ok(()) => assert!(
+                info2.nnue_net.is_some(),
+                "resolve_net returned Ok without actually loading a net"
+            ),
+            Err(msg) => assert!(!msg.is_empty(), "Err must explain what to do"),
+        }
+    }
 
     #[test]
     fn epd_position_reset_clears_persistent_histories_and_tt() {
