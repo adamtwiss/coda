@@ -172,7 +172,7 @@ enum Commands {
         max: usize,
     },
     /// Inspect binpack training data (ply distribution, score stats)
-    /// Dump binpack positions verbatim as TSV: ply, score, fen — one row per
+    /// Dump binpack positions verbatim as TSV: ply, score, move (UCI), fen — one row per
     /// stored position, in file order, with NO filtering whatsoever.
     ///
     /// Exists because every other binpack tool here is blind to skip-mark
@@ -192,6 +192,27 @@ enum Commands {
         /// Max positions to read (0 = all)
         #[arg(long, default_value_t = 0)]
         count: usize,
+    },
+    /// Split a binpack into N parts at BLOCK boundaries, for sharding work
+    /// across machines.
+    ///
+    /// The format is `File = Block*`, `Block = "BINP" + u32le(size) + data`, so
+    /// every block boundary is a valid split point and every part is itself a
+    /// valid binpack. Merging is plain concatenation (`cat a b > c`) — no tool
+    /// needed — because a concatenation of Blocks is still a File.
+    ///
+    /// Splitting at an arbitrary BYTE offset instead corrupts the tail part and
+    /// makes readers fault partway through, which is why this walks headers.
+    SplitBinpack {
+        /// Input binpack file
+        #[arg(short, long)]
+        input: String,
+        /// Output prefix; parts are written as <prefix>.000, <prefix>.001, ...
+        #[arg(short, long)]
+        output: String,
+        /// Number of parts
+        #[arg(long, default_value_t = 2)]
+        parts: usize,
     },
     InspectBinpack {
         /// Input binpack file
@@ -946,6 +967,10 @@ fn main() {
 
         Some(Commands::DumpBinpack { input, output, count }) => {
             run_dump_binpack(&input, &output, count);
+        }
+
+        Some(Commands::SplitBinpack { input, output, parts }) => {
+            run_split_binpack(&input, &output, parts);
         }
 
         Some(Commands::InspectBinpack { input, count }) => {
@@ -2464,7 +2489,7 @@ fn run_binpack_stats(input: &str) {
     }
 }
 
-/// Verbatim binpack -> TSV dump (ply, score, fen). No filtering, no sampling,
+/// Verbatim binpack -> TSV dump (ply, score, move, fen). No filtering, sampling
 /// no reordering: row N of the output is position N of the file.
 ///
 /// Deliberately does NOT reuse `run_sample_positions`' loop, which drops
@@ -2491,17 +2516,98 @@ fn run_dump_binpack(input: &str, output: &str, count: usize) {
         ))
     };
 
+    // fen is written LAST so downstream splits can bound the field count; the
+    // move is included because the Stockfish-side filter rules (capture /
+    // promotion) key on the stored move, not just the position.
     let mut n = 0usize;
     while reader.has_next() {
         let entry = reader.next();
         let fen = entry.pos.fen().unwrap_or_default();
-        if writeln!(out, "{}\t{}\t{}", entry.ply, entry.score, fen).is_err() {
+        if writeln!(out, "{}\t{}\t{}\t{}", entry.ply, entry.score, entry.mv.as_uci(), fen).is_err() {
             break; // downstream closed (e.g. `| head`)
         }
         n += 1;
         if count > 0 && n >= count { break; }
     }
     let _ = out.flush();
+}
+
+/// Split a binpack at block boundaries into `parts` roughly equal pieces.
+///
+/// Walks the `"BINP" + u32le(size)` headers to collect every legal cut point,
+/// then picks the ones closest to even byte splits. Each output is a standalone
+/// valid binpack; `cat` them back together to recover the original exactly.
+fn run_split_binpack(input: &str, output: &str, parts: usize) {
+    use std::io::{Read, Seek, SeekFrom, Write};
+
+    if parts < 1 {
+        eprintln!("--parts must be >= 1");
+        std::process::exit(2);
+    }
+    let mut f = std::fs::File::open(input)
+        .unwrap_or_else(|_| panic!("Failed to open {}", input));
+    let total = f.metadata().expect("stat failed").len();
+
+    // Collect block start offsets by walking headers.
+    let mut starts: Vec<u64> = Vec::new();
+    let mut off: u64 = 0;
+    let mut hdr = [0u8; 8];
+    loop {
+        if off >= total { break; }
+        f.seek(SeekFrom::Start(off)).expect("seek failed");
+        if f.read_exact(&mut hdr).is_err() { break; }
+        if &hdr[0..4] != b"BINP" {
+            eprintln!("WARNING: no BINP magic at offset {} — stopping scan (file truncated or not a binpack)", off);
+            break;
+        }
+        let size = u32::from_le_bytes([hdr[4], hdr[5], hdr[6], hdr[7]]) as u64;
+        starts.push(off);
+        off += 8 + size;
+    }
+    if starts.is_empty() {
+        eprintln!("No BINP blocks found in {}", input);
+        std::process::exit(2);
+    }
+    let scanned_end = off.min(total);
+    println!("{} blocks, {} bytes scanned (file {} bytes)", starts.len(), scanned_end, total);
+    if scanned_end < total {
+        println!("NOTE: {} trailing bytes are not part of a complete block and will be dropped",
+                 total - scanned_end);
+    }
+
+    let n = parts.min(starts.len());
+    if n < parts {
+        println!("NOTE: only {} blocks available, producing {} parts", starts.len(), n);
+    }
+    // Choose cut indices closest to even byte boundaries.
+    let mut cuts: Vec<usize> = vec![0];
+    for i in 1..n {
+        let target = scanned_end * (i as u64) / (n as u64);
+        let idx = starts.partition_point(|&o| o < target).max(1).min(starts.len() - 1);
+        if idx > *cuts.last().unwrap() { cuts.push(idx); }
+    }
+    cuts.push(starts.len());
+
+    for i in 0..cuts.len() - 1 {
+        let begin = starts[cuts[i]];
+        let end = if cuts[i + 1] < starts.len() { starts[cuts[i + 1]] } else { scanned_end };
+        let path = format!("{}.{:03}", output, i);
+        let mut out = std::io::BufWriter::new(
+            std::fs::File::create(&path).unwrap_or_else(|_| panic!("Failed to create {}", path)));
+        f.seek(SeekFrom::Start(begin)).expect("seek failed");
+        let mut remaining = end - begin;
+        let mut buf = vec![0u8; 8 << 20];
+        while remaining > 0 {
+            let want = remaining.min(buf.len() as u64) as usize;
+            f.read_exact(&mut buf[..want]).expect("read failed");
+            out.write_all(&buf[..want]).expect("write failed");
+            remaining -= want as u64;
+        }
+        out.flush().expect("flush failed");
+        println!("  {} : bytes {}..{} ({} blocks, {:.2} GB)",
+                 path, begin, end, cuts[i + 1] - cuts[i],
+                 (end - begin) as f64 / 1073741824.0);
+    }
 }
 
 fn run_sample_positions(input: &str, output: &str, n: usize, sample_rate: f64, scores: bool) {
