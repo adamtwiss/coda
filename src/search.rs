@@ -648,7 +648,11 @@ tunables!(
     // contradict "lopsided" — fall through to the big net.
     (DUALNET_GUARD, 150, 50, 400, 15.0, true),
     // DUALNET_SCALE_PCT: per-net scale for the small net's output.
-    (DUALNET_SCALE_PCT, 90, 80, 115, 2.0, true),
+    // Range extended + default corrected 2026-08-02: the IN-DOMAIN slope
+    // fit (prod 0.68 vs s800 0.97 against the LC0 oracle) puts the right
+    // scale near 70 — the original [80,115] range, designed from GLOBAL
+    // slopes, excluded the optimum (range-inheritance lesson, live).
+    (DUALNET_SCALE_PCT, 70, 55, 110, 2.0, true),
 );
 
 // Demoted loose knobs (2026-05-22 cross-tune analysis): SPSA drift dominated
