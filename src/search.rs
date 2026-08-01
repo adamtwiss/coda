@@ -1305,6 +1305,10 @@ pub struct SearchInfo {
     /// v5 768pw) for material-lopsided positions. Loaded via env
     /// CODA_SMALL_NET=<path>; absent => single-net behavior, bit-identical.
     pub small_net: Option<std::sync::Arc<crate::nnue::NNUENet>>,
+    /// Persistent incremental accumulator stack for the small net (its own
+    /// hidden width). Receives the same push/pop stream as `nnue_acc` via
+    /// acc_push/acc_pop; materializes lazily only at dispatched evals.
+    pub small_acc: Option<crate::nnue::NNUEAccumulator>,
     /// True when the LAST SearchInfo::eval call answered from the small
     /// net — gates TT static-eval writeback (TT eval slots are
     /// big-net-only; small answers store the -INFINITY sentinel).
@@ -1413,6 +1417,7 @@ impl SearchInfo {
             tb_probe_depth: 4,
             rfp_audit_active: false,
             small_net: None,
+            small_acc: None,
             last_eval_small: false,
         }
     }
@@ -1434,6 +1439,19 @@ impl SearchInfo {
     }
 
     /// Load an NNUE network.
+    /// Push a dirty-piece record to every live accumulator stack.
+    #[inline(always)]
+    pub fn acc_push(&mut self, dirty: crate::nnue::DirtyPiece) {
+        if let Some(a) = &mut self.nnue_acc { a.push(dirty); }
+        if let Some(a) = &mut self.small_acc { a.push(dirty); }
+    }
+    /// Pop the top record from every live accumulator stack.
+    #[inline(always)]
+    pub fn acc_pop(&mut self) {
+        if let Some(a) = &mut self.nnue_acc { a.pop(); }
+        if let Some(a) = &mut self.small_acc { a.pop(); }
+    }
+
     /// Dual-net v0: load the optional small net from CODA_SMALL_NET.
     /// Called after the big net loads (any path). No small net env => noop.
     fn maybe_load_small_net(&mut self) {
@@ -1445,7 +1463,8 @@ impl SearchInfo {
                         eprintln!("WARNING: CODA_SMALL_NET has threat inputs — dual-net v0 expects a threat-free small net; ignoring");
                         return;
                     }
-                    eprintln!("info string Dual-net v0: small net loaded from {} (hidden {})", p, n.hidden_size);
+                    eprintln!("info string Dual-net: small net loaded from {} (hidden {})", p, n.hidden_size);
+                    self.small_acc = Some(crate::nnue::NNUEAccumulator::new(n.hidden_size));
                     self.small_net = Some(std::sync::Arc::new(n));
                 }
                 Err(e) => eprintln!("WARNING: CODA_SMALL_NET failed to load: {}", e),
@@ -1753,6 +1772,41 @@ impl SearchInfo {
     /// Evaluate using NNUE. A net is required to run — shipped/bench builds
     /// always embed one, so the no-net branch below is never hit in practice.
     fn eval(&mut self, board: &Board) -> i32 {
+        // SF-style dual-net approach: the idea of a second, cheap net for
+        // material-lopsided positions with a confirmation fallback is
+        // credited to Stockfish. The implementation here is Coda's own:
+        // dispatch on a signed material proxy in our SEE units, a
+        // v5-family (768pw, threat-free) small net, our guard band and
+        // per-net scale as locally tuned knobs.
+        // A qualifying node answers from the small net and skips the
+        // threat pipeline + big forward entirely (that is the perf win).
+        // Guard trips fall through to the big path.
+        // CODA_DUALNET_VERIFY=1: do not return early — run the big path too
+        // and record the disagreement (diagnostic; big answer stands).
+        let mut small_answer: Option<i32> = None;
+        if self.small_net.is_some() {
+            let proxy = material_proxy(board);
+            if proxy.abs() >= dualnet_thresh() {
+                self.stats.dualnet_dispatched += 1;
+                let small = self.small_net.clone().unwrap();
+                let sraw = {
+                    let sacc = self.small_acc.as_mut().expect("small_acc exists with small_net");
+                    evaluate_nnue(board, &small, sacc, &self.threat_stack)
+                };
+                let sscaled = (sraw * dualnet_scale_pct()) / 100;
+                let sfinal = sscaled * (tp(&MAT_SCALE_BASE) + non_pawn_material(board)) / 32 / 1024;
+                if sfinal.abs() >= dualnet_guard() {
+                    if !dualnet_verify() {
+                        self.last_eval_small = true;
+                        return sfinal;
+                    }
+                    small_answer = Some(sfinal);
+                } else {
+                    self.stats.dualnet_guard_trips += 1;
+                }
+            }
+        }
+
         // Ensure threat accumulator is computed before eval
         if self.threat_stack.active {
             if let Some(ref net) = self.nnue_net {
@@ -1885,13 +1939,7 @@ impl SearchInfo {
         // shouldn't get dampened toward zero; pawns retain decisive value at
         // low non-pawn material counts.
         // N=422, B=422, R=642, Q=1015
-        let material = {
-            let knights = popcount(board.pieces[KNIGHT as usize]) as i32 * 422;
-            let bishops = popcount(board.pieces[BISHOP as usize]) as i32 * 422;
-            let rooks = popcount(board.pieces[ROOK as usize]) as i32 * 642;
-            let queens = popcount(board.pieces[QUEEN as usize]) as i32 * 1015;
-            knights + bishops + rooks + queens
-        };
+        let material = non_pawn_material(board);
         // `eval()` now returns the halfmove-INDEPENDENT score (material
         // scaling only). 50-move scaling is applied at every consumption
         // site (via `apply_halfmove_scale`) using the *current* halfmove.
@@ -1932,34 +1980,12 @@ impl SearchInfo {
                 self.stats.dualnet_neareq[bucket] += 1;
             }
 
-            // Dual-net v0 dispatch (prototype): when a small net is loaded
-            // and the position is material-lopsided, answer from the small
-            // net unless its own (scaled) answer lands inside the guard
-            // band — near-equality contradicts "lopsided", so the big net's
-            // already-computed answer stands. v0 evaluates the small net
-            // from scratch (correctness prototype; incremental stack is the
-            // perf step), so for measurement the BIG eval above still ran —
-            // dispatch here REPLACES the answer, and the disagreement is
-            // recorded for free.
-            if proxy.abs() >= dualnet_thresh() {
-                if let Some(small) = self.small_net.clone() {
-                    self.stats.dualnet_dispatched += 1;
-                    let mut sacc = crate::nnue::NNUEAccumulator::new(small.hidden_size);
-                    sacc.force_recompute(&small, board);
-                    let sraw = crate::search::evaluate_nnue(board, &small, &mut sacc, &self.threat_stack);
-                    let sscaled = (sraw * dualnet_scale_pct()) / 100;
-                    let sfinal = sscaled * (tp(&MAT_SCALE_BASE) + material) / 32 / 1024;
-                    let diff = (sfinal - final_score).unsigned_abs() as u64;
-                    self.stats.dualnet_diff_sum += diff;
-                    if diff > 200 { self.stats.dualnet_diff_gt200 += 1; }
-                    if sfinal.abs() < dualnet_guard() {
-                        self.stats.dualnet_guard_trips += 1;
-                        // fall through: big-net answer stands
-                    } else {
-                        self.last_eval_small = true;
-                        final_score = sfinal;
-                    }
-                }
+            // Verify mode: record small-vs-big disagreement for evals the
+            // small net would have answered (big answer stands).
+            if let Some(sf) = small_answer {
+                let diff = (sf - final_score).unsigned_abs() as u64;
+                self.stats.dualnet_diff_sum += diff;
+                if diff > 200 { self.stats.dualnet_diff_gt200 += 1; }
             }
         }
 
@@ -2447,6 +2473,10 @@ pub(crate) fn create_helper_info(main: &SearchInfo) -> SearchInfo {
     helper.silent = true;                // helpers don't output UCI
     helper.nnue_net = main.nnue_net.clone(); // share NNUE weights (read-only)
     // Create fresh NNUE accumulator for the helper
+    helper.small_net = main.small_net.clone();
+    if let Some(sn) = &helper.small_net {
+        helper.small_acc = Some(crate::nnue::NNUEAccumulator::new(sn.hidden_size));
+    }
     if let Some(net) = &helper.nnue_net {
         helper.nnue_acc = Some(crate::nnue::NNUEAccumulator::new(net.hidden_size));
         // Mirror main's threat_stack for v9 nets — helpers must evaluate
@@ -2577,6 +2607,11 @@ pub(crate) fn prepare_helper_for_search(info: &mut SearchInfo, board: &Board) {
     }
     if let (Some(net), Some(acc)) = (&info.nnue_net, &mut info.nnue_acc) {
         acc.materialize(net, board);
+    }
+    // Dual-net: reset the small stack too (materializes lazily at its
+    // first dispatched eval — no need to materialize here).
+    if let Some(acc) = &mut info.small_acc {
+        acc.reset();
     }
 }
 
@@ -3272,6 +3307,9 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     // Materialize root accumulator (populates Finny table)
     if let (Some(net), Some(acc)) = (&info.nnue_net, &mut info.nnue_acc) {
         acc.materialize(net, board);
+    }
+    if let Some(acc) = &mut info.small_acc {
+        acc.reset();
     }
 
     // Time management
@@ -5226,14 +5264,14 @@ fn negamax(
                     if depth - r < 1 { r = depth - 1; }
                     info.rfp_audit_active = true;
                     board.make_null_move();
-                    if let Some(acc) = &mut info.nnue_acc { acc.push(DirtyPiece::incremental(&[])); }
+                    info.acc_push(DirtyPiece::incremental(&[]));
                     if info.threat_stack.active { info.threat_stack.push(crate::types::NO_MOVE, crate::types::NO_PIECE_TYPE); }
                     if ply_u <= MAX_PLY {
                         info.moved_piece_stack[ply_u] = 0;
                         info.moved_to_stack[ply_u] = 0;
                     }
                     let null_score = -negamax(board, info, -beta, -beta + 1, depth - r, ply + 1, !cut_node);
-                    if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
+                    info.acc_pop();
                     if info.threat_stack.active { info.threat_stack.pop(); }
                     board.unmake_null_move();
                     info.rfp_audit_active = false;
@@ -5308,7 +5346,7 @@ fn negamax(
         board.make_null_move();
         info.tt.prefetch(board.hash);
         let null_key = board.hash; // save hash for threat detection after unmake
-        if let Some(acc) = &mut info.nnue_acc { acc.push(DirtyPiece::incremental(&[])); }
+        info.acc_push(DirtyPiece::incremental(&[]));
         if info.threat_stack.active { info.threat_stack.push(crate::types::NO_MOVE, crate::types::NO_PIECE_TYPE); }
         // C3 (2026-04-22 audit): set null sentinel on moved_piece_stack /
         // moved_to_stack at ply_u. Without this, child at ply+1 reads
@@ -5320,7 +5358,7 @@ fn negamax(
             info.moved_to_stack[ply_u] = 0;
         }
         let null_score = -negamax(board, info, -beta, -beta + 1, depth - r, ply + 1, !cut_node);
-        if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
+        info.acc_pop();
         if info.threat_stack.active { info.threat_stack.pop(); }
         board.unmake_null_move();
 
@@ -5460,10 +5498,10 @@ fn negamax(
                 build_dirty_piece(mv, board.side_to_move, flip_color(board.side_to_move), pc_moved_pt, pc_captured_pt, net)
             } else { DirtyPiece::recompute() };
 
-            if let Some(acc) = &mut info.nnue_acc { acc.push(pc_dirty); }
+            info.acc_push(pc_dirty);
         if info.threat_stack.active { info.threat_stack.push(crate::types::NO_MOVE, crate::types::NO_PIECE_TYPE); }
             if !board.make_move(mv) {
-                if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
+                info.acc_pop();
         if info.threat_stack.active { info.threat_stack.pop(); }
                 continue;
             }
@@ -5492,7 +5530,7 @@ fn negamax(
             }
 
             board.unmake_move();
-            if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
+            info.acc_pop();
         if info.threat_stack.active { info.threat_stack.pop(); }
 
             if info.stop.load(Ordering::Relaxed) {
@@ -5923,11 +5961,11 @@ fn negamax(
         } else { DirtyPiece::recompute() };
 
         // Push NNUE accumulator
-        if let Some(acc) = &mut info.nnue_acc { acc.push(dirty); }
+        info.acc_push(dirty);
         if info.threat_stack.active { info.threat_stack.push(crate::types::NO_MOVE, crate::types::NO_PIECE_TYPE); }
 
         if !board.make_move(mv) {
-            if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
+            info.acc_pop();
         if info.threat_stack.active { info.threat_stack.pop(); }
             continue;
         }
@@ -6384,7 +6422,7 @@ fn negamax(
         }
 
         board.unmake_move();
-        if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
+        info.acc_pop();
         if info.threat_stack.active { info.threat_stack.pop(); }
 
         // Accumulate nodes for this root move
@@ -7041,10 +7079,10 @@ fn quiescence_with_depth(
                 }
             }
 
-            if let Some(acc) = &mut info.nnue_acc { acc.push(qs_dirty); }
+            info.acc_push(qs_dirty);
         if info.threat_stack.active { info.threat_stack.push(crate::types::NO_MOVE, crate::types::NO_PIECE_TYPE); }
             if !board.make_move(mv) {
-                if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
+                info.acc_pop();
         if info.threat_stack.active { info.threat_stack.pop(); }
                 continue;
             }
@@ -7056,7 +7094,7 @@ fn quiescence_with_depth(
 
             let score = -quiescence_with_depth(board, info, -beta, -alpha, ply + 1, qs_depth + 1);
             board.unmake_move();
-            if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
+            info.acc_pop();
         if info.threat_stack.active { info.threat_stack.pop(); }
 
             if score > best_score {
@@ -7259,10 +7297,10 @@ fn quiescence_with_depth(
             }
         }
 
-        if let Some(acc) = &mut info.nnue_acc { acc.push(qs_dirty); }
+        info.acc_push(qs_dirty);
         if info.threat_stack.active { info.threat_stack.push(crate::types::NO_MOVE, crate::types::NO_PIECE_TYPE); }
         if !board.make_move(mv) {
-            if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
+            info.acc_pop();
         if info.threat_stack.active { info.threat_stack.pop(); }
             continue;
         }
@@ -7273,7 +7311,7 @@ fn quiescence_with_depth(
         info.tt.prefetch(board.hash);
         let score = -quiescence_with_depth(board, info, -beta, -alpha, ply + 1, qs_depth + 1);
         board.unmake_move();
-        if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
+        info.acc_pop();
         if info.threat_stack.active { info.threat_stack.pop(); }
 
         if score > best_score {
@@ -8272,7 +8310,38 @@ fn dualnet_guard() -> i32 {
     *V.get_or_init(|| std::env::var("CODA_DUALNET_GUARD").ok().and_then(|s| s.parse().ok()).unwrap_or(150))
 }
 #[inline(always)]
+fn dualnet_verify() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("CODA_DUALNET_VERIFY").is_ok())
+}
+#[inline(always)]
 fn dualnet_scale_pct() -> i32 {
     static V: std::sync::OnceLock<i32> = std::sync::OnceLock::new();
     *V.get_or_init(|| std::env::var("CODA_DUALNET_SCALE_PCT").ok().and_then(|s| s.parse().ok()).unwrap_or(100))
+}
+
+/// Non-pawn material sum for the endgame eval damp — shared by both net
+/// paths so small-net answers get the identical scaling.
+#[inline(always)]
+fn non_pawn_material(board: &Board) -> i32 {
+    let knights = popcount(board.pieces[KNIGHT as usize]) as i32 * 422;
+    let bishops = popcount(board.pieces[BISHOP as usize]) as i32 * 422;
+    let rooks = popcount(board.pieces[ROOK as usize]) as i32 * 642;
+    let queens = popcount(board.pieces[QUEEN as usize]) as i32 * 1015;
+    knights + bishops + rooks + queens
+}
+
+/// Dual-net dispatch proxy: SIGNED piece-material balance in SEE units.
+/// Position-intrinsic; changes only on captures/promotions.
+#[inline(always)]
+fn material_proxy(board: &Board) -> i32 {
+    let w = board.colors[WHITE as usize];
+    let b = board.colors[BLACK as usize];
+    let mut proxy = 0i32;
+    for pt in 0..5u8 {
+        let d = (board.pieces[pt as usize] & w).count_ones() as i32
+            - (board.pieces[pt as usize] & b).count_ones() as i32;
+        proxy += crate::eval::see_value(pt) * d;
+    }
+    proxy
 }
