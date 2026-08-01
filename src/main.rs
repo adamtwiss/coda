@@ -172,6 +172,27 @@ enum Commands {
         max: usize,
     },
     /// Inspect binpack training data (ply distribution, score stats)
+    /// Dump binpack positions verbatim as TSV: ply, score, fen — one row per
+    /// stored position, in file order, with NO filtering whatsoever.
+    ///
+    /// Exists because every other binpack tool here is blind to skip-mark
+    /// filtering. `sample-positions` silently drops |score|>2000 and in-check
+    /// positions; `inspect-binpack` and `chain-stats` aggregate. Stockfish-style
+    /// filtering MARKS positions with an out-of-range score sentinel rather than
+    /// deleting rows, so row counts and ply histograms are identical before and
+    /// after filtering — only the score field moves. Verifying filtered data
+    /// therefore needs a dump that preserves marked rows exactly where they are.
+    DumpBinpack {
+        /// Input binpack file
+        #[arg(short, long)]
+        input: String,
+        /// Output TSV path ("-" for stdout)
+        #[arg(short, long, default_value = "-")]
+        output: String,
+        /// Max positions to read (0 = all)
+        #[arg(long, default_value_t = 0)]
+        count: usize,
+    },
     InspectBinpack {
         /// Input binpack file
         #[arg(short = 'i', long = "input")]
@@ -921,6 +942,10 @@ fn main() {
 
         Some(Commands::Epd { path, time, max }) => {
             epd::run_epd(&path, time, max, cli.nnue.as_deref());
+        }
+
+        Some(Commands::DumpBinpack { input, output, count }) => {
+            run_dump_binpack(&input, &output, count);
         }
 
         Some(Commands::InspectBinpack { input, count }) => {
@@ -2437,6 +2462,46 @@ fn run_binpack_stats(input: &str) {
         println!("  {:>9}    {:>10} ({:>5.2}%) ({:>5.2}%)    {:>10} ({:>5.1}%)",
             t, dropped, drop_pct, retain_pct, draws, draw_share);
     }
+}
+
+/// Verbatim binpack -> TSV dump (ply, score, fen). No filtering, no sampling,
+/// no reordering: row N of the output is position N of the file.
+///
+/// Deliberately does NOT reuse `run_sample_positions`' loop, which drops
+/// |score|>2000 and in-check positions. Those drops make it impossible to
+/// compare a filtered binpack against its unfiltered source, because filtering
+/// works by writing an out-of-range sentinel score and the sampler discards
+/// exactly the rows that carry the sentinel.
+fn run_dump_binpack(input: &str, output: &str, count: usize) {
+    use sfbinpack::CompressedTrainingDataEntryReader;
+    use std::io::Write;
+
+    let file = std::fs::File::open(input)
+        .unwrap_or_else(|_| panic!("Failed to open {}", input));
+    let mut reader = CompressedTrainingDataEntryReader::new(file)
+        .unwrap_or_else(|_| panic!("Failed to parse binpack {}", input));
+
+    let stdout = std::io::stdout();
+    let mut out: Box<dyn Write> = if output == "-" {
+        Box::new(std::io::BufWriter::new(stdout.lock()))
+    } else {
+        Box::new(std::io::BufWriter::new(
+            std::fs::File::create(output)
+                .unwrap_or_else(|_| panic!("Failed to create {}", output)),
+        ))
+    };
+
+    let mut n = 0usize;
+    while reader.has_next() {
+        let entry = reader.next();
+        let fen = entry.pos.fen().unwrap_or_default();
+        if writeln!(out, "{}\t{}\t{}", entry.ply, entry.score, fen).is_err() {
+            break; // downstream closed (e.g. `| head`)
+        }
+        n += 1;
+        if count > 0 && n >= count { break; }
+    }
+    let _ = out.flush();
 }
 
 fn run_sample_positions(input: &str, output: &str, n: usize, sample_rate: f64, scores: bool) {
