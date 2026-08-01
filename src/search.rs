@@ -643,7 +643,7 @@ tunables!(
     // implementation). Active only when a small net is loaded.
     // DUALNET_THRESH: dispatch when |material proxy| (SEE units) >= this.
     // Max effectively disables dispatch — a soft ablation SPSA can reach.
-    (DUALNET_THRESH, 600, 300, 1400, 50.0, true),
+    (DUALNET_THRESH, 640, 300, 1400, 50.0, true),
     // DUALNET_GUARD: small-net answers inside +/- this band (internal cp)
     // contradict "lopsided" — fall through to the big net.
     (DUALNET_GUARD, 150, 50, 400, 15.0, true),
