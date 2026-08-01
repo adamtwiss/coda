@@ -962,6 +962,11 @@ pub struct PruneStats {
     pub rfp_audit_var_fp: [u64; 3],
     pub cut_quiet_rank1: u64,
     pub cut_quiet_rank_sum: u64,
+    // Dual-net dispatch instrumentation: |material-proxy| buckets of 100
+    // SEE units, index 11 = 1100+.
+    pub dualnet_evals: [u64; 12],
+    pub dualnet_abseval: [u64; 12],
+    pub dualnet_neareq: [u64; 12],
     // Candidate-B probe: fail-low nodes histogrammed by
     // [depth band 0-2][margin band 0-3][quiet-count band 0-3]:
     // depth {<=4, 5-8, >=9}, margin {<50, 50-150, 150-300, >=300}cp,
@@ -1863,7 +1868,34 @@ impl SearchInfo {
         // correction — hence SPRT #610 showed −8 Elo at 1000 games before
         // we caught this. The fix is structural: keep TT storage
         // halfmove-independent, apply scale freshly on read.
-        score * (tp(&MAT_SCALE_BASE) + material) / 32 / 1024
+        let final_score = score * (tp(&MAT_SCALE_BASE) + material) / 32 / 1024;
+
+        // Dual-net dispatch instrumentation (2026-08-01, both paths still
+        // call the big net). Proxy = SIGNED piece-material balance in SEE
+        // units — the candidate dispatch signal: position-intrinsic,
+        // changes only on captures/promotions. Per |proxy| bucket we count
+        // evals, sum |internal eval|, and count near-equal evals
+        // (|eval| < 100 internal) — giving, from one bench run, the
+        // small-net qualification rate at ANY threshold plus the
+        // false-positive rate the re-eval guard would face there.
+        {
+            let w = board.colors[WHITE as usize];
+            let b = board.colors[BLACK as usize];
+            let mut proxy = 0i32;
+            for pt in 0..5u8 {
+                let d = (board.pieces[pt as usize] & w).count_ones() as i32
+                    - (board.pieces[pt as usize] & b).count_ones() as i32;
+                proxy += crate::eval::see_value(pt) * d;
+            }
+            let bucket = ((proxy.abs() / 100) as usize).min(11);
+            self.stats.dualnet_evals[bucket] += 1;
+            self.stats.dualnet_abseval[bucket] += final_score.unsigned_abs() as u64;
+            if final_score.abs() < 100 {
+                self.stats.dualnet_neareq[bucket] += 1;
+            }
+        }
+
+        final_score
     }
 
     #[inline]
@@ -7415,6 +7447,11 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
         }
         total_stats.cut_quiet_rank1 += info.stats.cut_quiet_rank1;
         total_stats.cut_quiet_rank_sum += info.stats.cut_quiet_rank_sum;
+        for i in 0..12 {
+            total_stats.dualnet_evals[i] += info.stats.dualnet_evals[i];
+            total_stats.dualnet_abseval[i] += info.stats.dualnet_abseval[i];
+            total_stats.dualnet_neareq[i] += info.stats.dualnet_neareq[i];
+        }
         for d in 0..3 {
             for i in 0..16 {
                 total_stats.b_probe_nodes[d][i] += info.stats.b_probe_nodes[d][i];
@@ -7510,6 +7547,25 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
         }
         eprintln!("Move ordering:  avg cutoff pos {:.2}, avg pos² {:.1}, first-move {:.1}%",
             avg_pos, avg_sq, first_pct);
+        {
+            let total: u64 = s.dualnet_evals.iter().sum();
+            if total > 0 {
+                eprintln!("--- Dual-net dispatch candidate (proxy = |material| in SEE units) ---");
+                let mut cum = 0u64;
+                for i in (0..12).rev() {
+                    cum += s.dualnet_evals[i];
+                    let n = s.dualnet_evals[i];
+                    if n == 0 { continue; }
+                    let lo = i * 100;
+                    let label = if i == 11 { "1100+ ".to_string() } else { format!("{:>4}-{:<4}", lo, lo + 99) };
+                    eprintln!("proxy {}: {:>8} evals ({:5.2}%)  qualify-if-thresh<=this: {:5.1}%  mean|eval|={:>5}  near-eq {:4.1}%",
+                        label, n, 100.0 * n as f64 / total as f64,
+                        100.0 * cum as f64 / total as f64,
+                        s.dualnet_abseval[i] / n.max(1),
+                        100.0 * s.dualnet_neareq[i] as f64 / n.max(1) as f64);
+                }
+            }
+        }
         {
             let bn: u64 = s.b_probe_nodes.iter().flatten().sum();
             if bn > 0 && s.moves_searched > 0 {
