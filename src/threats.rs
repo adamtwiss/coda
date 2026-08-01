@@ -1041,10 +1041,15 @@ pub fn push_threats_on_move(
     // Transit occupancy for the moving piece: occ ^ to_bb
     let occ_transit = occ ^ (1u64 << to);
 
-    // Remove threats from old square
-    push_threats_for_piece(deltas, pieces_bb, colors_bb, mailbox, occ_transit, white_bb, cp, piece_color, piece_type, from, false);
-    // Add threats at new square
-    push_threats_for_piece(deltas, pieces_bb, colors_bb, mailbox, occ_transit, white_bb, cp, piece_color, piece_type, to, true);
+    if deltagen_ref() {
+        // Remove threats from old square
+        push_threats_for_piece(deltas, pieces_bb, colors_bb, mailbox, occ_transit, white_bb, cp, piece_color, piece_type, from, false);
+        // Add threats at new square
+        push_threats_for_piece(deltas, pieces_bb, colors_bb, mailbox, occ_transit, white_bb, cp, piece_color, piece_type, to, true);
+    } else {
+        push_threats_for_piece_setwise(deltas, pieces_bb, colors_bb, mailbox, occ_transit, white_bb, cp, piece_color, piece_type, from, false);
+        push_threats_for_piece_setwise(deltas, pieces_bb, colors_bb, mailbox, occ_transit, white_bb, cp, piece_color, piece_type, to, true);
+    }
 }
 
 /// Compute raw threat deltas when a piece appears or disappears.
@@ -1061,7 +1066,11 @@ pub fn push_threats_on_change(
 ) {
     let white_bb = colors_bb[WHITE as usize];
     let cp = colored_piece(piece_color, piece_type);
-    push_threats_for_piece(deltas, pieces_bb, colors_bb, mailbox, occ, white_bb, cp, piece_color, piece_type, square, add);
+    if deltagen_ref() {
+        push_threats_for_piece(deltas, pieces_bb, colors_bb, mailbox, occ, white_bb, cp, piece_color, piece_type, square, add);
+    } else {
+        push_threats_for_piece_setwise(deltas, pieces_bb, colors_bb, mailbox, occ, white_bb, cp, piece_color, piece_type, square, add);
+    }
 }
 
 /// Ablation flag (CODA_NO_SLIDER_SEES=1): skip emitting step-2 "slider-sees"
@@ -1080,6 +1089,147 @@ fn skip_slider_sees() -> bool {
 /// 1. Threats FROM this piece to occupied squares
 /// 2. Sliders that see this square + x-ray targets behind it
 /// 3. Non-sliders (pawns, knights, kings) that attack this square
+
+/// Env toggle (read once): force the REFERENCE delta generator (the scalar
+/// function below) instead of the setwise rewrite — the same-binary A/B
+/// instrument for the paired measurement protocol.
+#[inline(always)]
+fn deltagen_ref() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("CODA_DELTAGEN_REF").is_ok())
+}
+
+/// Setwise rewrite of `push_threats_for_piece` (2026-08-01, NPS lane).
+///
+/// Emits the IDENTICAL delta multiset to the reference implementation
+/// (kept below as the oracle); only the order within one call differs —
+/// victims/attackers come out grouped by piece type instead of square
+/// order. Every consumer is order-independent (the accumulator apply is
+/// a commutative sum of weight rows; fuzzers compare accumulators), so
+/// bench must stay bit-identical — that is the acceptance gate.
+///
+/// Provenance: derived solely from the reference function in this file
+/// and Coda's setwise-classification style (cf. setwise.rs). Design:
+/// (a) the two ray magic lookups at `square` are computed once and
+/// shared between the "threats FROM" section (sliders reuse them) and
+/// the "sliders that see `square`" section — the reference recomputes;
+/// (b) per-square mailbox type gathers + range branches are replaced by
+/// per-type bitboard masks, which kills the movzbl/cmp/branch chain the
+/// profile shows on every victim and attacker.
+fn push_threats_for_piece_setwise(
+    deltas: &mut Vec<RawThreatDelta>,
+    pieces_bb: &[Bitboard; 6],
+    colors_bb: &[Bitboard; 2],
+    mailbox: &[u8; 64],
+    occ: Bitboard,
+    white_bb: Bitboard,
+    cp: usize,
+    piece_color: Color,
+    piece_type: u8,
+    square: u32,
+    add: bool,
+) {
+    // Shared ray lookups at `square` (used by both sections).
+    let rook_att = rook_attacks(square, occ);
+    let bishop_att = bishop_attacks(square, occ);
+
+    // 1. Threats FROM this piece — victims classified per type mask.
+    let my_attacks = match piece_type {
+        PAWN => pawn_attacks(piece_color, square),
+        KNIGHT => knight_attacks(square),
+        BISHOP => bishop_att,
+        ROOK => rook_att,
+        QUEEN => rook_att | bishop_att,
+        _ => king_attacks(square),
+    };
+    let victims = my_attacks & occ;
+    if victims != 0 {
+        for vpt in 0..6u8 {
+            let mut m = victims & pieces_bb[vpt as usize];
+            while m != 0 {
+                let sq = m.trailing_zeros();
+                m &= m - 1;
+                let vcolor = if white_bb & (1u64 << sq) != 0 { WHITE } else { BLACK };
+                deltas.push(RawThreatDelta::new(
+                    cp as u8, square as u8,
+                    colored_piece(vcolor, vpt) as u8, sq as u8, add));
+            }
+        }
+    }
+
+    // 2. Sliding pieces that see `square` — typed sets, no mailbox.
+    let emit_slider_sees = !skip_slider_sees();
+    let ortho_seers = rook_att & occ;
+    let diag_seers = bishop_att & occ;
+    let seer_sets = [
+        (pieces_bb[ROOK as usize] & ortho_seers, ROOK),
+        (pieces_bb[BISHOP as usize] & diag_seers, BISHOP),
+        (pieces_bb[QUEEN as usize] & (ortho_seers | diag_seers), QUEEN),
+    ];
+    for (set, spt) in seer_sets {
+        let mut sliders = set;
+        while sliders != 0 {
+            let slider_sq = sliders.trailing_zeros();
+            sliders &= sliders - 1;
+            let slider_color = if white_bb & (1u64 << slider_sq) != 0 { WHITE } else { BLACK };
+            let slider_cp = colored_piece(slider_color, spt);
+
+            // Y-level correction, identical to the reference: the slider's
+            // direct feature on the first piece past `square` toggles
+            // opposite to `add` (no x-ray level to preserve it).
+            let y_candidates = crate::bitboard::ray_extension(slider_sq, square) & occ;
+            if y_candidates != 0 {
+                let y_sq = if slider_sq < square {
+                    y_candidates.trailing_zeros()
+                } else {
+                    63 - y_candidates.leading_zeros()
+                };
+                let ypt = mailbox[y_sq as usize];
+                if ypt < 6 {
+                    let ycolor = if white_bb & (1u64 << y_sq) != 0 { WHITE } else { BLACK };
+                    deltas.push(RawThreatDelta::new(
+                        slider_cp as u8, slider_sq as u8,
+                        colored_piece(ycolor, ypt) as u8, y_sq as u8,
+                        !add,
+                    ));
+                }
+            }
+
+            if emit_slider_sees {
+                deltas.push(RawThreatDelta::new(
+                    slider_cp as u8, slider_sq as u8, cp as u8, square as u8, add));
+            }
+        }
+    }
+
+    // 3. Non-sliding attackers of `square` — the typed sets are already
+    // separate; iterate them directly instead of union + mailbox rederive.
+    let bp = pieces_bb[PAWN as usize] & colors_bb[BLACK as usize] & pawn_attacks(WHITE, square) & occ;
+    let wp = pieces_bb[PAWN as usize] & colors_bb[WHITE as usize] & pawn_attacks(BLACK, square) & occ;
+    let kn = pieces_bb[KNIGHT as usize] & knight_attacks(square) & occ;
+    let kg = pieces_bb[KING as usize] & king_attacks(square) & occ;
+    let wp_cp = colored_piece(WHITE, PAWN) as u8;
+    let mut m = wp;
+    while m != 0 {
+        let sq = m.trailing_zeros(); m &= m - 1;
+        deltas.push(RawThreatDelta::new(wp_cp, sq as u8, cp as u8, square as u8, add));
+    }
+    let bp_cp = colored_piece(BLACK, PAWN) as u8;
+    let mut m = bp;
+    while m != 0 {
+        let sq = m.trailing_zeros(); m &= m - 1;
+        deltas.push(RawThreatDelta::new(bp_cp, sq as u8, cp as u8, square as u8, add));
+    }
+    for (set, pt) in [(kn, KNIGHT), (kg, KING)] {
+        let mut m = set;
+        while m != 0 {
+            let sq = m.trailing_zeros(); m &= m - 1;
+            let c = if white_bb & (1u64 << sq) != 0 { WHITE } else { BLACK };
+            deltas.push(RawThreatDelta::new(colored_piece(c, pt) as u8, sq as u8, cp as u8, square as u8, add));
+        }
+    }
+}
+
 fn push_threats_for_piece(
     deltas: &mut Vec<RawThreatDelta>,
     pieces_bb: &[Bitboard; 6],
@@ -2604,4 +2754,76 @@ mod tests {
         assert!(elapsed.as_secs() < 10, "Benchmark took too long: {:?}", elapsed);
     }
 
+}
+
+#[cfg(test)]
+mod deltagen_setwise_tests {
+    use super::*;
+    use crate::board::Board;
+    use crate::movegen::generate_legal_moves;
+
+    fn deltas_as_tuples(v: &[RawThreatDelta]) -> Vec<(u8, u8, u8, u8, bool)> {
+        let mut t: Vec<_> = v.iter()
+            .map(|d| (d.attacker_cp(), d.from_sq(), d.victim_cp(), d.to_sq(), d.add()))
+            .collect();
+        t.sort_unstable();
+        t
+    }
+
+    /// The setwise generator must emit the IDENTICAL MULTISET of deltas to
+    /// the reference scalar generator for every (position, square, add)
+    /// the wrappers can produce — swept over seeded playouts, every
+    /// occupied square, both add polarities, and the on_move transit-occ
+    /// variant. Order may differ (consumers are commutative sums).
+    #[test]
+    fn fuzz_setwise_matches_reference_multiset() {
+        crate::init();
+        let mut st: u64 = 0xDE17A6E4;
+        let mut rnd = move || { st ^= st << 13; st ^= st >> 7; st ^= st << 17; st };
+        let mut checked = 0u64;
+        for _game in 0..40 {
+            let mut board = Board::startpos();
+            for _ply in 0..80 {
+                let legal = generate_legal_moves(&board);
+                if legal.len == 0 || board.halfmove >= 100 { break; }
+                let mv = legal.get((rnd() as usize) % legal.len);
+                board.make_move(mv);
+
+                let occ = board.colors[0] | board.colors[1];
+                let white_bb = board.colors[WHITE as usize];
+                // every occupied square, both polarities, plus a transit-occ
+                // variant (occ with one other occupied bit cleared) matching
+                // the on_move wrapper's occ ^ (1<<to) convention.
+                let mut sweep = occ;
+                while sweep != 0 {
+                    let sq = sweep.trailing_zeros();
+                    sweep &= sweep - 1;
+                    let pt = board.mailbox[sq as usize];
+                    if pt >= 6 { continue; }
+                    let color = if white_bb & (1u64 << sq) != 0 { WHITE } else { BLACK };
+                    let cp = colored_piece(color, pt);
+                    let occ_variants = [occ, occ ^ (occ & occ.wrapping_neg())];
+                    for occv in occ_variants {
+                        for add in [false, true] {
+                            let mut a = Vec::new();
+                            let mut b = Vec::new();
+                            push_threats_for_piece(
+                                &mut a, &board.pieces, &board.colors, &board.mailbox,
+                                occv, white_bb, cp, color, pt, sq, add);
+                            push_threats_for_piece_setwise(
+                                &mut b, &board.pieces, &board.colors, &board.mailbox,
+                                occv, white_bb, cp, color, pt, sq, add);
+                            assert_eq!(
+                                deltas_as_tuples(&a), deltas_as_tuples(&b),
+                                "multiset divergence: fen {} sq {} add {} occv {:x}",
+                                board.to_fen(), sq, add, occv);
+                            checked += 1;
+                        }
+                    }
+                }
+            }
+        }
+        assert!(checked > 100_000, "degenerate sweep: {}", checked);
+        eprintln!("setwise-vs-reference: {} (pos,sq,occ,add) cases, multisets identical", checked);
+    }
 }
