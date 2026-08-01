@@ -12,6 +12,10 @@
 # Configuration
 EXE := coda
 NET_URL := $(shell cat net.txt 2>/dev/null)
+# SF-style dual-net approach: optional embedded small net. Defaults to the
+# in-repo file when present (temporary hosting; moves to the release page +
+# small-net.txt on merge). Override/disable: make SMALL_EVALFILE=
+SMALL_EVALFILE ?= $(wildcard nets/net-v6-4A839C7F.nnue)
 # EVALFILE: defaults to the filename from net.txt (e.g. net-v5-768pw-w7-e800s800-filtered-lowestlr.nnue)
 # OB overrides this with an absolute path to the network file.
 EVALFILE := $(if $(NET_URL),$(notdir $(NET_URL)),net.nnue)
@@ -33,7 +37,7 @@ export RUSTFLAGS := -Ctarget-cpu=native
 # Default: build with embedded NNUE net (downloads from net.txt if needed)
 # EVALFILE may be overridden by OpenBench with an absolute path to the network
 rule: check-rust net
-	CODA_EVALFILE=$(abspath $(EVALFILE)) cargo rustc --release --features embedded-net$(if $(TUNE),$(comma)tune) -- --emit link=$(NAME)
+	CODA_EVALFILE=$(abspath $(EVALFILE)) $(if $(SMALL_EVALFILE),CODA_SMALL_EVALFILE=$(abspath $(SMALL_EVALFILE))) cargo rustc --release --features embedded-net$(if $(TUNE),$(comma)tune)$(if $(SMALL_EVALFILE),$(comma)embedded-small-net) -- --emit link=$(NAME)
 
 # OpenBench build — enables the `tune` feature so the SPSA tunable UCI options are
 # advertised (required for OpenBench SPSA to setoption them). Normal `make` and the
