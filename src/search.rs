@@ -967,6 +967,10 @@ pub struct PruneStats {
     pub dualnet_evals: [u64; 12],
     pub dualnet_abseval: [u64; 12],
     pub dualnet_neareq: [u64; 12],
+    pub dualnet_dispatched: u64,
+    pub dualnet_guard_trips: u64,
+    pub dualnet_diff_sum: u64,
+    pub dualnet_diff_gt200: u64,
     // Candidate-B probe: fail-low nodes histogrammed by
     // [depth band 0-2][margin band 0-3][quiet-count band 0-3]:
     // depth {<=4, 5-8, >=9}, margin {<50, 50-150, 150-300, >=300}cp,
@@ -1297,6 +1301,14 @@ pub struct SearchInfo {
     /// Transition correction history: [stm][(hash(ply-1) ^ hash(ply)) % size]
     trans_corr: Box<[[i32; CORR_HIST_SIZE]; 2]>,
     pub nnue_net: Option<std::sync::Arc<crate::nnue::NNUENet>>,
+    /// Dual-net v0 prototype: optional SMALL net (threat-free arch, e.g.
+    /// v5 768pw) for material-lopsided positions. Loaded via env
+    /// CODA_SMALL_NET=<path>; absent => single-net behavior, bit-identical.
+    pub small_net: Option<std::sync::Arc<crate::nnue::NNUENet>>,
+    /// True when the LAST SearchInfo::eval call answered from the small
+    /// net — gates TT static-eval writeback (TT eval slots are
+    /// big-net-only; small answers store the -INFINITY sentinel).
+    pub last_eval_small: bool,
     pub nnue_acc: Option<crate::nnue::NNUEAccumulator>,
     pub threat_stack: crate::threat_accum::ThreatStack,
     /// Syzygy tablebases (shared, read-only). Interior WDL probes in search.
@@ -1400,6 +1412,8 @@ impl SearchInfo {
             syzygy: None,
             tb_probe_depth: 4,
             rfp_audit_active: false,
+            small_net: None,
+            last_eval_small: false,
         }
     }
 
@@ -1420,6 +1434,25 @@ impl SearchInfo {
     }
 
     /// Load an NNUE network.
+    /// Dual-net v0: load the optional small net from CODA_SMALL_NET.
+    /// Called after the big net loads (any path). No small net env => noop.
+    fn maybe_load_small_net(&mut self) {
+        if self.small_net.is_some() { return; }
+        if let Ok(p) = std::env::var("CODA_SMALL_NET") {
+            match crate::nnue::NNUENet::load(&p) {
+                Ok(n) => {
+                    if n.has_threats {
+                        eprintln!("WARNING: CODA_SMALL_NET has threat inputs — dual-net v0 expects a threat-free small net; ignoring");
+                        return;
+                    }
+                    eprintln!("info string Dual-net v0: small net loaded from {} (hidden {})", p, n.hidden_size);
+                    self.small_net = Some(std::sync::Arc::new(n));
+                }
+                Err(e) => eprintln!("WARNING: CODA_SMALL_NET failed to load: {}", e),
+            }
+        }
+    }
+
     pub fn load_nnue(&mut self, path: &str) -> Result<(), String> {
         let net = crate::nnue::NNUENet::load(path)?;
         let acc = crate::nnue::NNUEAccumulator::new(net.hidden_size);
@@ -1438,6 +1471,7 @@ impl SearchInfo {
         }
         self.nnue_net = Some(std::sync::Arc::new(net));
         self.nnue_acc = Some(acc);
+        self.maybe_load_small_net();
         Ok(())
     }
 
@@ -1458,6 +1492,7 @@ impl SearchInfo {
                     }
                     self.nnue_net = Some(std::sync::Arc::new(net));
                     self.nnue_acc = Some(acc);
+                    self.maybe_load_small_net();
                     return true;
                 }
                 Err(e) => {
@@ -1474,6 +1509,7 @@ impl SearchInfo {
         for path in net_nnue_paths.iter().flatten() {
             if path.exists() {
                 if let Ok(()) = self.load_nnue(path.to_str().unwrap()) {
+                    self.maybe_load_small_net();
                     return true;
                 }
             }
@@ -1493,7 +1529,8 @@ impl SearchInfo {
                         let net_path = net_dir.join(fname);
                         if net_path.exists() {
                             if let Ok(()) = self.load_nnue(net_path.to_str().unwrap()) {
-                                return true;
+                                self.maybe_load_small_net();
+                    return true;
                             }
                         }
                     }
@@ -1868,7 +1905,8 @@ impl SearchInfo {
         // correction — hence SPRT #610 showed −8 Elo at 1000 games before
         // we caught this. The fix is structural: keep TT storage
         // halfmove-independent, apply scale freshly on read.
-        let final_score = score * (tp(&MAT_SCALE_BASE) + material) / 32 / 1024;
+        let mut final_score = score * (tp(&MAT_SCALE_BASE) + material) / 32 / 1024;
+        self.last_eval_small = false;
 
         // Dual-net dispatch instrumentation (2026-08-01, both paths still
         // call the big net). Proxy = SIGNED piece-material balance in SEE
@@ -1892,6 +1930,36 @@ impl SearchInfo {
             self.stats.dualnet_abseval[bucket] += final_score.unsigned_abs() as u64;
             if final_score.abs() < 100 {
                 self.stats.dualnet_neareq[bucket] += 1;
+            }
+
+            // Dual-net v0 dispatch (prototype): when a small net is loaded
+            // and the position is material-lopsided, answer from the small
+            // net unless its own (scaled) answer lands inside the guard
+            // band — near-equality contradicts "lopsided", so the big net's
+            // already-computed answer stands. v0 evaluates the small net
+            // from scratch (correctness prototype; incremental stack is the
+            // perf step), so for measurement the BIG eval above still ran —
+            // dispatch here REPLACES the answer, and the disagreement is
+            // recorded for free.
+            if proxy.abs() >= dualnet_thresh() {
+                if let Some(small) = self.small_net.clone() {
+                    self.stats.dualnet_dispatched += 1;
+                    let mut sacc = crate::nnue::NNUEAccumulator::new(small.hidden_size);
+                    sacc.force_recompute(&small, board);
+                    let sraw = crate::search::evaluate_nnue(board, &small, &mut sacc, &self.threat_stack);
+                    let sscaled = (sraw * dualnet_scale_pct()) / 100;
+                    let sfinal = sscaled * (tp(&MAT_SCALE_BASE) + material) / 32 / 1024;
+                    let diff = (sfinal - final_score).unsigned_abs() as u64;
+                    self.stats.dualnet_diff_sum += diff;
+                    if diff > 200 { self.stats.dualnet_diff_gt200 += 1; }
+                    if sfinal.abs() < dualnet_guard() {
+                        self.stats.dualnet_guard_trips += 1;
+                        // fall through: big-net answer stands
+                    } else {
+                        self.last_eval_small = true;
+                        final_score = sfinal;
+                    }
+                }
             }
         }
 
@@ -4891,6 +4959,7 @@ fn negamax(
     // 1000g). TT now stores raw_eval; every consumer scales fresh.
     let mut static_eval = -INFINITY;
     let mut raw_eval = -INFINITY;
+    let mut eval_was_small = false;
     let mut scaled_eval = -INFINITY;
     let mut improving = false;
     let mut tt_static_eval_hit = false;
@@ -4907,6 +4976,7 @@ fn negamax(
             tt_static_eval_hit = true;
         } else {
             raw_eval = info.eval(board);
+            eval_was_small = info.last_eval_small;
             // Eval-only TT writeback: when we paid for an NNUE eval AND
             // there's no existing TT entry, seed the TT with static_eval
             // so later visits of this position (from different move
@@ -4927,7 +4997,10 @@ fn negamax(
             //     position on later visits.
             //   - tt_pv carries current node's is_pv context so PV
             //     propagation is correct on re-visit.
-            if !tt_hit && FEAT_TT_STORE.load(Ordering::Relaxed) {
+            if !tt_hit && FEAT_TT_STORE.load(Ordering::Relaxed) && !info.last_eval_small {
+                // TT eval slots are big-net-only (dual-net v0): small-net
+                // answers are not written back — consumers would treat them
+                // as big-net values.
                 info.tt.store(board.hash, -2, -INFINITY, TT_FLAG_UPPER, NO_MOVE, raw_eval, is_pv);
             }
         }
@@ -6632,7 +6705,12 @@ fn negamax(
         let store_score = score_to_tt(best_score, ply);
 
         if FEAT_TT_STORE.load(Ordering::Relaxed) {
-            info.tt.store(board.hash, depth, store_score, flag, best_move, raw_eval, tt_pv);
+            // Dual-net v0: if this node's static eval came from the small
+            // net, store the -INFINITY sentinel in the eval slot (existing
+            // convention: consumers reject it and recompute) so TT eval
+            // reuse stays big-net-only.
+            let store_eval = if eval_was_small { -INFINITY } else { raw_eval };
+            info.tt.store(board.hash, depth, store_score, flag, best_move, store_eval, tt_pv);
         }
     }
 
@@ -7452,6 +7530,10 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
             total_stats.dualnet_abseval[i] += info.stats.dualnet_abseval[i];
             total_stats.dualnet_neareq[i] += info.stats.dualnet_neareq[i];
         }
+        total_stats.dualnet_dispatched += info.stats.dualnet_dispatched;
+        total_stats.dualnet_guard_trips += info.stats.dualnet_guard_trips;
+        total_stats.dualnet_diff_sum += info.stats.dualnet_diff_sum;
+        total_stats.dualnet_diff_gt200 += info.stats.dualnet_diff_gt200;
         for d in 0..3 {
             for i in 0..16 {
                 total_stats.b_probe_nodes[d][i] += info.stats.b_probe_nodes[d][i];
@@ -7551,6 +7633,15 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
             let total: u64 = s.dualnet_evals.iter().sum();
             if total > 0 {
                 eprintln!("--- Dual-net dispatch candidate (proxy = |material| in SEE units) ---");
+                if s.dualnet_dispatched > 0 {
+                    eprintln!("DISPATCHED {} ({:.1}% of evals): guard trips {} ({:.1}%), mean|small-big| {} internal, |diff|>200: {:.1}%",
+                        s.dualnet_dispatched,
+                        100.0 * s.dualnet_dispatched as f64 / total as f64,
+                        s.dualnet_guard_trips,
+                        100.0 * s.dualnet_guard_trips as f64 / s.dualnet_dispatched as f64,
+                        s.dualnet_diff_sum / s.dualnet_dispatched.max(1),
+                        100.0 * s.dualnet_diff_gt200 as f64 / s.dualnet_dispatched as f64);
+                }
                 let mut cum = 0u64;
                 for i in (0..12).rev() {
                     cum += s.dualnet_evals[i];
@@ -8165,4 +8256,23 @@ mod tests {
             "stale g2f3 must be rejected when the king is on h2 (no piece on g2)"
         );
     }
+}
+
+/// Dual-net v0 prototype knobs (env, read once). Defaults chosen from the
+/// 2026-08-01 proxy distribution: thresh 600 SEE units => ~16% of evals
+/// with <10% expected guard trips; guard 150 internal cp; scale 100%.
+#[inline(always)]
+fn dualnet_thresh() -> i32 {
+    static V: std::sync::OnceLock<i32> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("CODA_DUALNET_THRESH").ok().and_then(|s| s.parse().ok()).unwrap_or(600))
+}
+#[inline(always)]
+fn dualnet_guard() -> i32 {
+    static V: std::sync::OnceLock<i32> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("CODA_DUALNET_GUARD").ok().and_then(|s| s.parse().ok()).unwrap_or(150))
+}
+#[inline(always)]
+fn dualnet_scale_pct() -> i32 {
+    static V: std::sync::OnceLock<i32> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("CODA_DUALNET_SCALE_PCT").ok().and_then(|s| s.parse().ok()).unwrap_or(100))
 }
