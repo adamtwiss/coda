@@ -639,6 +639,16 @@ tunables!(
     // endgames (the net-leaf endgame-overrate lever, gauntlet 2026-07-19). Default
     // 22400 = prior hardcoded value (bench-neutral). Non-core / experimental.
     (MAT_SCALE_BASE, 22400, 14000, 30000, 1000.0, false),
+    // SF-style dual-net approach (idea credited to Stockfish; Coda's own
+    // implementation). Active only when a small net is loaded.
+    // DUALNET_THRESH: dispatch when |material proxy| (SEE units) >= this.
+    // Max effectively disables dispatch — a soft ablation SPSA can reach.
+    (DUALNET_THRESH, 600, 300, 1400, 50.0, true),
+    // DUALNET_GUARD: small-net answers inside +/- this band (internal cp)
+    // contradict "lopsided" — fall through to the big net.
+    (DUALNET_GUARD, 150, 50, 400, 15.0, true),
+    // DUALNET_SCALE_PCT: per-net scale for the small net's output.
+    (DUALNET_SCALE_PCT, 90, 80, 115, 2.0, true),
 );
 
 // Demoted loose knobs (2026-05-22 cross-tune analysis): SPSA drift dominated
@@ -967,6 +977,7 @@ pub struct PruneStats {
     pub dualnet_evals: [u64; 12],
     pub dualnet_abseval: [u64; 12],
     pub dualnet_neareq: [u64; 12],
+    pub dualnet_total_evals: u64,
     pub dualnet_dispatched: u64,
     pub dualnet_guard_trips: u64,
     pub dualnet_diff_sum: u64,
@@ -1456,6 +1467,29 @@ impl SearchInfo {
     /// Called after the big net loads (any path). No small net env => noop.
     fn maybe_load_small_net(&mut self) {
         if self.small_net.is_some() { return; }
+        // Embedded small net (fleet builds): OB distributes one network per
+        // side, so SPRT binaries must carry their own small net. Build with
+        // --features embedded-small-net and CODA_SMALL_EVALFILE=<path>.
+        #[cfg(feature = "embedded-small-net")]
+        {
+            static SMALL_BYTES: &[u8] = include_bytes!(env!("CODA_SMALL_EVALFILE"));
+            match crate::nnue::NNUENet::load_from_bytes(SMALL_BYTES) {
+                Ok(n) if !n.has_threats => {
+                    eprintln!("info string Dual-net: embedded small net (hidden {})", n.hidden_size);
+                    self.small_acc = Some(crate::nnue::NNUEAccumulator::new(n.hidden_size));
+                    self.small_net = Some(std::sync::Arc::new(n));
+                    return;
+                }
+                Ok(_) => {
+                    eprintln!("FATAL: embedded small net has threat inputs");
+                    std::process::exit(1);
+                }
+                Err(e) => {
+                    eprintln!("FATAL: embedded small net failed to load: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        }
         if let Ok(p) = std::env::var("CODA_SMALL_NET") {
             match crate::nnue::NNUENet::load(&p) {
                 Ok(n) => {
@@ -1783,6 +1817,7 @@ impl SearchInfo {
         // Guard trips fall through to the big path.
         // CODA_DUALNET_VERIFY=1: do not return early — run the big path too
         // and record the disagreement (diagnostic; big answer stands).
+        self.stats.dualnet_total_evals += 1;
         let mut small_answer: Option<i32> = None;
         if self.small_net.is_some() {
             let proxy = material_proxy(board);
@@ -7568,6 +7603,7 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
             total_stats.dualnet_abseval[i] += info.stats.dualnet_abseval[i];
             total_stats.dualnet_neareq[i] += info.stats.dualnet_neareq[i];
         }
+        total_stats.dualnet_total_evals += info.stats.dualnet_total_evals;
         total_stats.dualnet_dispatched += info.stats.dualnet_dispatched;
         total_stats.dualnet_guard_trips += info.stats.dualnet_guard_trips;
         total_stats.dualnet_diff_sum += info.stats.dualnet_diff_sum;
@@ -7674,7 +7710,7 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
                 if s.dualnet_dispatched > 0 {
                     eprintln!("DISPATCHED {} ({:.1}% of evals): guard trips {} ({:.1}%), mean|small-big| {} internal, |diff|>200: {:.1}%",
                         s.dualnet_dispatched,
-                        100.0 * s.dualnet_dispatched as f64 / total as f64,
+                        100.0 * s.dualnet_dispatched as f64 / s.dualnet_total_evals.max(1) as f64,
                         s.dualnet_guard_trips,
                         100.0 * s.dualnet_guard_trips as f64 / s.dualnet_dispatched as f64,
                         s.dualnet_diff_sum / s.dualnet_dispatched.max(1),
@@ -8299,15 +8335,19 @@ mod tests {
 /// Dual-net v0 prototype knobs (env, read once). Defaults chosen from the
 /// 2026-08-01 proxy distribution: thresh 600 SEE units => ~16% of evals
 /// with <10% expected guard trips; guard 150 internal cp; scale 100%.
+/// Env overrides (local experimentation) take precedence; otherwise the
+/// SPSA-tunable values apply.
 #[inline(always)]
 fn dualnet_thresh() -> i32 {
-    static V: std::sync::OnceLock<i32> = std::sync::OnceLock::new();
-    *V.get_or_init(|| std::env::var("CODA_DUALNET_THRESH").ok().and_then(|s| s.parse().ok()).unwrap_or(600))
+    static V: std::sync::OnceLock<Option<i32>> = std::sync::OnceLock::new();
+    V.get_or_init(|| std::env::var("CODA_DUALNET_THRESH").ok().and_then(|s| s.parse().ok()))
+        .unwrap_or_else(|| tp(&DUALNET_THRESH))
 }
 #[inline(always)]
 fn dualnet_guard() -> i32 {
-    static V: std::sync::OnceLock<i32> = std::sync::OnceLock::new();
-    *V.get_or_init(|| std::env::var("CODA_DUALNET_GUARD").ok().and_then(|s| s.parse().ok()).unwrap_or(150))
+    static V: std::sync::OnceLock<Option<i32>> = std::sync::OnceLock::new();
+    V.get_or_init(|| std::env::var("CODA_DUALNET_GUARD").ok().and_then(|s| s.parse().ok()))
+        .unwrap_or_else(|| tp(&DUALNET_GUARD))
 }
 #[inline(always)]
 fn dualnet_verify() -> bool {
@@ -8316,8 +8356,9 @@ fn dualnet_verify() -> bool {
 }
 #[inline(always)]
 fn dualnet_scale_pct() -> i32 {
-    static V: std::sync::OnceLock<i32> = std::sync::OnceLock::new();
-    *V.get_or_init(|| std::env::var("CODA_DUALNET_SCALE_PCT").ok().and_then(|s| s.parse().ok()).unwrap_or(100))
+    static V: std::sync::OnceLock<Option<i32>> = std::sync::OnceLock::new();
+    V.get_or_init(|| std::env::var("CODA_DUALNET_SCALE_PCT").ok().and_then(|s| s.parse().ok()))
+        .unwrap_or_else(|| tp(&DUALNET_SCALE_PCT))
 }
 
 /// Non-pawn material sum for the endgame eval damp — shared by both net

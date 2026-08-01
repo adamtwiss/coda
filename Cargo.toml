@@ -27,6 +27,7 @@ sfbinpack = "0.6.0"
 clap = { version = "4.6.0", features = ["derive"] }
 
 [features]
+embedded-small-net = []
 embedded-net = []
 # Advertise the SPSA `tunables!` params as UCI spin options (and accept setoption for
 # them). OFF by default so normal/release builds show only the public options; enabled
