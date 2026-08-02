@@ -2926,7 +2926,9 @@ pub fn search_smp(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimit
     if threads <= 1 {
         info.global_nodes.store(0, Ordering::Relaxed);
         info.last_flushed_nodes.set(0);
-        return search(board, info, limits);
+        let mv = search(board, info, limits);
+        dualnet_stats_report(&info.stats);
+        return mv;
     }
 
     // Reset the per-thread best-move-change counters for this search.
@@ -2973,6 +2975,13 @@ pub fn search_smp(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimit
         }
     }
     info.nodes = total_nodes;
+
+    // CODA_DUALNET_STATS=1: per-search dual-net telemetry to stderr, plus
+    // process-cumulative totals — lets any gauntlet harness collect in-game
+    // dispatch/guard rates from the engine log with zero harness support.
+    // Main-thread counters only; helpers see the same position stream, so
+    // the rates are representative even though totals undercount SMP.
+    dualnet_stats_report(&info.stats);
 
     // Nothing completed a real iteration — fall back to main's move (which may
     // itself be NO_MOVE only in pathological instant-stop cases).
@@ -8367,6 +8376,34 @@ fn dualnet_scale_pct() -> i32 {
     static V: std::sync::OnceLock<Option<i32>> = std::sync::OnceLock::new();
     V.get_or_init(|| std::env::var("CODA_DUALNET_SCALE_PCT").ok().and_then(|s| s.parse().ok()))
         .unwrap_or_else(|| tp(&DUALNET_SCALE_PCT))
+}
+
+/// CODA_DUALNET_STATS=1: emit one stderr line per completed search with this
+/// search's dispatch/guard counters and process-cumulative rates. Telemetry
+/// only — no effect on play.
+fn dualnet_stats_report(s: &PruneStats) {
+    use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if !*ON.get_or_init(|| std::env::var("CODA_DUALNET_STATS").is_ok()) {
+        return;
+    }
+    static C_EVALS: AtomicU64 = AtomicU64::new(0);
+    static C_DISP: AtomicU64 = AtomicU64::new(0);
+    static C_TRIPS: AtomicU64 = AtomicU64::new(0);
+    let ce = C_EVALS.fetch_add(s.dualnet_total_evals, Relaxed) + s.dualnet_total_evals;
+    let cd = C_DISP.fetch_add(s.dualnet_dispatched, Relaxed) + s.dualnet_dispatched;
+    let ct = C_TRIPS.fetch_add(s.dualnet_guard_trips, Relaxed) + s.dualnet_guard_trips;
+    eprintln!(
+        "DUALNET evals {} disp {} ({:.1}%) trips {} ({:.1}%) | cum: evals {} disp {:.1}% trips {:.1}%",
+        s.dualnet_total_evals,
+        s.dualnet_dispatched,
+        100.0 * s.dualnet_dispatched as f64 / s.dualnet_total_evals.max(1) as f64,
+        s.dualnet_guard_trips,
+        100.0 * s.dualnet_guard_trips as f64 / s.dualnet_dispatched.max(1) as f64,
+        ce,
+        100.0 * cd as f64 / ce.max(1) as f64,
+        100.0 * ct as f64 / cd.max(1) as f64,
+    );
 }
 
 /// Non-pawn material sum for the endgame eval damp — shared by both net
