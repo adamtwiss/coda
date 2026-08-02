@@ -6876,6 +6876,12 @@ fn negamax(
         // T2.3: is_decisive (mate OR TB range)
         && !is_decisive(best_score)
         && scaled_eval > -(MATE_IN_MAX_PLY)
+        // Dual-net: corrhist tables are big-net calibration state. Small-net
+        // evals have a different error structure (~200cp in-domain vs prod),
+        // so letting them train the shared pawn/np/cont/transition entries
+        // contaminates corrections consumed by big-net evals everywhere —
+        // same cross-net channel the TT eval-slot sentinel closes.
+        && !eval_was_small
         && !info.stop.load(Ordering::Relaxed)
     {
         // Corrhist audit 2026-07-08 finding #1: train the update against the
