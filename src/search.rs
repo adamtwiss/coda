@@ -648,11 +648,11 @@ tunables!(
     // contradict "lopsided" — fall through to the big net.
     (DUALNET_GUARD, 150, 50, 400, 15.0, true),
     // DUALNET_SCALE_PCT: per-net scale for the small net's output.
-    // Range extended + default corrected 2026-08-02: the IN-DOMAIN slope
-    // fit (prod 0.68 vs s800 0.97 against the LC0 oracle) puts the right
-    // scale near 70 — the original [80,115] range, designed from GLOBAL
-    // slopes, excluded the optimum (range-inheritance lesson, live).
-    (DUALNET_SCALE_PCT, 70, 55, 110, 2.0, true),
+    // Per-net value — re-fit on every small-net swap via the in-domain
+    // LC0-referenced response ratio (big-slope / small-slope vs oracle),
+    // the criterion SPSA confirmed for the s800 net (fit 70, held 70.1).
+    // smallnet-256pw-mat400 (domain-trained): 0.234/0.202 -> 116.
+    (DUALNET_SCALE_PCT, 116, 85, 150, 2.0, true),
 );
 
 // Demoted loose knobs (2026-05-22 cross-tune analysis): SPSA drift dominated
@@ -1494,6 +1494,10 @@ impl SearchInfo {
                 }
             }
         }
+        // Env-path loading only exists in non-embedded builds: the embedded
+        // arm above always diverges (load or FATAL), so a runtime override
+        // of a fleet binary's small net is deliberately impossible.
+        #[cfg(not(feature = "embedded-small-net"))]
         if let Ok(p) = std::env::var("CODA_SMALL_NET") {
             match crate::nnue::NNUENet::load(&p) {
                 Ok(n) => {
@@ -1992,7 +1996,7 @@ impl SearchInfo {
         // correction — hence SPRT #610 showed −8 Elo at 1000 games before
         // we caught this. The fix is structural: keep TT storage
         // halfmove-independent, apply scale freshly on read.
-        let mut final_score = score * (tp(&MAT_SCALE_BASE) + material) / 32 / 1024;
+        let final_score = score * (tp(&MAT_SCALE_BASE) + material) / 32 / 1024;
         self.last_eval_small = false;
 
         // Dual-net dispatch instrumentation (2026-08-01, both paths still
