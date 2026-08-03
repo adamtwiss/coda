@@ -15,7 +15,7 @@ NET_URL := $(shell cat net.txt 2>/dev/null)
 # SF-style dual-net approach: optional embedded small net. Defaults to the
 # in-repo file when present (temporary hosting; moves to the release page +
 # small-net.txt on merge). Override/disable: make SMALL_EVALFILE=
-SMALL_EVALFILE ?= $(wildcard nets/smallnet-256pw-mat400-s400.nnue)
+SMALL_EVALFILE ?= $(wildcard nets/smallnet-256pw-h32-mat400.nnue)
 # EVALFILE: defaults to the filename from net.txt (e.g. net-v5-768pw-w7-e800s800-filtered-lowestlr.nnue)
 # OB overrides this with an absolute path to the network file.
 EVALFILE := $(if $(NET_URL),$(notdir $(NET_URL)),net.nnue)

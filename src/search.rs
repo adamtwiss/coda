@@ -651,8 +651,9 @@ tunables!(
     // Per-net value — re-fit on every small-net swap via the in-domain
     // LC0-referenced response ratio (big-slope / small-slope vs oracle),
     // the criterion SPSA confirmed for the s800 net (fit 70, held 70.1).
-    // smallnet-256pw-mat400 (domain-trained): 0.234/0.202 -> 116.
-    (DUALNET_SCALE_PCT, 116, 85, 150, 2.0, true),
+    // v5 s200/s400 both fit 116; smallnet-256pw-h32 (v7): 1.268 -> 127.
+    // (Instrument fit, NOT 1/OLS-slope — that estimator is attenuated.)
+    (DUALNET_SCALE_PCT, 127, 95, 160, 2.0, true),
 );
 
 // Demoted loose knobs (2026-05-22 cross-tune analysis): SPSA drift dominated
