@@ -637,6 +637,40 @@ impl MovePicker {
             // to 4 score-term blocks below.
             let pt = board.piece_type_at(from);
 
+            // Software-pipelined history prefetch: while this move is scored,
+            // pull in the lines the NEXT move will read. cont_hist is 1.2 MB
+            // and pawn_hist 786 KB; each move touches one scattered line per
+            // plane at [piece][to], which no hardware streamer can predict.
+            // Issued before the current move's own reads so the latency is
+            // covered by real work (same pattern as the threat-apply and
+            // accumulator prefetches, OB #3037 / #3041).
+            #[cfg(target_arch = "x86_64")]
+            if i + 1 < quiets.len {
+                let m_next = quiets.get(i + 1);
+                let pc_next = board.piece_at(move_from(m_next));
+                if pc_next != NO_PIECE {
+                    let gp_next = go_piece(pc_next);
+                    let to_next = move_to(m_next) as usize;
+                    use std::arch::x86_64::{_mm_prefetch, _MM_HINT_T0};
+                    for opt in self.cont_hist_subs.iter() {
+                        if let Some(sub_ptr) = opt {
+                            let sub = unsafe { &**sub_ptr };
+                            unsafe {
+                                _mm_prefetch(&sub[gp_next][to_next] as *const i16 as *const i8,
+                                             _MM_HINT_T0);
+                            }
+                        }
+                    }
+                    if let Some(ph_ptr) = self.pawn_hist_ptr {
+                        let ph = unsafe { &*ph_ptr };
+                        unsafe {
+                            _mm_prefetch(&ph[gp_next][to_next] as *const i16 as *const i8,
+                                         _MM_HINT_T0);
+                        }
+                    }
+                }
+            }
+
             let mut score = history.main_score(from, to, self.threats);
 
             // Continuation history: plies 1,2 at CONT_HIST_MULT weight, plies 4,6 at 1x weight.
