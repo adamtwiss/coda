@@ -3193,7 +3193,17 @@ impl NNUENet {
                 self.hidden_size, crate::threat_accum::MAX_FT_SIZE,
             ));
         }
-        let _ = LOAD_ANYWAY.load(std::sync::atomic::Ordering::Relaxed);
+        // Point the threat machinery at the feature space this net was trained
+        // for (66,864 king-attacker or 60,144 no-king). The header count IS the
+        // marker; a mismatch previously loaded silently and evaluated garbage.
+        // LoadAnyway downgrades the rejection to a warning for deliberate probes.
+        if let Err(e) = crate::threats::select_feature_space(self.num_threat_features) {
+            if LOAD_ANYWAY.load(std::sync::atomic::Ordering::Relaxed) {
+                eprintln!("WARNING (LoadAnyway): {}", e);
+            } else {
+                return Err(e);
+            }
+        }
         Ok(())
     }
 
