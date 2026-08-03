@@ -328,6 +328,29 @@ pub const NNUE_MAX_KING_BUCKETS: usize = 16;
 /// loadable net: pw = hidden_size/2 must be ≤ this, i.e. hidden_size ≤ 2×this.
 /// Enforced at net load (see Net::read) and asserted at the buffer.
 pub const NNUE_PW_BUF: usize = 1024;
+
+/// Prefetch the head of every weight row an accumulator update will gather.
+/// The rows live in the 25 MB feature-transformer matrix and each update
+/// touches only a handful at scattered indices, so each row's first touch is
+/// a cold miss the hardware streamer cannot predict. Later chunks of the same
+/// row ARE predictable (sequential within the row), so only the head is
+/// pulled here. Same pattern as the threat-apply entry prefetch
+/// (perf/threat-apply-prefetch, OB #3037 +1.67 Elo H1).
+#[cfg(target_arch = "x86_64")]
+#[inline(always)]
+fn prefetch_acc_rows(add_rows: &[&[i16]], sub_rows: &[&[i16]], chunk_bytes: usize) {
+    use std::arch::x86_64::{_mm_prefetch, _MM_HINT_T0};
+    for row in add_rows.iter().chain(sub_rows.iter()) {
+        let p = row.as_ptr() as *const i8;
+        let mut off = 0;
+        while off < chunk_bytes {
+            unsafe { _mm_prefetch(p.add(off), _MM_HINT_T0) };
+            off += 64;
+        }
+    }
+}
+
+
 /// Stack buffer size for L1 output (forward_with_l1_pairwise_body). Bounds
 /// the largest loadable per-bucket L1 width. Enforced at net load and
 /// asserted at the buffer (see HIDDEN32_BUF below).
@@ -525,6 +548,9 @@ unsafe fn simd_acc_fused_avx2(
 
     let mut offset = 0;
 
+    // Pull each gathered row's first chunk in before the tiling loop starts.
+    prefetch_acc_rows(add_rows, sub_rows, REGS * 16 * 2);
+
     // Shared body parameterised on the register count so every pass below
     // runs with a COMPILE-TIME nregs and fully unrolls. Atlas perf
     // annotate (2026-05-06) showed a unified runtime-nregs loop emitting
@@ -608,6 +634,9 @@ unsafe fn simd_acc_fused_avx512(
     let src_ptr = src.as_ptr();
 
     let mut offset = 0;
+
+    // Pull each gathered row's first chunk in before the tiling loop starts.
+    prefetch_acc_rows(add_rows, sub_rows, REGS * 32 * 2);
 
     macro_rules! apply_chunk {
         ($nregs:expr) => {{
