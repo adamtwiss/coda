@@ -1651,23 +1651,22 @@ unsafe fn apply_threat_indices(
     adds: &[usize],
     subs: &[usize],
 ) {
-    // Prefetch weight rows for upcoming deltas (hide L3 latency)
+    // Prefetch the FIRST CHUNK (128 bytes = 2 lines) of every row before the
+    // kernel starts. The kernels walk all rows chunk-by-chunk, so chunk-0
+    // accesses are the cold misses; later chunks are covered by the in-loop
+    // next-chunk prefetch plus hardware stream prefetchers. Line-0-of-first-
+    // 4-rows (the previous form) left ~15 rows × 2 lines cold per call —
+    // perf annotate showed the row loads (vpmovsxbw) stalling at 16%+ of
+    // the function. Capped at 24 rows to bound issue cost on refresh-sized
+    // delta lists (avg 9.4 rows, p99 ≈ 48).
     #[cfg(target_arch = "x86_64")]
     {
-        for &idx in adds.iter().take(4) {
+        use std::arch::x86_64::{_mm_prefetch, _MM_HINT_T0};
+        for &idx in adds.iter().chain(subs.iter()).take(24) {
             unsafe {
-                std::arch::x86_64::_mm_prefetch(
-                    threat_weights.as_ptr().add(idx * hidden_size) as *const i8,
-                    std::arch::x86_64::_MM_HINT_T0,
-                );
-            }
-        }
-        for &idx in subs.iter().take(4) {
-            unsafe {
-                std::arch::x86_64::_mm_prefetch(
-                    threat_weights.as_ptr().add(idx * hidden_size) as *const i8,
-                    std::arch::x86_64::_MM_HINT_T0,
-                );
+                let row = threat_weights.as_ptr().add(idx * hidden_size);
+                _mm_prefetch(row as *const i8, _MM_HINT_T0);
+                _mm_prefetch(row.add(64) as *const i8, _MM_HINT_T0);
             }
         }
     }
@@ -1765,11 +1764,22 @@ unsafe fn apply_deltas_avx2(
             for i in 0..nregs {
                 regs[i] = _mm256_loadu_si256(src_ptr.add(offset + i * 16) as *const __m256i);
             }
+            // Per-row next-chunk prefetch: while summing this row's bytes
+            // [offset, offset+CHUNK), pull its [offset+CHUNK, +2 lines) into
+            // L1 so the next outer-chunk iteration streams. Prefetch never
+            // faults, so no bounds guard is needed at the table tail.
+            let pf = offset + CHUNK < hidden_size;
             let mut ai = 0;
             let mut si = 0;
             while ai < adds.len() && si < subs.len() {
                 let aw = w_ptr.add(adds[ai] * hidden_size + offset);
                 let sw = w_ptr.add(subs[si] * hidden_size + offset);
+                if pf {
+                    _mm_prefetch(aw.add(CHUNK) as *const i8, _MM_HINT_T0);
+                    _mm_prefetch(aw.add(CHUNK + 64) as *const i8, _MM_HINT_T0);
+                    _mm_prefetch(sw.add(CHUNK) as *const i8, _MM_HINT_T0);
+                    _mm_prefetch(sw.add(CHUNK + 64) as *const i8, _MM_HINT_T0);
+                }
                 for i in 0..nregs {
                     let add_w = _mm256_cvtepi8_epi16(_mm_loadu_si128(aw.add(i * 16) as *const __m128i));
                     let sub_w = _mm256_cvtepi8_epi16(_mm_loadu_si128(sw.add(i * 16) as *const __m128i));
@@ -1780,6 +1790,10 @@ unsafe fn apply_deltas_avx2(
             }
             while ai < adds.len() {
                 let aw = w_ptr.add(adds[ai] * hidden_size + offset);
+                if pf {
+                    _mm_prefetch(aw.add(CHUNK) as *const i8, _MM_HINT_T0);
+                    _mm_prefetch(aw.add(CHUNK + 64) as *const i8, _MM_HINT_T0);
+                }
                 for i in 0..nregs {
                     let add_w = _mm256_cvtepi8_epi16(_mm_loadu_si128(aw.add(i * 16) as *const __m128i));
                     regs[i] = _mm256_add_epi16(regs[i], add_w);
@@ -1788,6 +1802,10 @@ unsafe fn apply_deltas_avx2(
             }
             while si < subs.len() {
                 let sw = w_ptr.add(subs[si] * hidden_size + offset);
+                if pf {
+                    _mm_prefetch(sw.add(CHUNK) as *const i8, _MM_HINT_T0);
+                    _mm_prefetch(sw.add(CHUNK + 64) as *const i8, _MM_HINT_T0);
+                }
                 for i in 0..nregs {
                     let sub_w = _mm256_cvtepi8_epi16(_mm_loadu_si128(sw.add(i * 16) as *const __m128i));
                     regs[i] = _mm256_sub_epi16(regs[i], sub_w);
@@ -1875,11 +1893,28 @@ unsafe fn apply_deltas_avx512(
             for i in 0..nregs {
                 regs[i] = _mm512_loadu_si512(src_ptr.add(offset + i * 32) as *const _);
             }
+            // Per-row next-chunk prefetch — same rationale as the AVX2 twin
+            // (chunk-0 cold misses dominate; see apply_threat_indices entry
+            // prefetch). CHUNK here is 512 bytes = 8 lines per row.
+            let pf = offset + CHUNK < hidden_size;
+            macro_rules! pf_row {
+                ($row:expr) => {
+                    if pf {
+                        let mut l = 0;
+                        while l < CHUNK {
+                            _mm_prefetch($row.add(CHUNK + l) as *const i8, _MM_HINT_T0);
+                            l += 64;
+                        }
+                    }
+                };
+            }
             let mut ai = 0;
             let mut si = 0;
             while ai < adds.len() && si < subs.len() {
                 let aw = w_ptr.add(adds[ai] * hidden_size + offset);
                 let sw = w_ptr.add(subs[si] * hidden_size + offset);
+                pf_row!(aw);
+                pf_row!(sw);
                 for i in 0..nregs {
                     let add_w = _mm512_cvtepi8_epi16(_mm256_loadu_si256(aw.add(i * 32) as *const __m256i));
                     let sub_w = _mm512_cvtepi8_epi16(_mm256_loadu_si256(sw.add(i * 32) as *const __m256i));
@@ -1890,6 +1925,7 @@ unsafe fn apply_deltas_avx512(
             }
             while ai < adds.len() {
                 let aw = w_ptr.add(adds[ai] * hidden_size + offset);
+                pf_row!(aw);
                 for i in 0..nregs {
                     let add_w = _mm512_cvtepi8_epi16(_mm256_loadu_si256(aw.add(i * 32) as *const __m256i));
                     regs[i] = _mm512_add_epi16(regs[i], add_w);
@@ -1898,6 +1934,7 @@ unsafe fn apply_deltas_avx512(
             }
             while si < subs.len() {
                 let sw = w_ptr.add(subs[si] * hidden_size + offset);
+                pf_row!(sw);
                 for i in 0..nregs {
                     let sub_w = _mm512_cvtepi8_epi16(_mm256_loadu_si256(sw.add(i * 32) as *const __m256i));
                     regs[i] = _mm512_sub_epi16(regs[i], sub_w);
