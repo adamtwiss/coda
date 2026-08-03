@@ -550,7 +550,62 @@ struct ThreatTables {
     num_features: usize,
 }
 
-static THREAT_TABLES: std::sync::OnceLock<ThreatTables> = std::sync::OnceLock::new();
+// Two feature spaces are built at startup and the loaded net selects one:
+//   king-attacker ON  = 66,864 features (legacy/current prod nets)
+//   king-attacker OFF = 60,144 features (matches SF SFNNv13 full_threats.h
+//                       and Hobbes 3.0, both of which exclude the king as a
+//                       threat ATTACKER; king-as-victim was never tracked)
+// The net header's num_threat_features IS the marker — no extra flag bit.
+// Both table sets cost ~50 KB each, so building both is cheaper than any
+// scheme that defers construction until a net is known.
+static THREAT_TABLES_KING: std::sync::OnceLock<ThreatTables> = std::sync::OnceLock::new();
+static THREAT_TABLES_NOKING: std::sync::OnceLock<ThreatTables> = std::sync::OnceLock::new();
+/// Active table set. Release-stored at init and on net load, Acquire-loaded
+/// by readers (ARM ordering standard) — helper threads must see a fully
+/// constructed table set, and net loads happen before search threads spawn.
+static ACTIVE_TABLES: std::sync::atomic::AtomicPtr<ThreatTables> =
+    std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
+/// Mirrors the active set's king-attacker flag for the generation-side skips
+/// (hot path: avoids dereferencing the table pointer just to read one bool).
+static KING_ATTACKER_ON: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(true);
+
+/// Feature counts of the two supported threat spaces.
+pub const THREAT_FEATURES_KING: usize = 66864;
+pub const THREAT_FEATURES_NOKING: usize = 60144;
+
+/// Point the threat machinery at the feature space a just-loaded net was
+/// trained for. Returns Err for any count that is neither space — loading a
+/// mismatched net previously SUCCEEDED SILENTLY, indexing weight rows with a
+/// different feature space and producing garbage eval with no crash.
+pub fn select_feature_space(net_num_threat_features: usize) -> Result<(), String> {
+    use std::sync::atomic::Ordering;
+    let (cell, king) = match net_num_threat_features {
+        THREAT_FEATURES_KING => (&THREAT_TABLES_KING, true),
+        THREAT_FEATURES_NOKING => (&THREAT_TABLES_NOKING, false),
+        n => {
+            return Err(format!(
+                "net declares {} threat features; this build supports {} (king-attacker) \
+                 or {} (no-king). The count is the feature-space marker — a mismatched \
+                 net would index the wrong weight rows and eval garbage.",
+                n, THREAT_FEATURES_KING, THREAT_FEATURES_NOKING
+            ))
+        }
+    };
+    let ptr = cell.get().expect("init_threats() must run before net load")
+        as *const ThreatTables as *mut ThreatTables;
+    KING_ATTACKER_ON.store(king, Ordering::Release);
+    ACTIVE_TABLES.store(ptr, Ordering::Release);
+    Ok(())
+}
+
+/// True when the active feature space tracks the king as an attacker.
+/// Generation-side skips read this to avoid emitting deltas the index
+/// mapping would discard anyway.
+#[inline(always)]
+fn king_attacker_on() -> bool {
+    KING_ATTACKER_ON.load(std::sync::atomic::Ordering::Acquire)
+}
 const FLIPPED_COLORED_PIECE: [usize; NUM_COLORED_PIECES] = [6, 7, 8, 9, 10, 11, 0, 1, 2, 3, 4, 5];
 
 #[inline(always)]
@@ -563,9 +618,10 @@ fn flipped_colored_piece(cp: usize) -> usize {
 #[inline(always)]
 fn get_threat_tables() -> &'static ThreatTables {
     // SAFETY: init_threats() is called from `crate::init()` before any
-    // helper search threads spawn. OnceLock provides Acquire/Release
-    // ordering for the value, so the unchecked unwrap is safe post-init.
-    unsafe { THREAT_TABLES.get().unwrap_unchecked() }
+    // helper search threads spawn and publishes a non-null pointer to a
+    // 'static OnceLock payload; select_feature_space only ever swaps it for
+    // the other 'static payload. Acquire pairs with those Release stores.
+    unsafe { &*ACTIVE_TABLES.load(std::sync::atomic::Ordering::Acquire) }
 }
 
 /// Get the total threat feature count (call after init_threats).
@@ -627,7 +683,30 @@ pub fn piece_attacks_occ(piece_type: u8, color: Color, sq: u32, occ: Bitboard) -
 /// Initialise threat feature lookup tables. Must be called at startup
 /// before any helper search thread spawns.
 pub fn init_threats() {
-    // Built locally, then published via OnceLock for Acquire/Release ordering.
+    use std::sync::atomic::Ordering;
+    let king = build_threat_tables(true);
+    let noking = build_threat_tables(false);
+    let n_king = king.num_features;
+    let n_noking = noking.num_features;
+    let _ = THREAT_TABLES_KING.set(king);
+    let _ = THREAT_TABLES_NOKING.set(noking);
+    debug_assert_eq!(n_king, THREAT_FEATURES_KING);
+    debug_assert_eq!(n_noking, THREAT_FEATURES_NOKING);
+    // Default to the king-attacker space (current prod nets); a net load
+    // re-points this via select_feature_space.
+    let ptr = THREAT_TABLES_KING.get().expect("just set")
+        as *const ThreatTables as *mut ThreatTables;
+    KING_ATTACKER_ON.store(true, Ordering::Release);
+    ACTIVE_TABLES.store(ptr, Ordering::Release);
+    eprintln!("Threat features initialised: {} (king-attacker) / {} (no-king)",
+        n_king, n_noking);
+}
+
+/// Build one feature space. `king_attacker` selects whether the king is
+/// tracked as a threat attacker; it zeroes both the king's interaction-map
+/// row and its per-attacker target count, which is what drops the derived
+/// total from 66,864 to 60,144.
+fn build_threat_tables(king_attacker: bool) -> ThreatTables {
     let mut pairs = [[ThreatPair::default(); NUM_COLORED_PIECES]; NUM_COLORED_PIECES];
     let mut from_offset = [[0i32; 64]; NUM_COLORED_PIECES];
     let mut ray_rank = [[[0u8; 64]; 64]; NUM_COLORED_PIECES];
@@ -654,7 +733,8 @@ pub fn init_threats() {
             }
             slots[cp] = count;
             block_base[cp] = next_base;
-            next_base += PIECE_TARGET_COUNT[pt] * count;
+            let targets = if pt == 5 && !king_attacker { 0 } else { PIECE_TARGET_COUNT[pt] };
+            next_base += targets * count;
         }
     }
     let num_features = next_base as usize;
@@ -669,7 +749,7 @@ pub fn init_threats() {
             let vic_pt = piece_type_of(vic);
             let vic_color = color_of(vic);
 
-            let map = PIECE_INTERACTION_MAP[att_pt][vic_pt];
+            let map = if att_pt == 5 && !king_attacker { -1 } else { PIECE_INTERACTION_MAP[att_pt][vic_pt] };
             let tracked = map >= 0;
             // Same piece-type pairs are symmetric — except same-color pawns.
             let symmetric = att_pt == vic_pt && (att_color != vic_color || att_pt != 0);
@@ -694,16 +774,7 @@ pub fn init_threats() {
         }
     }
 
-    // Publish — OnceLock provides Acquire/Release ordering so reader
-    // threads see the fully-constructed value.
-    let _ = THREAT_TABLES.set(ThreatTables {
-        pairs,
-        from_offset,
-        ray_rank,
-        num_features,
-    });
-
-    eprintln!("Threat features initialised: {} total", num_features);
+    ThreatTables { pairs, from_offset, ray_rank, num_features }
 }
 
 /// Compute a single threat feature index.
@@ -1104,7 +1175,14 @@ fn push_threats_for_piece(
     #[cfg(feature = "profile-threats")]
     let s1_deltas_before = deltas.len() as u64;
 
-    let my_attacks = piece_attacks_occ(piece_type, piece_color, square, occ);
+    // No-king space: the king emits no attacker-side features, so skip the
+    // enumeration rather than emitting deltas the index mapping discards.
+    let skip_king_attacks = piece_type == 5 && !king_attacker_on();
+    let my_attacks = if skip_king_attacks {
+        0
+    } else {
+        piece_attacks_occ(piece_type, piece_color, square, occ)
+    };
     let mut attacked_occ = my_attacks & occ;
     while attacked_occ != 0 {
         let target_sq = attacked_occ.trailing_zeros();
@@ -1336,7 +1414,11 @@ fn push_threats_for_piece(
     let black_pawns = pieces_bb[PAWN as usize] & colors_bb[BLACK as usize] & pawn_attacks(WHITE, square);
     let white_pawns = pieces_bb[PAWN as usize] & colors_bb[WHITE as usize] & pawn_attacks(BLACK, square);
     let knights = pieces_bb[KNIGHT as usize] & knight_attacks(square);
-    let kings = pieces_bb[KING as usize] & king_attacks(square);
+    let kings = if king_attacker_on() {
+        pieces_bb[KING as usize] & king_attacks(square)
+    } else {
+        0
+    };
 
     let mut non_sliders = (black_pawns | white_pawns | knights | kings) & occ;
     while non_sliders != 0 {
