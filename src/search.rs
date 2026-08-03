@@ -4027,8 +4027,17 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                 } else {
                     0.0
                 };
+                // ABLATION (issue #13): floor raised 0.80 -> 1.00. The lower
+                // rail made the engine allocate up to 20% LESS time when its
+                // own eval was RISING — and measured over 317,887 plies of the
+                // 0.9.3 gauntlet, plies whose depth dipped >=3 ply vs the local
+                // baseline had 2.05x the eval swing INTO them, spent HALF the
+                // time (0.12s vs 0.22s), and were 1.86x more likely to be
+                // followed by a >=400cp reversal. goni-K's four games show the
+                // same shape: eval spikes, depth collapses, position flips.
+                // Keeps the validated "more time when worsening" half intact.
                 (1.0 + 0.0025 * drop + (tp(&CROSS_MOVE_TREND) as f64 * 1e-4) * cross)
-                    .clamp(0.80, 1.55)
+                    .clamp(1.00, 1.55)
             };
 
             // Combined multiplier — the standard factors + score-trend + cross-thread.
