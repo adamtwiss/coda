@@ -177,11 +177,12 @@ scale empirically; pairwise nets don't scale linearly (int8 overflow), so never
 compute it analytically.
 
 ## NNUE net naming
-**Prod nets (since 2026-05-31): hash-based** — `net-v{N}-{HASH}.nnue`, reusing the
-8-char content hash (e.g. `net-v9-E2773E50.nnue`). Descriptive filenames encode
-recipe inferences that rot; a content hash can't. Keep only the `v{N}`
-arch-generation prefix (v5/v7/v9 coexist and the inference path is
-generation-load-bearing).
+**Prod nets (since 2026-05-31): hash-based** — `net-{HASH}.nnue`, reusing the
+8-char content hash (e.g. `net-DB9B5605.nnue`). Descriptive filenames encode
+recipe inferences that rot; a content hash can't. **No architecture-version
+prefix** — the arch generation is already in the `.nnue` header and the loader
+dispatches on it, so a filename prefix would be a second source of truth that
+can disagree with the file.
 
 ## Key gotchas
 - Non-promotion move flags: compare with `==`, not `&`.
