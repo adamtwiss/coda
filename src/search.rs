@@ -105,11 +105,11 @@ tunables!(
     //   NMP_UNDEFENDED_MAX float-converged at 0.6 (int rounds to 1, no
     //     change); two consecutive tunes have drifted this toward feature-
     //     disable. Candidate for ablation SPRT (set to 0).
-    (NMP_BASE_R_10X, 74, 20, 80, 15.0, true),
+    (NMP_BASE_R_10X, 76, 20, 80, 15.0, true),
     // Ceiling lifted from 60 → 200 (audit 2026-05-20): SPSA at 55, 90%
     // from min, only ~9% headroom. Symmetric to a floor pin — gradient
     // clamped at the top. Lifting lets SPSA find the true optimum.
-    (NMP_DEPTH_DIV_10X, 63, 10, 200, 15.0, true),
+    (NMP_DEPTH_DIV_10X, 56, 10, 200, 15.0, true),
     (NMP_EVAL_DIV, 83, 50, 400, 17.5, true),
     (NMP_EVAL_MAX_10X, 35, 10, 60, 5.0, false),
     // Lifted 74 → 120 (eff 8 → 12, toward consensus 14-16): at 74 the verify
@@ -118,27 +118,27 @@ tunables!(
     // verify=120 alone as neutral/slightly positive, supporting this direction.
     // With min-depth de-gated to 3, depths 3-11 now get the classic unverified
     // cutoff; 12+ verify (zugzwang guard).
-    (NMP_VERIFY_DEPTH_10X, 108, 40, 200, 20.0, true),
-    (RFP_DEPTH, 19, 2, 20, 2.0, true),
+    (NMP_VERIFY_DEPTH_10X, 76, 40, 200, 20.0, true),
+    (RFP_DEPTH, 20, 2, 20, 2.0, true),
     // Floors lifted to 0 (audit 2026-05-20): both pinned within ~10% of floor.
-    (RFP_MARGIN_IMP, 21, 0, 150, 6.0, true),
-    (RFP_MARGIN_NOIMP, 40, 0, 200, 7.5, true),
+    (RFP_MARGIN_IMP, 22, 0, 150, 6.0, true),
+    (RFP_MARGIN_NOIMP, 30, 0, 200, 7.5, true),
     // Root-depth-aware RFP relaxation (single-set, self-adapts STC<->LTC):
     // demand MORE static-eval confidence to RFP-cut as the OVERALL search
     // depth grows past RFP_ROOT_THRESH (diminishing-returns of depth — the
     // marginal ply is cheap at LTC so deep pruning trades blindness for
     // worthless depth). Inactive at STC (root_depth < thresh) by construction
     // -> STC-neutral; relaxes deep RFP at LTC. SPSA tunes both.
-    (RFP_ROOT_THRESH, 16, 6, 30, 1.5, true),
+    (RFP_ROOT_THRESH, 18, 6, 30, 1.5, true),
     (RFP_ROOT_COEF, 17, 0, 150, 7.5, false),
     // Additional depth-local RFP relaxation: current main already scales RFP
     // by overall root depth; this term raises the margin for high remaining
     // depth regardless of TC. Consensus engines either cap RFP around d9-11
     // or use a quadratic/deepening margin so static eval does not keep
     // cheaply pruning d12+ nodes.
-    (RFP_DEEP_KNEE_10X, 47, 40, 170, 20.0, true),
-    (RFP_DEEP_LINEAR, 44, 0, 200, 10.0, true),
-    (RFP_DEEP_QUAD_10X, 30, 0, 800, 50.0, true),
+    (RFP_DEEP_KNEE_10X, 48, 40, 170, 20.0, true),
+    (RFP_DEEP_LINEAR, 43, 0, 200, 10.0, true),
+    (RFP_DEEP_QUAD_10X, 2, 0, 800, 50.0, true),
     // Razoring (re-added 2026-06-11, audit T2.6). Consensus band:
     // Obsidian 352/d<=5, Berserk 214/d<=5, Clover 145/d<=2,
     // Stormphrax ~290/d<=4.
@@ -147,12 +147,12 @@ tunables!(
     // Futility margin widened after the pruning audit: 80/110 H1'd at STC
     // (#2018 +3.5) and was flat at LTC (#2019), with focused SPSA #2020
     // converging back to 81.5/109.0. Keep depth/threat gates unchanged.
-    (FUT_BASE, 70, 0, 200, 9.0, true),
-    (FUT_PER_DEPTH, 64, 40, 250, 10.5, true),
+    (FUT_BASE, 72, 0, 200, 9.0, true),
+    (FUT_PER_DEPTH, 66, 40, 250, 10.5, true),
     (FUT_LMR_DEPTH, 12, 6, 24, 2.0, true),
     // HIST_PRUNE_DEPTH_10X / HIST_PRUNE_MULT removed 2026-06-02 — see hist-prune
     // removal block in main negamax body for rationale (three H0 SPRTs).
-    (SEE_QUIET_MULT, 21, 5, 80, 3.75, true),
+    (SEE_QUIET_MULT, 20, 5, 80, 3.75, true),
     // Low-increment TM multiplier ceiling (2026-06-18). The factor product
     // (stability×fail-low×forced×subtree×score-trend, up to ~13.8×) is only
     // clamped for no_inc; at increments that are SMALL RELATIVE TO THE CLOCK
@@ -252,7 +252,7 @@ tunables!(
     (TM_SUBTREE_MULT_100, 140, 90, 200, 4.0, false),      // (base-frac) * N/100
     (TM_FORCED_MARGIN_WEAK, 170, 80, 320, 8.0, false),    // weak-forced cp margin
     (TM_FORCED_MARGIN_STRONG, 400, 200, 620, 12.0, false),// strong-forced cp margin
-    (LMR_HIST_DIV, 19421, 2000, 100000, 4900.0, true),
+    (LMR_HIST_DIV, 20134, 2000, 100000, 4900.0, true),
     // 2026-05-18 audit (outlier #2 deep-dive): capture-LMR was using a
     // step function (±1 at |capt_hist|>2000), while quiet-LMR uses
     // continuous `hist_score / LMR_HIST_DIV`. Obsidian uses continuous
@@ -261,9 +261,9 @@ tunables!(
     // of quiet — single-source capt_hist needs smaller divisor for
     // equivalent reduction magnitude). Coda's quiet div is 7736; same
     // ratio gives ~4500. Defaulting 5000 as a starting point.
-    (LMR_HIST_DIV_CAP, 2461, 1000, 20000, 1500.0, true),
+    (LMR_HIST_DIV_CAP, 2274, 1000, 20000, 1500.0, true),
     (LMR_C_QUIET, 163, 40, 300, 13.0, true),
-    (LMR_C_CAP, 186, 80, 350, 12.5, true),
+    (LMR_C_CAP, 192, 80, 350, 12.5, true),
     // 3-DOF LMR shape reform (Titan Track B + Zeus's shape-vs-shift point,
     // 2026-07-07). BASE shifts the curve's intercept (Berserk +0.23,
     // Obsidian dBase, SF +1027/1024 — never validly tested on Coda: the
@@ -276,12 +276,12 @@ tunables!(
     // deep EBF per docs/ltc_regime_investigation_2026-07-07.md Q3).
     // Seeded at 700 to roughly preserve current shallow all-node
     // reduction at typical r (~250c, d8: +75c vs old flat +100c).
-    (LMR_BASE_CENTI, 25, 0, 120, 6.0, true),
-    (LMR_ALLNODE_DECAY_NUM, 658, 0, 1600, 80.0, true),
+    (LMR_BASE_CENTI, 27, 0, 120, 6.0, true),
+    (LMR_ALLNODE_DECAY_NUM, 573, 0, 1600, 80.0, true),
     // Explicit cut-node LMR bump (P1.1 / #2065). Cut nodes reduce by
     // LMR_CUTNODE_BUMP (+1 more with no TT move); all-nodes keep +1. Default 2
     // is a halfway step toward SF's larger cut-node reduction; SPSA can push it.
-    (LMR_CUTNODE_BUMP_CENTI, 255, 100, 500, 40.0, true),
+    (LMR_CUTNODE_BUMP_CENTI, 245, 100, 500, 40.0, true),
     // LMR correction battery (T1.1).
     // Sub-ply centi-ply terms — need the fractional LMR accumulator to express.
     // Reseeded at HALF the converted values (full: 100/45/32/41)
@@ -289,58 +289,58 @@ tunables!(
     // its move-count term (the source battery omits one) so those constants
     // double-count; ranges run to 0 so SPSA can kill dead terms.
     (LMR_WINBETA_CENTI, 32, 0, 250, 12.0, false),
-    (LMR_TTALPHA_CENTI, 25, 0, 150, 8.0, true),
+    (LMR_TTALPHA_CENTI, 28, 0, 150, 8.0, true),
     (LMR_EXPECT_MULT, 23, 0, 120, 6.0, true),
     // cutoff_count LMR terms (T1.2).
     // Child ply failed high >2 times under this node -> reduce late moves
     // more (+extra at non-PV all-nodes). Defaults = the source's tuned
     // values reseeded at half (full: 112/39) — see battery note above.
     // Threshold >2 fixed (SF uses >3) — not a knob.
-    (LMR_CUTOFF_CNT_CENTI, 54, 0, 250, 12.0, true),
-    (LMR_CUTOFF_ALLNODE_CENTI, 15, 0, 150, 8.0, true),
+    (LMR_CUTOFF_CNT_CENTI, 61, 0, 250, 12.0, true),
+    (LMR_CUTOFF_ALLNODE_CENTI, 14, 0, 150, 8.0, true),
     // 2026-05-09 cross-engine adjustment (Tier 5.1): SF gates SE at >=6+ttPv. Coda's 4 fires SE at shallower depth where
     // singular_depth is too low to judge singularity reliably. Bumping
     // 4 → 6 first; ttPv add deferred to a follow-up if H1.
-    (SE_DEPTH_10X, 41, 40, 200, 20.0, true),
+    (SE_DEPTH_10X, 45, 40, 200, 20.0, true),
     (ASP_DELTA, 11, 5, 30, 1.5, false),
     (ASP_SCORE_DIV, 12000, 8000, 50000, 2100.0, false),
     // 2026-05-09 cross-engine bisect (Tier 5.3a): SF/Obsidian all
     // use LMP_BASE=3 with the same `(BASE + d²)/(2 - improving)` formula.
     // Coda's 9 is 3× consensus at d=1: allows 5-10 quiets vs SF's 2-4.
     // Bisecting 9 → 5 first.
-    (LMP_BASE_10X, 42, 10, 150, 20.0, true),
-    (LMP_DEPTH_10X, 88, 40, 200, 20.0, true),
+    (LMP_BASE_10X, 47, 10, 150, 20.0, true),
+    (LMP_DEPTH_10X, 85, 40, 200, 20.0, true),
     // Root-depth-aware LMR relaxation (single-set, self-adapts STC<->LTC):
     // reduce LESS as the OVERALL search depth grows past LMR_ROOT_THRESH
     // (diminishing returns — at LTC the reduced re-search is cheap vs the
     // budget and a wrong reduction costs more). Inactive at STC by
     // construction -> STC-neutral. SPSA tunes both.
     (LMR_ROOT_THRESH, 15, 6, 30, 1.5, false),
-    (LMR_ROOT_COEF_10X, 50, 0, 800, 40.0, true),
-    (BAD_NOISY_MARGIN, 85, 30, 150, 6.0, true),
-    (PROBCUT_MARGIN, 124, 80, 300, 11.0, true),
+    (LMR_ROOT_COEF_10X, 34, 0, 800, 40.0, true),
+    (BAD_NOISY_MARGIN, 86, 30, 150, 6.0, true),
+    (PROBCUT_MARGIN, 130, 80, 300, 11.0, true),
     // Consensus ProbCut shape (Stockfish/Alexandria):
     // improving positions can use a lower verification beta, while
     // non-improving nodes keep the safer base margin. Default 117-27=90cp
     // when improving, matching the promising low-margin STC signal.
-    (PROBCUT_MARGIN_IMP, 43, 0, 120, 8.0, true),
+    (PROBCUT_MARGIN_IMP, 47, 0, 120, 8.0, true),
     // Root-depth-aware conservative ProbCut:
     // #2021 found PROBCUT_MARGIN=170 / MIN_DEPTH_10X=45 wins at STC,
     // while #2022 rejected it at LTC. Add that conservative offset at
     // shallow root depths, then fade back to current main as root depth grows.
-    (PROBCUT_ROOT_THRESH, 16, 8, 28, 1.5, true),
-    (PROBCUT_ROOT_FADE_10X, 31, 10, 120, 10.0, true),
+    (PROBCUT_ROOT_THRESH, 15, 8, 28, 1.5, true),
+    (PROBCUT_ROOT_FADE_10X, 34, 10, 120, 10.0, true),
     (PROBCUT_ROOT_MARGIN, 69, 0, 120, 8.0, false),
-    (HINDSIGHT_THRESH, 180, 50, 400, 17.5, true),
+    (HINDSIGHT_THRESH, 168, 50, 400, 17.5, true),
     (UNSTABLE_THRESH, 307, 50, 500, 22.5, false),
-    (QS_DELTA_MARGIN, 340, 100, 500, 20.0, true),
+    (QS_DELTA_MARGIN, 342, 100, 500, 20.0, true),
     // 24 -> 5 with the T2.10 counting fix: the old counter charged
     // delta/SEE-pruned moves against the budget, so SPSA detuned the cap
     // to near-off. Counting searched-only, consensus is 3 (Obsidian) to ~"2 extra" (SF moveCount > 2).
     (QS_MAX_CAPTURES, 5, 2, 32, 2.0, false),
-    (CORR_W_PAWN, 211, 100, 600, 25.0, true),
+    (CORR_W_PAWN, 203, 100, 600, 25.0, true),
     // Floor lifted from 50 → 0 (audit 2026-05-20): pinned at 63, 4% from floor.
-    (CORR_W_NP, 115, 0, 400, 17.5, true),
+    (CORR_W_NP, 109, 0, 400, 17.5, true),
     // CORR_W_MINOR / CORR_W_MAJOR were dropped 2026-05-18 (ablated to 0
     // via #1318 H1; minor_key/major_key are strict subsets of
     // non_pawn_key, so the contributions were redundant with np_corr).
@@ -356,7 +356,7 @@ tunables!(
     // keyed by hash(ply-1) ^ hash(ply) — a hash of the last move IN CONTEXT
     // (from+to+captured+side), richer than cont_corr's [piece][to]. Captures
     // "this structural CHANGE tends to be mis-evaluated."
-    (CORR_W_TRANS, 79, 0, 400, 18.5, true),
+    (CORR_W_TRANS, 72, 0, 400, 18.5, true),
     (FH_BLEND_DEPTH_10X, 21, 0, 80, 15.0, false),
     // Re-expose 4 hardcoded search constants (audit 2026-05-21).
     // All bench-neutral at current defaults.
@@ -367,8 +367,8 @@ tunables!(
     // PROBCUT_TT_DEPTH_SLACK: TT depth must be >= current depth - SLACK for
     // ProbCut-TT-noshot to consider the entry. Old hardcoded 3.
     (PROBCUT_TT_DEPTH_SLACK, 3, 0, 10, 0.5, false),
-    (HIST_BONUS_MULT, 294, 50, 400, 17.5, true),
-    (HIST_BONUS_MAX, 1478, 500, 3000, 125.0, true),
+    (HIST_BONUS_MULT, 283, 50, 400, 17.5, true),
+    (HIST_BONUS_MAX, 1458, 500, 3000, 125.0, true),
     // Shape experiment 1 (Titan's shape_experiments_proposal_2026-04-19):
     // history bonus adopts Stockfish/cap-hist offset shape:
     //   old: min(MAX, MULT * d)
@@ -379,8 +379,8 @@ tunables!(
     // shape (CAP_HIST_MULT * d - CAP_HIST_BASE) — main history is the
     // only inconsistent one. Starting offset 72 mirrors SF.
     (HIST_BONUS_OFFSET, 18, 0, 400, 25.0, false),
-    (CAP_HIST_MULT, 324, 50, 400, 17.5, true),
-    (CAP_HIST_MAX, 1743, 500, 3000, 125.0, true),
+    (CAP_HIST_MULT, 331, 50, 400, 17.5, true),
+    (CAP_HIST_MAX, 1722, 500, 3000, 125.0, true),
     // Malus split (2026-06-11 move-ordering audit): 14/16 stronger engines
     // use SEPARATE malus constants (SF malus slope ~7x its bonus slope;
     // Obsidian goes the other way at 0.74x — the optimum is engine-specific
@@ -388,12 +388,12 @@ tunables!(
     // -bonus, so SPSA never had this axis (#1922 confirmed symmetric is
     // Coda's optimum at STC). Defaults track the live bonus values
     // (tune-#1915 era) so behavior == the tested -bonus parity.
-    (HIST_MALUS_MULT, 386, 50, 900, 40.0, true),
+    (HIST_MALUS_MULT, 390, 50, 900, 40.0, true),
     (HIST_MALUS_OFFSET, 30, 0, 400, 25.0, false),
-    (HIST_MALUS_MAX, 1259, 500, 4000, 175.0, true),
-    (CAP_HIST_MALUS_MULT, 300, 50, 900, 40.0, true),
+    (HIST_MALUS_MAX, 1409, 500, 4000, 175.0, true),
+    (CAP_HIST_MALUS_MULT, 285, 50, 900, 40.0, true),
     (CAP_HIST_MALUS_BASE, 42, 0, 400, 25.0, false),
-    (CAP_HIST_MALUS_MAX, 1912, 500, 4000, 175.0, true),
+    (CAP_HIST_MALUS_MAX, 2018, 500, 4000, 175.0, true),
     // BONUS_BOOST_AT removed 2026-05-17: ablation #1277 at [0, 3] H0
     // (+0.3 ±1.0, CI [-0.7, +1.3] at 136K games). Depth-boost trigger
     // confirmed neutral; both call sites updated to drop the +1 clause.
@@ -408,7 +408,7 @@ tunables!(
     // amplify the best move's bonus by (quiets+caps searched)/HIST_SIBLING_DIV:
     // a move that cut off after more competition proved itself more strongly.
     // SF default divisor 256.
-    (HIST_SIBLING_DIV, 247, 64, 1024, 40.0, true),
+    (HIST_SIBLING_DIV, 232, 64, 1024, 40.0, true),
     // PV/quiet/correction-aware DEXT margin.
     // Matches SF's double-extension margin shape.
     //
@@ -432,9 +432,9 @@ tunables!(
     // alone in this branch.
     (DEXT_MARGIN_PV, 169, 50, 400, 15.0, false),
     (DEXT_MARGIN_QUIET, 17, 0, 100, 4.0, false),
-    (DEXT_MARGIN_CORR, 22, 0, 64, 3.0, true),
-    (DEXT_MARGIN_BASE, 27, -50, 150, 6.0, true),
-    (DEXT_CAP, 13, 4, 32, 2.0, true),
+    (DEXT_MARGIN_CORR, 25, 0, 64, 3.0, true),
+    (DEXT_MARGIN_BASE, 33, -50, 150, 6.0, true),
+    (DEXT_CAP, 11, 4, 32, 2.0, true),
     (QUIET_CHECK_BONUS, 14805, 2000, 30000, 1400.0, false),
     // SEE gate on the quiet check bonus (SF movepick.cpp: check bonus only
     // applies when see_ge(m, -75)). Without it Coda orders losing check-sacs
@@ -450,7 +450,7 @@ tunables!(
     // degeneracy (the weight sum fell only 25% against the divisor's 73%).
     // c_end 192 -> 64: at an operating point near 279 a 192 perturbation is
     // ~69% of the value and would clamp against the new floor constantly.
-    (CORR_HIST_DIV, 323, 64, 4096, 64.0, true),
+    (CORR_HIST_DIV, 308, 64, 4096, 64.0, true),
     // 4 -> 16 with T2.4: the floor-pin at 4 was calibrated for the
     // sign-only (err-clamped) regime; consensus weights ~depth uncapped.
     (CORR_UPDATE_WEIGHT_MAX, 14, 4, 48, 2.2, true),
@@ -476,7 +476,7 @@ tunables!(
     (ESCAPE_BONUS_MINOR, 5250, 0, 30000, 1000.0, false),
     // Null-move threat-escape bonus in quiet ordering (was hardcoded 8000).
     (NULL_THREAT_ESCAPE_BONUS, 8321, 0, 30000, 1000.0, false),
-    (NMP_KING_ZONE_MAX_10X, 44, 20, 90, 15.0, true),
+    (NMP_KING_ZONE_MAX_10X, 40, 20, 90, 15.0, true),
     // T2.1 (Titan's next_ideas 2026-04-21): undefended-piece NMP suppression
     // threshold. Count our pieces with >=1 enemy attacker AND zero of our own
     // defenders ("hanging"); the opponent's free tempo is very likely to
@@ -500,14 +500,14 @@ tunables!(
     // Min 1 (not 0): tp10(0) = 0 makes the term `(count + 1) * 128`, adding
     // 128cp even with nothing hanging — SPSA/ablation hitting this min would
     // broadly suppress NMP while labelled "undefended guard off".
-    (NMP_UNDEFENDED_MAX_10X, 18, 1, 50, 10.0, true),
+    (NMP_UNDEFENDED_MAX_10X, 23, 1, 50, 10.0, true),
     // T2.3 (next_ideas_2026-04-21): mobility-delta quiet-ordering weight.
     // Bonus applied in movepicker quiets = (to_mobility - from_mobility) × this.
     // Default 32 = ±256 typical range, additive to history (~1000s scale).
     (MOBILITY_DELTA_WEIGHT, 34, 0, 256, 8.0, false),
-    (PROBCUT_KING_ZONE_MAX_10X, 77, 20, 90, 15.0, true),
+    (PROBCUT_KING_ZONE_MAX_10X, 80, 20, 90, 15.0, true),
     // Was 38 (tp10→4). Now FIXED-POINT. Default 40 → eff 4.0 ≡ old behavior.
-    (LMR_THREAT_DIV_10X, 24, 10, 50, 15.0, true),
+    (LMR_THREAT_DIV_10X, 35, 10, 50, 15.0, true),
     // Was 68 (tp10→7). Now FIXED-POINT. Default 70 → eff 7.0 ≡ old behavior.
     (LMR_KING_PRESSURE_DIV_10X, 70, 20, 90, 15.0, true),
     // Reduce later moves more once this node has already raised alpha N times
@@ -515,7 +515,7 @@ tunables!(
     // VALUE/10. Only fires at PV nodes (cut nodes break on the first fail-high
     // before alpha is raised). Default 10 = +1.0 reduction per prior alpha-raise.
     (LMR_ALPHA_RAISE_10X, 5, 0, 40, 5.0, false),
-    (FUT_THREATS_MARGIN, 33, 0, 200, 10.0, true),
+    (FUT_THREATS_MARGIN, 38, 0, 200, 10.0, true),
     (DISCOVERED_ATTACK_BONUS, 3534, 0, 30000, 1500.0, false),
     // BATTERY_BONUS removed 2026-05-17: ablation #1278 at [0, 3] H0
     // (+0.2 ±1.1, CI [-0.9, +1.3] at 114K games). Feature confirmed
@@ -536,13 +536,13 @@ tunables!(
     // away from the 0 floor — so do NOT "fix" the sign. The earlier comment
     // here described the mechanism backwards.) Ordering signal for these moves
     // is delivered separately in movepicker (#502, +52).
-    (SE_XRAY_BLOCKER_MARGIN_10X, 38, 0, 400, 20.0, true),
+    (SE_XRAY_BLOCKER_MARGIN_10X, 39, 0, 400, 20.0, true),
     // 2026-05-19 audit: floor was pinned at 10 (=1.0 effective), preventing
     // SPSA from exploring below 1× even though SPSA had repeatedly driven
     // the value to the floor across tunes. Widened to allow 0× (full disable)
     // so SPSA can find the genuine optimum. CLAUDE.md previously claimed
     // "3× in move ordering" — stale; corrected to "1× current SPSA basin".
-    (CONT_HIST_MULT_10X, 22, 0, 80, 15.0, true),
+    (CONT_HIST_MULT_10X, 19, 0, 80, 15.0, true),
     // Pawn-history weight in quiet move ordering. Was hardcoded at 1×;
     // making tunable lets SPSA find the right pawn-structure weighting
     // relative to main/cont/etc. Default 10 = eff 1× (bench-neutral).
@@ -561,7 +561,7 @@ tunables!(
     // then captured the drifted trunk value 4 → 40 (effective 4), so the
     // intent was lost. Restored here as 50 (effective 5) with floor 45
     // (also effective 5 via tp10 rounding); SPSA can explore 5..=9.
-    (LMR_ENDGAME_PIECES_10X, 47, 45, 90, 15.0, true),
+    (LMR_ENDGAME_PIECES_10X, 45, 45, 90, 15.0, true),
     // --- Previously-hardcoded pruning depth gates, now tunable ---
     // Per 2026-04-24 strategy: at our strength/eval regime, optimal
     // depth caps/gates are sensitive to eval quality and will need
@@ -576,13 +576,13 @@ tunables!(
     // value to 20 (eff depth 2). With floor=20 SPSA can't explore below
     // depth 2; lifting to 5 (eff 0.5) lets SPSA find effective optimum,
     // including "fire at any depth ≥ 1".
-    (IIR_MIN_DEPTH_10X, 46, 5, 100, 15.0, true),          // was hardcoded 4; tune #743 converged to 2 (strong signal)
+    (IIR_MIN_DEPTH_10X, 40, 5, 100, 15.0, true),          // was hardcoded 4; tune #743 converged to 2 (strong signal)
     // ProbCut floor lifted from 30 → 10 (audit 2026-05-19): SPSA at 32,
     // ~2% from floor. Lifting to 10 (eff 1) allows exploration of more
     // aggressive ProbCut activation.
     (PROBCUT_MIN_DEPTH_10X, 15, 10, 120, 15.0, false),     // was hardcoded 5 (ProbCut activation gate)
-    (PROBCUT_ROOT_MIN_DEPTH_10X, 27, 0, 80, 8.0, true),
-    (SEE_CAP_DEPTH_10X, 90, 30, 150, 15.0, true),         // was hardcoded 6 (SEE capture prune depth cap)
+    (PROBCUT_ROOT_MIN_DEPTH_10X, 34, 0, 80, 8.0, true),
+    (SEE_CAP_DEPTH_10X, 85, 30, 150, 15.0, true),         // was hardcoded 6 (SEE capture prune depth cap)
     // Capture-SEE prune margin, SF-shaped (search.cpp): margin = depth*MULT +
     // capt_hist*HIST/1024, prune if SEE < -margin. Was sharing the hardcoded
     // SEE_MATERIAL_SCALE=215 (a QS-delta constant) with NO history term, giving
@@ -592,9 +592,9 @@ tunables!(
     // base can be lowered without over-pruning them (a naive base-only drop to
     // 130 cost +17% bench nodes). Base 110 (1.1 pawn/depth, toward SF's 0.84);
     // HIST 11 ≈ SF's 34/1024 rescaled for Coda's ±16384 capt-hist. Audit #3.
-    (SEE_CAP_MULT, 90, 40, 250, 12.0, true),
+    (SEE_CAP_MULT, 96, 40, 250, 12.0, true),
     (SEE_CAP_HIST, 8, 0, 40, 2.0, false),
-    (BAD_NOISY_DEPTH_10X, 96, 40, 150, 15.0, true),       // was hardcoded 4 (BNFP depth cap)
+    (BAD_NOISY_DEPTH_10X, 84, 40, 150, 15.0, true),       // was hardcoded 4 (BNFP depth cap)
     // Second pass — additional gates exposed for the feature-utility
     // audit tune. Widened ranges allow SPSA to reach disable-endpoint
     // values where appropriate (per feedback_spsa_as_feature_utility_diagnostic).
@@ -602,13 +602,13 @@ tunables!(
     // running first, shallow NMP only sees nodes static pruning couldn't cut,
     // removing the free-cutoff interception that killed #1904. SPSA had pushed
     // this to 8 as compensation for NMP-first ordering + per-cutoff verify cost.
-    (NMP_MIN_DEPTH_10X, 59, 20, 200, 15.0, true),              // was hardcoded 3 (NMP activation gate, 2 sites)
+    (NMP_MIN_DEPTH_10X, 55, 20, 200, 15.0, true),              // was hardcoded 3 (NMP activation gate, 2 sites)
     // Floor lifted from 10 → 0 (audit 2026-05-20): pinned at 25, 8% from floor.
     // 1 -> 17 (eff 0 -> 2, consensus floor): tune #1959 on the post-T1.2
     // trunk. The diagnostic was seeded at eff 2 and SPSA HELD (17.1) rather
     // than reverting to the old floor-pin at 0 — the pin was compensation
     // for the stale prior_reduction signal fixed by #1939, not signal.
-    (HINDSIGHT_MIN_DEPTH_10X, 39, 0, 200, 15.0, true),
+    (HINDSIGHT_MIN_DEPTH_10X, 46, 0, 200, 15.0, true),
     // Net output scale in percent (eval-scale normalization experiment,
     // 2026-06-12). Final NNUE eval is multiplied by PCT/100. Different
     // nets train to very different natural scales (eval RMS 219-369
