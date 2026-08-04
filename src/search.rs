@@ -3628,16 +3628,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
         let global = info.global_nodes.load(Ordering::Relaxed)
             + (info.nodes - info.last_flushed_nodes.get());
         let nps = if elapsed > 0 { global * 1000 / elapsed } else { 0 };
-        let score_str = if is_mate_score(prev_score) {
-            let mate_in = if prev_score > 0 {
-                (MATE_SCORE - prev_score + 1) / 2
-            } else {
-                -(MATE_SCORE + prev_score + 1) / 2
-            };
-            format!("score mate {}", mate_in)
-        } else {
-            format!("score cp {}", prev_score)
-        };
+        let score_str = crate::tt::format_uci_score(prev_score);
 
         // Extract PV from PV table, extend with TT if short
         // Track game history hashes throughout to stop at threefold repetition
@@ -3744,16 +3735,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                 // running MultiPV>1. Printing an illegal PV move is a critical
                 // bug, so the logic is shared, not re-derived.
                 let line_pv = build_pv_string(info, board, depth);
-                let line_score = if is_mate_score(sc) {
-                    let mate_in = if sc > 0 {
-                        (MATE_SCORE - sc + 1) / 2
-                    } else {
-                        -(MATE_SCORE + sc + 1) / 2
-                    };
-                    format!("score mate {}", mate_in)
-                } else {
-                    format!("score cp {}", sc)
-                };
+                let line_score = crate::tt::format_uci_score(sc);
                 let s_elapsed = info.start_time.elapsed().as_millis() as u64;
                 let s_global = info.global_nodes.load(Ordering::Relaxed)
                     + (info.nodes - info.last_flushed_nodes.get());
@@ -4313,16 +4295,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
         let global = info.global_nodes.load(Ordering::Relaxed)
             + (info.nodes - info.last_flushed_nodes.get());
         let nps = if elapsed > 0 { global * 1000 / elapsed } else { 0 };
-        let score_str = if is_mate_score(info.last_score) {
-            let mate_in = if info.last_score > 0 {
-                (MATE_SCORE - info.last_score + 1) / 2
-            } else {
-                -(MATE_SCORE + info.last_score + 1) / 2
-            };
-            format!("score mate {}", mate_in)
-        } else {
-            format!("score cp {}", info.last_score)
-        };
+        let score_str = crate::tt::format_uci_score(info.last_score);
         let pv_str = build_pv_string(info, board, info.completed_depth);
         if pv_str.is_empty() {
             println!(
