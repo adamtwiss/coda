@@ -5981,6 +5981,7 @@ mod tests {
     /// `test_simd_scalar_consistency`).
     #[test]
     fn fuzz_eval_mirror_symmetry() {
+        let _space = crate::threats::FEATURE_SPACE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         use crate::board::Board;
         use crate::movegen::generate_legal_moves;
 
@@ -7478,6 +7479,7 @@ mod tests {
     #[test]
     #[ignore]
     fn measure_threat_weight_norms() {
+        let _space = crate::threats::FEATURE_SPACE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         // Net loading mutates the process-global EMIT_XRAY — serialize with
         // every other net-loading test (see fuzz_eval_mirror_symmetry).
         let net_path = "nets/net-v9-768th16x32-w15-e800s800-xray.nnue";

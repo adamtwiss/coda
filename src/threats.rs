@@ -599,6 +599,20 @@ pub fn select_feature_space(net_num_threat_features: usize) -> Result<(), String
     Ok(())
 }
 
+
+/// Serialises tests that touch the process-global threat feature space.
+///
+/// `select_feature_space()` (called on every net load) swaps ACTIVE_TABLES and
+/// KING_ATTACKER_ON. Tests that load a real net therefore mutate global state
+/// that the threat-consistency tests depend on — and the repo root contains
+/// both 66,864 and 60,144 nets, so a parallel net-load can flip the space out
+/// from under a fuzz walk that already sized its weights for the other one
+/// (observed: "gap-fuzz divergence ... incr=-177 scratch=780").
+/// Both sides of that race must hold this lock. `unwrap_or_else(into_inner)`
+/// so one genuinely-failing test doesn't poison every other test.
+#[cfg(test)]
+pub(crate) static FEATURE_SPACE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// True when the active feature space tracks the king as an attacker.
 /// Generation-side skips read this to avoid emitting deltas the index
 /// mapping would discard anyway.

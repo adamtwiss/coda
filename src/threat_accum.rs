@@ -603,6 +603,7 @@ mod incremental_tests {
     /// that incremental == full-refresh for both perspectives.
     fn run_scenario(name: &str, fen: &str, moves: &[&str]) {
         crate::init();
+        let _space = crate::threats::FEATURE_SPACE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let nf = num_threat_features();
         let weights = make_weights(nf);
 
@@ -876,6 +877,7 @@ mod incremental_tests {
 
     fn run_fuzz_random_games() {
         crate::init();
+        let _space = crate::threats::FEATURE_SPACE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let nf = num_threat_features();
         let weights = make_weights(nf);
 
@@ -1003,6 +1005,7 @@ mod incremental_tests {
 
     fn run_fuzz_walk_with_pops() {
         crate::init();
+        let _space = crate::threats::FEATURE_SPACE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let nf = num_threat_features();
         let weights = make_weights(nf);
 
@@ -1162,6 +1165,7 @@ mod incremental_tests {
     #[test]
     fn weights_distinguish_features() {
         crate::init();
+        let _space = crate::threats::FEATURE_SPACE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let nf = num_threat_features();
         let w = make_weights(nf.min(4));
         // Feature 0's row should differ from feature 1's row.
@@ -1178,6 +1182,7 @@ mod incremental_tests {
     #[ignore]
     fn dump_diff_b8c6_quiet_knight() {
         crate::init();
+        let _space = crate::threats::FEATURE_SPACE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let nf = num_threat_features();
         let mut board = Board::new();
         // Position after 1.e4 e5 — white to move, then black plays Nc6 on next ply.
@@ -1362,6 +1367,7 @@ mod incremental_tests {
     #[ignore]
     fn dump_diff_rook_capture_with_xray() {
         crate::init();
+        let _space = crate::threats::FEATURE_SPACE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let nf = num_threat_features();
         let mut board = Board::new();
         board.set_fen("k7/n7/8/8/p7/8/8/R3K3 w Q - 0 1");
@@ -1464,6 +1470,7 @@ mod incremental_tests {
     #[ignore]
     fn diag_fuzz_ply28_e1c1() {
         crate::init();
+        let _space = crate::threats::FEATURE_SPACE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let nf = num_threat_features();
 
         // Kiwipete + same xorshift32 PRNG as fuzz_random_games (fen_idx=1, game=0).
@@ -1615,6 +1622,7 @@ mod incremental_tests {
     #[ignore]
     fn measure_feature_sparsity() {
         crate::init();
+        let _space = crate::threats::FEATURE_SPACE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let nf = num_threat_features();
         eprintln!("Measuring activation frequency across {} threat features", nf);
 
