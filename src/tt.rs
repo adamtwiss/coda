@@ -1020,15 +1020,22 @@ mod targeted_tests {
 /// adjudication and CCRL-style "opening too lopsided" rejection both key off the
 /// printed number.
 ///
-/// **Default 43 = divide reported cp by ~2.3.** Measured 2026-08-04 by four
-/// independent routes that agree:
+/// **Default 39 = divide reported cp by ~2.56.** The prod-net value was 43,
+/// measured 2026-08-04 by four independent routes that agreed:
 ///
-/// | method | Coda / field |
+/// | method | Coda(prod) / field |
 /// |---|---|
 /// | `SEE_MATERIAL_SCALE` (internal, Elo-tuned, no external reference) | 2.11 |
 /// | CCRL 126th Amateur D1, 31 games vs SF at real LTC depth | 2.27 |
 /// | same, median across 15 opponents | 2.27 |
 /// | LC0-label arithmetic (Coda 0.675 x label vs SF 0.258 x label) | 2.62 |
+///
+/// The BT4 production net (60F72A31) reads **1.114x** the prod net's scale —
+/// consistent across all 8 peers (1.098-1.134) and corroborated by held-out
+/// labels (1.158) and static evals (1.161) — so 43 / 1.114 = 39.
+///
+/// Measure with `eval_scale_probe.py`, which pins ScoreScale=100 so it reads
+/// INTERNAL cp. Do NOT mix `eval-fens` (static) with searched scores.
 ///
 /// Root cause is a units convention, NOT a training defect: SF trains on the
 /// same LC0 data with essentially the same WRM in-scaling (295.65 vs our 300)
@@ -1044,7 +1051,7 @@ mod targeted_tests {
 /// NOTE: `eval-fens` / `eval-dist` emit INTERNAL cp and are deliberately
 /// unaffected by this. Tooling that compares Coda's eval to another engine
 /// (net_report's overscore) must normalise separately.
-pub static REPORT_SCALE_PCT: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(43);
+pub static REPORT_SCALE_PCT: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(39);
 
 /// Format a search score as a UCI `score ...` field, applying the display scale.
 ///

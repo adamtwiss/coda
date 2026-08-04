@@ -318,7 +318,7 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>) {
                 println!("option name SyzygyPath type string default <empty>");
                 println!("option name TBHash type spin default 16 min 0 max 1024");
                 println!("option name SyzygyProbeDepth type spin default 4 min 1 max 100");
-                println!("option name ScoreScale type spin default 43 min 25 max 200");
+                println!("option name ScoreScale type spin default 39 min 25 max 200");
                 // Internal/dev options — advertised only in tuning builds
                 // (`make openbench` / `--features tune`) so they don't clutter GUI
                 // option lists in normal/release builds. The `setoption` handlers
