@@ -471,16 +471,17 @@ tunables!(
     (LMR_ALPHA_RAISE_10X, 5, 0, 40, 5.0, false),
     (FUT_THREATS_MARGIN, 38, 0, 200, 10.0, true),
     (DISCOVERED_ATTACK_BONUS, 3534, 0, 30000, 1500.0, false),
-    // BATTERY_BONUS removed 2026-05-17: ablation #1278 at [0, 3] H0
-    // (+0.2 ±1.1, CI [-0.9, +1.3] at 114K games). Feature confirmed
-    // neutral; movepicker.rs T1.4 battery-bonus block removed.
-    // QSEE_BONUS removed 2026-05-17: ablation #1257 at [-3, 3] H0
-    // (-2.1 ±3.0, central +2 Elo from the feature — load-bearing).
-    // Feature kept, hardcoded at SPSA value in movepicker.rs.
-    // SE_KING_PRESSURE_MARGIN removed 2026-05-15: tune at _10X precision
-    // (range -5..+30, direct /10 scaling) confirmed optimum is genuinely 0.
-    // Historical conflicting reads (0.22 vs 1-2 across tunes) were SPSA
-    // noise on integer-rounded values. Direction closed.
+    // Three tunables retired off this surface, with DIFFERENT outcomes — the
+    // distinction matters if any of them is ever reconsidered:
+    //   BATTERY_BONUS          feature itself ablated neutral and was REMOVED
+    //                          from movepicker.
+    //   QSEE_BONUS             ablation showed the feature IS load-bearing;
+    //                          only the tunable went, and the feature stays
+    //                          hardcoded in movepicker at its tuned value.
+    //   SE_KING_PRESSURE_MARGIN  retuned at _10X precision, which confirmed the
+    //                          optimum is genuinely 0. Earlier conflicting
+    //                          reads were SPSA noise on integer rounding.
+    //                          Direction closed.
     // xray-SE: when the TT move is from an x-ray blocker square (moving it
     // uncovers our slider's attack on an enemy), this flat bonus is
     // SUBTRACTED from singular_beta (`singular_beta = tt_score - depth -
@@ -702,8 +703,8 @@ pub const PH_FL_MIN_DEPTH: i32 = 10;
 ///     MIN_PONDER_ELAPSED_FOR_INSTANT_MS).
 /// Stability-scaled soft threshold for the instant reply (percent of the
 /// intended soft the pondered elapsed must cover, indexed by the ponder
-/// search's best-move stability). SAME SHAPE as the dynamic-TM
-/// STABILITY_TABLE [1.71, 1.20, 0.90, 0.80, 0.75] — SF arms stopOnPonderhit
+/// search's best-move stability). SAME SHAPE as the dynamic-TM stability
+/// table (`TM_STAB_0_100`..`TM_STAB_4_100`) — SF arms stopOnPonderhit
 /// against its instability-inflated optimum, so an unstable ponder (stab 0)
 /// must have covered 1.71x soft before it may instant-emit, while a settled
 /// one (4+) qualifies at 0.75x. Const, not a tunable (OB cannot ponder).
@@ -957,10 +958,10 @@ pub struct PruneStats {
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum ForcedState {
     None,
-    /// Best alternative was within `SLIGHTLY_FORCED_MARGIN` of TT score at depth ≥ 12.
+    /// Best alternative was within `TM_FORCED_MARGIN_WEAK` of TT score at depth ≥ 12.
     /// Multiplier reduces soft by ~37% (627/1000).
     Weak,
-    /// Best alternative collapsed by ≥ `VERY_FORCED_MARGIN` at depth ≥ 8.
+    /// Best alternative collapsed by ≥ `TM_FORCED_MARGIN_STRONG` at depth ≥ 8.
     /// Multiplier reduces soft by ~61% (386/1000).
     Strong,
 }
@@ -1042,8 +1043,7 @@ pub struct SearchInfo {
     /// Cumulative count of aspiration fail-lows in the current search.
     /// Reset at search start. Consumed by the Phase 13 fail-low factor
     /// `1.0 + 0.34 * min(2, asp_fail_low)` applied to both opt and hard
-    /// windows. The Phase 9 thresholded mechanism
-    /// (TM_ASP_THRESHOLD/TM_ASP_MULT_10X) was removed with Phase 13.
+    /// windows — a smooth ramp, replacing an earlier thresholded form.
     tm_asp_fail_low: u32,
     /// Cumulative count of aspiration fail-highs in the current search.
     /// Currently diagnostic-only; not used by TM yet (asymmetric vs
@@ -4013,7 +4013,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                 // (capped), ~0.24 at OB STC 10s+0.1s and ~0.4 at 600+10 (both
                 // ~uncapped). cmin at inc_cover->0, rising to cmax at
                 // inc_cover >= TM_INC_COVER_REF/100.
-                // DEFAULT_MOVES_TO_GO (the inc-path sudden-death mtg).
+                // TM_DEFAULT_MTG (the inc-path sudden-death mtg).
                 let base_move = (info.tm_time_left / tp(&TM_DEFAULT_MTG).max(2) as u64).max(1);
                 let inc_cover = (info.tm_our_inc as f64) / (base_move as f64);
                 let ref_cover = (tp(&TM_INC_COVER_REF) as f64 / 100.0).max(0.001);
@@ -4044,7 +4044,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                 };
             }
             // Compatibility aliases for downstream code that references
-            // `scale` / `max_adjusted`. `scale` retained for TM_DIAG output.
+            // `scale` / `max_adjusted`. `scale` retained for TMDebug output.
             // Subtract tm_baseline so soft is measured from the TM-start
             // moment, not search start. tm_baseline is 0 for normal `go`
             // (unchanged behaviour); set to elapsed-at-ponderhit when
