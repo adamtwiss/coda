@@ -4,8 +4,33 @@
 /// Each active threat on the board contributes one feature index into the threat
 /// accumulator. Feature indices are perspective-relative with king-file mirroring.
 ///
-/// Reference: threat-feature encoding after Stockfish's threat features; the
-/// interaction map and target counts below follow Stockfish's tables.
+/// ATTRIBUTION
+///
+/// Threat inputs are not Coda's idea and not any single engine's. The input
+/// encoding was introduced in **Monty** by Viren6 and jw1912, who actively
+/// encouraged A/B engines to try it. It then spread quickly through the top
+/// engines, in this order:
+///
+///   Monty (AGPL)         origin, Viren6 / jw1912
+///   PlentyChess (GPL-3)  2025-10-12
+///   Stockfish (GPL-3)    2025-11-12, SFNNv10
+///   Reckless (AGPL)      2025-12-03
+///
+/// and is now used by Viridithas, Stormphrax, Hobbes and others. See
+/// PlentyChess PR #400 for the fullest public account of who contributed what.
+///
+/// Coda added threat inputs to its existing NNUE architecture. The interaction
+/// map and target counts follow the same shape as Stockfish's tables; those are
+/// functional facts about which pieces attack which, so every implementation
+/// converges on them.
+///
+/// **Reckless was the implementation Coda referenced while writing this.** Our
+/// 2026-07 licence audit found parts of the result too closely modelled on it,
+/// and those parts were reimplemented in Coda's own expression (see
+/// docs/license_analysis_2026-07-13.md). Rewriting the expression was the right
+/// fix for the licence question, but it is not a reason to drop the credit, and
+/// for a while we did drop it. This notice restores it.
+///
 /// Total features: ~66,864 (depends on piece-pair filtering).
 
 
