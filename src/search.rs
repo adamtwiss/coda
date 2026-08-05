@@ -75,36 +75,27 @@ macro_rules! tunables {
 }
 
 tunables!(
-    // v9 #784 tune applied (2500 iters, 40010 games, on C8-fix-factor SB800
-    // net 1EF1C3E5). Full 77-param sweep against the factor SB800 candidate
-    // (in flight as #782 net-vs-net, +2.4 trending H1).
+    // THIS MACRO IS THE AUTHORITATIVE LIST of search tunables — their defaults,
+    // ranges, SPSA c_end, and --core membership. Nothing else should restate
+    // them; `coda tune-spec` emits the live values on demand, which is why a
+    // checked-in SPSA spec is guaranteed to be the stale one.
     //
-    // Big movers vs prior trunk (#743/#747-derived):
-    //   NMP cluster heavy aggressive shift: BASE_R 5→6 (+13%), DEPTH_DIV 4→3
-    //     (-21%), EVAL_DIV 104→97 (-7%), VERIFY_DEPTH 8→9, MIN_DEPTH 5→6
-    //     (NMP wants more reduction, deeper verification, later activation)
-    //   HINDSIGHT_MIN_DEPTH 2→4 (+85%), HIST_PRUNE_MULT 11753→13272 (+13%),
-    //     HIST_PRUNE_DEPTH 4→5 (+16%) — pruning generally MORE aggressive
-    //   LMR_C_QUIET 120→130, LMR_C_CAP 93→101, LMR_KING_PRESSURE_DIV 4→5,
-    //     LMR_THREAT_DIV 4→3 — LMR fully recalibrated
-    //   CORR_W_CONT -10%, CORR_HIST_GRAIN_T 9→10 — corrhist reweighting
-    //     (CORR_W_MINOR/MAJOR contributions dropped 2026-05-19, were
-    //     +14%/+11% in this tune but ablated post-#1318)
-    //   ESCAPE_BONUS_Q 12758→14437 (+13%), KNIGHT_FORK_BONUS 8782→9716,
-    //     DISCOVERED_ATTACK_BONUS 5808→6672 — tactical bonuses up
+    // The DEFAULTS ARE SPSA OUTPUT and move on every applied tune. Comments
+    // here should therefore describe what a parameter DOES and what constrains
+    // it — mechanism, interactions, and any range that is deliberately narrow —
+    // NOT the sequence of adjustments that produced today's number. A comment
+    // recording one tune's movers is stale by the next tune and will be read as
+    // current intent.
     //
-    // Overrides applied to SPSA output:
-    //   LMR_ENDGAME_PIECES_10X restored to 50 (effective 5) with floor 45
-    //     (effective 5). The orphaned restore commit 74666f5 had set it to
-    //     5; the _10X migration (855f35b) silently captured the drifted
-    //     trunk value 4 → 40. Play-quality load-bearing per
-    //     feedback_play_quality_params_narrow_range. SPSA can still
-    //     explore 5..=9 within the [45, 90] clamp.
+    // RANGES ARE PART OF THE DESIGN. A floor or ceiling that a parameter pins
+    // against is suppressing gradient, not expressing an optimum; several here
+    // run to 0 specifically so SPSA can disable a dead term. Where a bound
+    // instead exists to STOP SPSA (play-quality guards), the comment says so.
     //
-    // Flags for future investigation:
-    //   NMP_UNDEFENDED_MAX float-converged at 0.6 (int rounds to 1, no
-    //     change); two consecutive tunes have drifted this toward feature-
-    //     disable. Candidate for ablation SPRT (set to 0).
+    // `_10X` PARAMETERS ARE FIXED-POINT, consumed via `tp10` = (v+5)/10, which
+    // ROUNDS rather than truncates. Whole raw bands therefore collapse to one
+    // effective value, so such a parameter can post a large SPSA percentage
+    // while changing nothing at all. Check the bucket before acting on a mover.
     (NMP_BASE_R_10X, 76, 20, 80, 15.0, true),
     // Ceiling lifted from 60 → 200 (audit 2026-05-20): SPSA at 55, 90%
     // from min, only ~9% headroom. Symmetric to a floor pin — gradient
@@ -594,38 +585,40 @@ tunables!(
     (MAT_SCALE_BASE, 22400, 14000, 30000, 1000.0, false),
 );
 
-// Demoted loose knobs (2026-05-22 cross-tune analysis): SPSA drift dominated
-// signal, so removed from SPSA surface to improve SNR for the rest. Values
-// frozen at their pre-demotion defaults. Bench-neutral; UCI-invisible.
+// Demoted loose knobs: cross-tune analysis found SPSA drift dominating signal
+// on these, so they were taken off the SPSA surface to improve per-parameter
+// SNR for everything else. Values frozen at their pre-demotion defaults.
+// Bench-neutral and UCI-invisible. Re-promote only on evidence from a focused
+// single-parameter tune, not on a full-sweep mover.
 pub static FH_BLEND_OFFSET: AtomicI32 = AtomicI32::new(1);
 pub static SE_TT_DEPTH_SLACK: AtomicI32 = AtomicI32::new(3);
 pub static MVV_CAP_MULT: AtomicI32 = AtomicI32::new(28);
-// Demote-batch 2 (2026-05-23): NONCORE_QUIET knobs from cross-tune analysis
-// — all moved <20% under #1419 noise. Same rationale as batch 1.
-// (SEE_MATERIAL_SCALE was un-demoted 2026-07-15 back to non-core after a focused
-// tune found real Elo in it — see the tunables! macro above.)
+// Same rationale, second batch. Note SEE_MATERIAL_SCALE was later un-demoted
+// back onto the SPSA surface after a focused single-parameter tune found real
+// Elo in it — demotion is reversible, and a knob dismissed as noise under a
+// broad sweep can still pay under a targeted one.
 pub static QS_SEE_THRESHOLD: AtomicI32 = AtomicI32::new(-26);
 pub static CAP_HIST_BASE: AtomicI32 = AtomicI32::new(42);
 pub static LMR_COMPLEXITY_DIV: AtomicI32 = AtomicI32::new(152);
 pub static TT_CUTOFF_HALFMOVE_MAX: AtomicI32 = AtomicI32::new(89);
 
 /// Post-ponderhit budget credit: PERCENT of elapsed ponder time deducted from
-/// the fresh post-hit think budget. HISTORY: Option C (2026-05-31) defaulted
-/// this to 50 ("bank half the ponder time"). The 2026-07-05 ponder diagnosis
-/// (docs/ponder_diagnosis_2026-07-05.md) showed 50% credit SATURATES to the
-/// 50ms floor at STC (any ponder >= 2×soft zeroes the budget) and the realized
-/// spend was then iteration-quantized bleed up to hard+500ms grace — the
-/// dominant cause of the ~50 Elo ponder deficit vs SF. The replacement policy
-/// is FULL charge for pondered time (budgets fixed at `go ponder`, SF
-/// timeman model), made profitable by its two compensators: the
-/// stopOnPonderhit-style instant reply (`should_instant_reply`) and the
-/// ponder-on +25% optimum bump (`compute_tm_budgets`).
+/// the fresh post-hit think budget.
 ///
-/// This knob is kept ONLY for local A/B comparability: default is the -1
-/// sentinel = INERT (full 100% charge). Explicitly setting 0..=100 via
-/// `setoption name PonderhitCreditPct` re-enables fractional crediting
-/// (0 reproduces the pre-P13 full-fresh-budget behavior, 50 reproduces
-/// Option C).
+/// INERT BY DEFAULT (-1 sentinel = full 100% charge for pondered time, budgets
+/// fixed at `go ponder`). Fractional crediting was tried and abandoned: any
+/// credit below 100% saturates to the 50ms floor at STC — a ponder of twice the
+/// soft budget zeroes it outright — after which realized spend is
+/// iteration-quantized bleed up to the hard limit plus grace. That was the
+/// dominant cause of a large ponder deficit. See
+/// docs/ponder_diagnosis_2026-07-05.md.
+///
+/// Full charge is affordable because of its two compensators: the instant
+/// reply on a settled ponder hit (`should_instant_reply`) and the ponder-on
+/// optimum bump in `compute_tm_budgets`.
+///
+/// Kept ONLY for local A/B comparability — set 0..=100 via
+/// `setoption name PonderhitCreditPct` to re-enable fractional crediting.
 ///
 /// DELIBERATELY NOT a `tunables!` entry: SPSA runs on OB/fastchess, which has
 /// NO ponder support (fastchess#513 open), so the ponderhit path never fires
