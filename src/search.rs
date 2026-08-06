@@ -466,7 +466,7 @@ tunables!(
     // before alpha is raised). Default 10 = +1.0 reduction per prior alpha-raise.
     (LMR_ALPHA_RAISE_10X, 5, 0, 40, 5.0, false),
     (FUT_THREATS_MARGIN, 38, 0, 200, 10.0, true),
-    (DISCOVERED_ATTACK_BONUS, 3534, 0, 30000, 1500.0, false),
+    (DISCOVERED_ATTACK_BONUS, 0, 0, 30000, 1500.0, false),
     // Three tunables retired off this surface, with DIFFERENT outcomes — the
     // distinction matters if any of them is ever reconsidered:
     //   BATTERY_BONUS          feature itself ablated neutral and was REMOVED
