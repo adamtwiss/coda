@@ -455,10 +455,6 @@ tunables!(
     // 128cp even with nothing hanging — SPSA/ablation hitting this min would
     // broadly suppress NMP while labelled "undefended guard off".
     (NMP_UNDEFENDED_MAX_10X, 23, 1, 50, 10.0, true),
-    // T2.3 (next_ideas_2026-04-21): mobility-delta quiet-ordering weight.
-    // Bonus applied in movepicker quiets = (to_mobility - from_mobility) × this.
-    // Default 32 = ±256 typical range, additive to history (~1000s scale).
-    (MOBILITY_DELTA_WEIGHT, 34, 0, 256, 8.0, false),
     (PROBCUT_KING_ZONE_MAX_10X, 80, 20, 90, 15.0, true),
     // Was 38 (tp10→4). Now FIXED-POINT. Default 40 → eff 4.0 ≡ old behavior.
     (LMR_THREAT_DIV_10X, 35, 10, 50, 15.0, true),
