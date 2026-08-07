@@ -2981,14 +2981,18 @@ fn build_pv_string(info: &SearchInfo, board: &Board, target_depth: i32) -> Strin
             break;
         }
         pv_board.make_move(pv_mv);
-        if seen_hashes.iter().filter(|&&h| h == pv_board.hash).count() >= 2 { break; }
-        seen_hashes.push(pv_board.hash);
+        // Emit the move BEFORE testing for the repetition it creates: the
+        // move is legal and is the engine's actual choice, so dropping it
+        // loses information and, when a line repeats on its second move,
+        // collapses the whole PV to a single ply.
         if !pv_str.is_empty() { pv_str.push(' '); }
         pv_str.push_str(&move_to_uci(pv_mv));
         pv_moves += 1;
+        if seen_hashes.iter().filter(|&&h| h == pv_board.hash).count() >= 2 { break; }
+        seen_hashes.push(pv_board.hash);
     }
 
-    if pv_moves < target_depth as usize {
+    {
         while pv_moves < target_depth as usize + 5 {
             if seen_hashes.iter().filter(|&&h| h == pv_board.hash).count() >= 2 { break; }
             if pv_board.halfmove >= 100 { break; }
@@ -3600,15 +3604,25 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                     break;
                 }
                 pv_board.make_move(pv_mv);
-                if seen_hashes.iter().filter(|&&h| h == pv_board.hash).count() >= 2 { break; }
-                seen_hashes.push(pv_board.hash);
+                // Emit the move BEFORE testing for the repetition it creates: the
+                // move is legal and is the engine's actual choice, so dropping it
+                // loses information and, when a line repeats on its second move,
+                // collapses the whole PV to a single ply.
                 if !pv_str.is_empty() { pv_str.push(' '); }
                 pv_str.push_str(&move_to_uci(pv_mv));
                 pv_moves += 1;
+                if seen_hashes.iter().filter(|&&h| h == pv_board.hash).count() >= 2 { break; }
+                seen_hashes.push(pv_board.hash);
             }
 
-            // Extend with TT if PV table was short
-            if pv_moves < depth as usize {
+            // Extend with TT toward the same target the gate used to test
+            // against. These were inconsistent: the gate required
+            // `pv_moves < depth` but the loop then ran to `depth + 5`, so a
+            // PV one move shorter than `depth` was extended by six while a PV
+            // of exactly `depth` was not extended at all. That produced
+            // alternating long/short PVs across iterations — visible in CCRL
+            // broadcasts as every other line being truncated.
+            {
                 while pv_moves < depth as usize + 5 {
                     if seen_hashes.iter().filter(|&&h| h == pv_board.hash).count() >= 2 { break; }
                     if pv_board.halfmove >= 100 { break; }
