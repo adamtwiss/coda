@@ -597,7 +597,7 @@ pub static MVV_CAP_MULT: AtomicI32 = AtomicI32::new(28);
 pub static QS_SEE_THRESHOLD: AtomicI32 = AtomicI32::new(-26);
 pub static CAP_HIST_BASE: AtomicI32 = AtomicI32::new(42);
 pub static LMR_COMPLEXITY_DIV: AtomicI32 = AtomicI32::new(152);
-pub static TT_CUTOFF_HALFMOVE_MAX: AtomicI32 = AtomicI32::new(89);
+pub static TT_CUTOFF_HALFMOVE_MAX: AtomicI32 = AtomicI32::new(101);
 
 /// Post-ponderhit budget credit: PERCENT of elapsed ponder time deducted from
 /// the fresh post-hit think budget.
