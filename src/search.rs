@@ -4605,7 +4605,14 @@ fn negamax(
             // Gate ALL return-from-TT paths (direct + bounds-narrow collapse +
             // near-miss + QS) on halfmove < 90. Window-narrowing is still applied —
             // it only biases the search, while returning stale tt_score is unsafe.
-            let halfmove_ok = (board.halfmove as i32) < tp(&TT_CUTOFF_HALFMOVE_MAX);
+            // Budget-aware 50mr guard. The blanket `halfmove < 89` form ignored
+            // that the clock RISES WITH DEPTH: from a root clock of 76 the whole
+            // tree past ply 13 lost every TT cutoff (measured: 13 plies of depth,
+            // EBF 1.80 vs 1.48). Refuse the cutoff only when the draw actually
+            // arrives sooner than the plies this entry is standing in for —
+            // which is the case the gate exists for. score_from_tt already
+            // clamps mate/TB scores; this covers ordinary scores.
+            let halfmove_ok = (100 - board.halfmove as i32) > tt_depth;
             // P1.8: require +1 ply of TT depth for a fail-high (LOWER) cutoff —
             // SF/Obsidian/PlentyChess all demand `depth > depth - (value
             // <= beta)`, i.e. fail-lows accept at tt_depth>=depth but fail-highs
@@ -6806,8 +6813,9 @@ fn quiescence_with_depth(
         // (SF: ttValue is value_from_tt output everywhere).
         let tt_score = score_from_tt(tt_entry.score, ply, board.halfmove);
 
-        // P2: skip QS TT cutoff near 50mr — stale bound unsafe
-        let halfmove_ok = (board.halfmove as i32) < tp(&TT_CUTOFF_HALFMOVE_MAX);
+        // P2: skip QS TT cutoff near 50mr — stale bound unsafe. Budget-aware:
+        // QS entries stand in for few plies, so only the last stretch matters.
+        let halfmove_ok = (100 - board.halfmove as i32) > tt_entry.depth as i32;
         let qs_is_pv = beta - alpha > 1;
         match tt_entry.flag {
             TT_FLAG_EXACT => {
@@ -6989,7 +6997,7 @@ fn quiescence_with_depth(
     // ~4468: without this, an inflated near-50mr TT lower bound replaces
     // stand_pat and triggers the `best_score >= beta` return below —
     // bypassing the gate that exists for exactly this case.
-    if tt_hit && (board.halfmove as i32) < tp(&TT_CUTOFF_HALFMOVE_MAX) {
+    if tt_hit && (100 - board.halfmove as i32) > tt_entry.depth as i32 {
         // 50mr downgrade applies here too. A downgraded mate becomes a
         // TB-band value and is still filtered by !is_decisive below; a
         // downgraded TB score becomes the highest non-decisive value and
