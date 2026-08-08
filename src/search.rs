@@ -108,7 +108,7 @@ tunables!(
     // pays a verification re-search and NMP never gets a cheap cutoff. Below
     // this depth the cutoff is taken unverified; above it the re-search acts
     // as the zugzwang guard.
-    (NMP_VERIFY_DEPTH_10X, 76, 40, 200, 20.0, true),
+    (NMP_VERIFY_DEPTH_10X, 160, 40, 200, 20.0, true),
     (RFP_DEPTH, 20, 2, 20, 2.0, true),
     // Floors lifted to 0 (audit 2026-05-20): both pinned within ~10% of floor.
     (RFP_MARGIN_IMP, 22, 0, 150, 6.0, true),
