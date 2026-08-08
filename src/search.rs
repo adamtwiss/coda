@@ -544,6 +544,18 @@ tunables!(
     // removing the free-cutoff interception that killed #1904. SPSA had pushed
     // this to 8 as compensation for NMP-first ordering + per-cutoff verify cost.
     (NMP_MIN_DEPTH_10X, 55, 20, 200, 15.0, true),              // was hardcoded 3 (NMP activation gate, 2 sites)
+    // Depth-scaled NMP relaxation. Above the knee, allow the null move with a
+    // static eval progressively BELOW beta. Our NMP gate has no depth term, so
+    // in flat positions (drawn rook endgames, where beta drifts to ~0) it stops
+    // firing entirely — measured: cutoffs/node 0.20 there vs 0.38 in
+    // middlegames, with the deficit entirely NMP+RFP, and our node-count
+    // crossover vs SF at ~depth 26. Idea referenced from Stockfish, whose gate
+    // relaxes with depth and crosses beta at depth 26.7; the expression and
+    // constants here are our own. SF's slope is in SF internal units, which
+    // measure ~1.86x ours, so their 14/ply is ~7.5 of our cp — do NOT copy
+    // their constant directly.
+    (NMP_RELAX_KNEE_10X, 260, 100, 500, 20.0, false),
+    (NMP_RELAX_COEF, 8, 0, 30, 2.0, false),
     // Floor lifted from 10 → 0 (audit 2026-05-20): pinned at 25, 8% from floor.
     // 1 -> 17 (eff 0 -> 2, consensus floor): tune #1959 on the post-T1.2
     // trunk. The diagnostic was seeded at eff 2 and SPSA HELD (17.1) rather
@@ -5151,8 +5163,13 @@ fn negamax(
         + (any_threat_count - 2).max(0) * 64
         + (undefended_count - (tp10(&NMP_UNDEFENDED_MAX_10X) - 1)).max(0) * 128;
 
+    // Knee-gated so shallow NMP behaviour is byte-identical; only the deep
+    // regime (where the flat gate stops firing) is loosened.
+    let nmp_depth_relax =
+        (depth - tp10(&NMP_RELAX_KNEE_10X)).max(0) * tp(&NMP_RELAX_COEF);
+
     if depth >= tp10(&NMP_MIN_DEPTH_10X) && !in_check && ply > 0 && stm_non_pawn != 0
-        && beta - alpha == 1 && static_eval >= beta + nmp_threat_margin
+        && beta - alpha == 1 && static_eval + nmp_depth_relax >= beta + nmp_threat_margin
         && !prev_was_null  // Prevent consecutive null moves
         && ply >= info.nmp_min_ply  // Ply barrier: verification subtree cannot re-trigger NMP (audit B1)
         && beta.abs() < MATE_IN_MAX_PLY  // Skip NMP for mate/TB scores
