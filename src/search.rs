@@ -3680,6 +3680,16 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                     break;
                 }
                 let sc = negamax(board, info, -INFINITY, INFINITY, depth, 0, false);
+                // A stop DURING this search makes negamax return 0 (the
+                // convention at every call site). The pre-loop `should_stop`
+                // check cannot catch that, and `pv_len` is still non-zero from
+                // the aborted search — so the slot was emitted as a bogus
+                // `score cp 0` carrying a full, plausible-looking PV. Any GUI
+                // or kibitzer reading MultiPV saw a fabricated 0.00 line.
+                // Mirror the post-recursion stop-check used elsewhere.
+                if info.should_stop() {
+                    break;
+                }
                 if info.pv_len[0] == 0 {
                     break;
                 }
