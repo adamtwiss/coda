@@ -7973,11 +7973,29 @@ mod tests {
             fails.len(), tolerance_cp);
     }
 
-    /// Tier-1 discovery test: eval changes monotonically when removing
-    /// piece types in value order. Removes one piece at a time from a
-    /// balanced starting position; the eval delta ranking must be
-    /// roughly Queen > Rook > Bishop ≈ Knight > Pawn, all negative for
-    /// the side losing material.
+    /// Tier-1 discovery test: relative piece values.
+    ///
+    /// Measures each trade-off INSIDE a single position instead of by
+    /// subtracting two separately-evaluated ones. Rewritten 2026-08-09
+    /// after the original form went red on prod net 60F72A31.
+    ///
+    /// The original compared startpos-minus-queen against
+    /// startpos-minus-rook. Both are near-certain wins, so both evals sit
+    /// in win-probability saturation and their DIFFERENCE is saturation
+    /// noise rather than a material signal — the 2026-07-04 loosening
+    /// (SLACK=100) was already conceding exactly that. BT4-trained nets
+    /// compress the band harder still (Q..N spans 386cp on 60F72A31 vs
+    /// 685cp on E6C62000), so no fixed slack can rescue the form: on
+    /// 60F72A31 rook-removal (+1587) outranks queen-removal (+1201), with
+    /// knight (+1372) and bishop (+1298) in between.
+    ///
+    /// The asymmetric form has no such problem. White gives up the LESSER
+    /// piece and black the GREATER, so the comparison is encoded in one
+    /// eval and lands in the unsaturated range instead of at two points
+    /// near the win asymptote. Verified on both 60F72A31 and DB9B5605 at
+    /// both side-to-move settings: the tightest observed margin is 317cp
+    /// against the 100cp threshold, and the controls read within 26cp of
+    /// level.
     ///
     /// Detects: inverted piece values, eval-scale sign bugs, bucket
     /// mis-selection producing non-monotone evals at material boundaries.
@@ -7992,7 +8010,7 @@ mod tests {
         crate::init();
         let net = match try_load_v9_net() {
             Some(n) => n,
-            None => { eprintln!("Skipping monotonicity test: no v9 net available"); return; }
+            None => { eprintln!("Skipping piece-value test: no v9 net available"); return; }
         };
 
         fn eval_fen(net: &NNUENet, fen: &str) -> i32 {
@@ -8008,60 +8026,60 @@ mod tests {
             crate::eval::evaluate_nnue(&b, net, &mut acc, &ts)
         }
 
-        // Startpos (balanced). Evals are STM-relative = 0 on a balanced position.
-        let base = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
-        let e_base = eval_fen(&net, base);
+        // Sanity: removing any black piece must leave white better. This is
+        // a sign check only — the MAGNITUDES are not comparable across these
+        // positions, which is the whole reason the ordering moved below.
+        for (name, fen) in [
+            ("queen",  "rnb1kbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"),
+            ("rook",   "1nbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQk - 0 1"),
+            ("bishop", "rn1qkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"),
+            ("knight", "r1bqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"),
+            ("pawn",   "rnbqkbnr/1ppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"),
+        ] {
+            let e = eval_fen(&net, fen);
+            eprintln!("  remove black {:<6}: {:+6} cp", name, e);
+            assert!(e > 0, "Removing black {} gave eval={} — expected >0 (white up material)", name, e);
+        }
 
-        // Remove one black piece at a time; STM is white so each removal
-        // should return a POSITIVE eval (white is relatively ahead).
+        // Relative values: white is missing the WEAKER piece, black the
+        // STRONGER one, so white must be clearly ahead. Checked with both
+        // sides to move — evaluate_nnue is STM-relative, so white-to-move
+        // must read >= +MIN_EDGE and black-to-move <= -MIN_EDGE. Testing
+        // both catches a net whose material verdict depends on the tempo.
+        const MIN_EDGE: i32 = 100; // 1.00 pawn; tightest measured margin is 317cp
         let cases = [
-            ("black queen",  "rnb1kbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"),
-            ("black rook",   "1nbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"),
-            ("black bishop", "rn1qkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"),
-            ("black knight", "r1bqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"),
-            ("black pawn",   "rnbqkbnr/1ppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"),
+            ("queen  > rook  ", "rnb1kbnr/pppppppp/8/8/8/8/PPPPPPPP/1NBQKBNR", "Kkq"),
+            ("queen  > bishop", "rnb1kbnr/pppppppp/8/8/8/8/PPPPPPPP/RN1QKBNR", "KQkq"),
+            ("queen  > knight", "rnb1kbnr/pppppppp/8/8/8/8/PPPPPPPP/R1BQKBNR", "KQkq"),
+            ("rook   > bishop", "1nbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RN1QKBNR", "KQk"),
+            ("rook   > knight", "1nbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/R1BQKBNR", "KQk"),
+            ("rook   > pawn  ", "1nbqkbnr/pppppppp/8/8/8/8/1PPPPPPP/RNBQKBNR", "KQk"),
+            ("bishop > pawn  ", "rn1qkbnr/pppppppp/8/8/8/8/1PPPPPPP/RNBQKBNR", "KQkq"),
+            ("knight > pawn  ", "r1bqkbnr/pppppppp/8/8/8/8/1PPPPPPP/RNBQKBNR", "KQkq"),
         ];
-
-        let evals: Vec<(&str, i32, i32)> = cases.iter().map(|(name, f)| {
-            let e = eval_fen(&net, f);
-            (*name, e, e - e_base)
-        }).collect();
-
-        eprintln!("Base (startpos) eval: {} cp", e_base);
-        for (name, e, delta) in &evals {
-            eprintln!("  Remove {}: eval={} cp, delta from base = +{} cp", name, e, delta);
+        for (label, layout, rights) in cases {
+            let ew = eval_fen(&net, &format!("{} w {} - 0 1", layout, rights));
+            let eb = eval_fen(&net, &format!("{} b {} - 0 1", layout, rights));
+            eprintln!("  {} : wtm {:+6} cp   btm {:+6} cp", label, ew, eb);
+            assert!(ew >= MIN_EDGE,
+                "{}: white to move reads {}cp, expected >= +{}cp (white gave up the lesser piece)",
+                label.trim(), ew, MIN_EDGE);
+            assert!(eb <= -MIN_EDGE,
+                "{}: black to move reads {}cp, expected <= -{}cp (black gave up the greater piece)",
+                label.trim(), eb, MIN_EDGE);
         }
 
-        // All removals should produce positive evals (white better off).
-        for (name, e, _) in &evals {
-            assert!(*e > 0, "Removing {} gave eval={} — expected >0 (white up material)", name, e);
+        // Controls: symmetric removals must read near level.
+        const MAX_LEVEL: i32 = 100; // measured within 26cp on both nets
+        for (label, fen) in [
+            ("both lose a rook  ", "1nbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/1NBQKBNR w Kk - 0 1"),
+            ("both lose a knight", "r1bqkbnr/pppppppp/8/8/8/8/PPPPPPPP/R1BQKBNR w KQkq - 0 1"),
+        ] {
+            let e = eval_fen(&net, fen);
+            eprintln!("  control {} : {:+6} cp", label, e);
+            assert!(e.abs() <= MAX_LEVEL,
+                "control {}: expected |eval| <= {}cp, got {}cp", label.trim(), MAX_LEVEL, e);
         }
-
-        // Ordering check: queen removal should be the biggest gain;
-        // pawn removal should be the smallest. Bishop/knight may swap
-        // but should both be well above pawn and well below rook.
-        let q = evals[0].2;
-        let r = evals[1].2;
-        let b = evals[2].2;
-        let n = evals[3].2;
-        let p = evals[4].2;
-
-        // Loosened 2026-07-04 (Adam): strict piece-value ordering among the
-        // big pieces is NOT a property a WDL-trained net must satisfy —
-        // "up a rook" and "up a bishop" from the startpos are both
-        // near-certain wins, so their eval difference is win-prob
-        // saturation noise, not a material signal (prod net E6C62000
-        // legitimately scores rook-removal within ~5cp of bishop-removal,
-        // sometimes below). Require only slack-ordering among Q/R/minors;
-        // keep the strict piece-vs-pawn orderings, which do reflect
-        // unsaturated win-prob structure.
-        const SLACK: i32 = 100;
-        assert!(q > r - SLACK, "Queen removal delta ({}) more than {}cp below Rook removal ({})", q, SLACK, r);
-        assert!(r > b - SLACK && r > n - SLACK,
-            "Rook removal ({}) more than {}cp below Bishop ({}) or Knight ({})", r, SLACK, b, n);
-        assert!(b > p, "Bishop removal ({}) not > Pawn ({})", b, p);
-        assert!(n > p, "Knight removal ({}) not > Pawn ({})", n, p);
-        assert!(p > 0, "Pawn removal gave non-positive delta: {}", p);
     }
 
     /// Deterministic PSQ fuzzer: plays random legal games from several
