@@ -518,6 +518,13 @@ tunables!(
     // Minimum depth for internal iterative reduction. Floor runs low so SPSA
     // can explore "fire at any depth >= 1" rather than being clamped out of it.
     (IIR_MIN_DEPTH_10X, 40, 5, 100, 15.0, true),
+    // IIR_TT_DEPTH_SLACK: also reduce when a TT move EXISTS but came from a
+    // much shallower search (tt_depth < depth - slack). Previously IIR fired
+    // only when the TT move was absent entirely, so at depth 30 with a depth-6
+    // entry we searched full depth on 24-ply-stale move ordering — a gap that
+    // widens monotonically with depth. Coda already carries the same
+    // "TT entry too shallow" notion in SE_TT_DEPTH_SLACK / PROBCUT_TT_DEPTH_SLACK.
+    (IIR_TT_DEPTH_SLACK, 4, 1, 12, 1.0, true),
     // ProbCut floor lifted from 30 → 10 (audit 2026-05-19): SPSA at 32,
     // ~2% from floor. Lifting to 10 (eff 1) allows exploration of more
     // aggressive ProbCut activation.
@@ -5260,7 +5267,15 @@ fn negamax(
     // All 6 reference engines run NMP at full depth; IIR only applies to the moves loop.
     // Coda previously ran IIR before NMP, silently reducing null depth by 1 at cut nodes.
     // (NMP audit N2)
-    if depth >= tp10(&IIR_MIN_DEPTH_10X) && tt_move == NO_MOVE && !in_check && (is_pv || cut_node) && FEAT_IIR.load(Ordering::Relaxed) {
+    let iir_tt_stale = tt_hit
+        && tt_move != NO_MOVE
+        && (tt_entry.depth as i32) < depth - tp(&IIR_TT_DEPTH_SLACK);
+    if depth >= tp10(&IIR_MIN_DEPTH_10X)
+        && (tt_move == NO_MOVE || iir_tt_stale)
+        && !in_check
+        && (is_pv || cut_node)
+        && FEAT_IIR.load(Ordering::Relaxed)
+    {
         depth -= 1;
     }
 
