@@ -143,6 +143,14 @@ tunables!(
     // HIST_PRUNE_DEPTH_10X / HIST_PRUNE_MULT removed 2026-06-02 — see hist-prune
     // removal block in main negamax body for rationale (three H0 SPRTs).
     (SEE_QUIET_MULT, 20, 5, 80, 3.75, true),
+    // SEE_QUIET_TTPV_RELAX: relax the quiet SEE-pruning threshold on tt_pv
+    // nodes in proportion to remaining depth (lmr_d). A tt_pv node lies on a
+    // line the search has previously believed in, and the deeper we still have
+    // to go the more a material-losing quiet may be a real resource. Coda's
+    // threshold was purely -MULT*lmr_d^2 with no PV-lineage term, so PV spines
+    // were pruned on the same basis as any late quiet — an axis that matters
+    // more the deeper the search runs. 0 = off (previous behaviour).
+    (SEE_QUIET_TTPV_RELAX, 25, 0, 80, 3.0, true),
     // Low-increment TM multiplier ceiling (2026-06-18). The factor product
     // (stability×fail-low×forced×subtree×score-trend, up to ~13.8×) is only
     // clamped for no_inc; at increments that are SMALL RELATIVE TO THE CLOCK
@@ -5608,7 +5616,8 @@ fn negamax(
             && beta < MATE_IN_MAX_PLY  // forced-win guard: don't SEE-prune quiets while proving a win
             && FEAT_SEE_PRUNE.load(Ordering::Relaxed)
         {
-            let see_quiet_threshold = -tp(&SEE_QUIET_MULT) * lmr_d * lmr_d;
+            let see_quiet_threshold = -tp(&SEE_QUIET_MULT) * lmr_d * lmr_d
+                - (tt_pv as i32) * lmr_d * tp(&SEE_QUIET_TTPV_RELAX);
             if !see_ge(board, mv, see_quiet_threshold) {
                 trace_gate!(info, board.hash, ply, mv, "see_quiet", depth, move_count);
                 info.stats.see_prunes += 1;
