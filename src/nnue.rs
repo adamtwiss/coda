@@ -7568,6 +7568,7 @@ mod tests {
     /// net (e.g. the v9 net to cover the threat + pairwise VNNI path).
     #[test]
     fn test_simd_scalar_consistency() {
+        let _space = crate::threats::FEATURE_SPACE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         // Net loading mutates the process-global EMIT_XRAY — serialize with
         // every other net-loading test (see fuzz_eval_mirror_symmetry).
         use crate::board::Board;
@@ -7882,6 +7883,7 @@ mod tests {
     /// prints all positions + diffs for triage.
     #[test]
     fn test_eval_color_symmetry() {
+        let _space = crate::threats::FEATURE_SPACE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         // Net loading mutates the process-global EMIT_XRAY — serialize with
         // every other net-loading test (see fuzz_eval_mirror_symmetry).
         use crate::board::Board;
@@ -7981,6 +7983,7 @@ mod tests {
     /// mis-selection producing non-monotone evals at material boundaries.
     #[test]
     fn test_eval_piece_value_monotonicity() {
+        let _space = crate::threats::FEATURE_SPACE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         // Net loading mutates the process-global EMIT_XRAY — serialize with
         // every other net-loading test (see fuzz_eval_mirror_symmetry).
         use crate::board::Board;
@@ -8071,6 +8074,7 @@ mod tests {
     /// PSQ (king-piece-square) half of the net.
     #[test]
     fn fuzz_psq_accumulator() {
+        let _space = crate::threats::FEATURE_SPACE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         // Net loading mutates the process-global EMIT_XRAY — serialize with
         // every other net-loading test (see fuzz_eval_mirror_symmetry).
         use crate::board::Board;
@@ -8179,6 +8183,7 @@ mod tests {
     /// Test Finny table consistency: incremental update vs full recompute.
     #[test]
     fn test_finny_incremental_consistency() {
+        let _space = crate::threats::FEATURE_SPACE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         use crate::board::Board;
 
         crate::init();
@@ -8254,6 +8259,7 @@ mod tests {
     /// this one is deterministic and forces the cross-bucket path.
     #[test]
     fn finny_king_march_consistency() {
+        let _space = crate::threats::FEATURE_SPACE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         use crate::board::Board;
         use crate::search::build_dirty_piece;
         use crate::types::{flip_color, NO_PIECE_TYPE, make_move, FLAG_NONE};
