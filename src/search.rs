@@ -6619,10 +6619,17 @@ fn negamax(
     // positional-eval miscalibration correction history is trying to learn.
     // Training on noisy bestmoves pollutes the tables. Matches Stockfish
     // (skip the update when the best move is a capture/promotion).
+    // A noisy best move usually means the score came from material, which is
+    // not what correction history is meant to learn. But that reasoning only
+    // holds when the noisy move WINS material: if it loses material by SEE and
+    // is still the best move, the score is positional and the update is exactly
+    // the signal corrhist wants. Previously every noisy best move was skipped,
+    // discarding that class.
     let best_move_noisy = best_move != NO_MOVE && {
-        board.piece_type_at(move_to(best_move)) != NO_PIECE_TYPE
+        (board.piece_type_at(move_to(best_move)) != NO_PIECE_TYPE
             || move_flags(best_move) == FLAG_EN_PASSANT
-            || is_promotion(best_move)
+            || is_promotion(best_move))
+            && see_ge(board, best_move, 0)
     };
     // Correction history update: train on BOTH directions of error.
     // Previously gated on `best_score > alpha_orig` (fail-high only), which
