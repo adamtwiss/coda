@@ -67,6 +67,83 @@ pub fn transpose_weights_for_sparse(
     sparse
 }
 
+
+#[cfg(target_arch = "x86_64")]
+static NNZ_SHUF: std::sync::OnceLock<[[u8; 16]; 256]> = std::sync::OnceLock::new();
+#[cfg(target_arch = "x86_64")]
+fn nnz_shuf() -> &'static [[u8; 16]; 256] {
+    NNZ_SHUF.get_or_init(|| {
+        let mut t = [[0x80u8; 16]; 256];
+        for m in 0..256usize {
+            let mut k = 0;
+            for lane in 0..8 {
+                if m & (1 << lane) != 0 { t[m][k*2] = (lane*2) as u8; t[m][k*2+1] = (lane*2+1) as u8; k += 1; }
+            }
+        }
+        t
+    })
+}
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn nnz_idx_avx2(data: *const u8, chunks: usize, out: *mut u16) -> usize {
+    use std::arch::x86_64::*;
+    let lut = nnz_shuf();
+    let zero = _mm256_setzero_si256();
+    let lanes = _mm_setr_epi16(0,1,2,3,4,5,6,7);
+    let (mut count, mut i) = (0usize, 0usize);
+    while i + 8 <= chunks {
+        let v = _mm256_loadu_si256(data.add(i*4) as *const __m256i);
+        let m = (!_mm256_movemask_ps(_mm256_castsi256_ps(_mm256_cmpeq_epi32(v, zero)))) as usize & 0xFF;
+        let offs = _mm_add_epi16(lanes, _mm_set1_epi16(i as i16));
+        _mm_storeu_si128(out.add(count) as *mut __m128i,
+            _mm_shuffle_epi8(offs, _mm_loadu_si128(lut[m].as_ptr() as *const __m128i)));
+        count += (m as u32).count_ones() as usize;
+        i += 8;
+    }
+    while i < chunks {
+        if (data.add(i*4) as *const u32).read_unaligned() != 0 { *out.add(count) = i as u16; count += 1; }
+        i += 1;
+    }
+    count
+}
+/// Sparse L1 for L1=32: branch-free index extraction, two passes, no select.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+#[inline(never)]
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn sparse_l1_avx2_l1_32(
+    stm_pw: &[u8], ntm_pw: &[u8], pw: usize, sparse_weights: &[i8],
+    bias: &[i16], bias_scale: i32, output: *mut i32,
+) {
+    use std::arch::x86_64::*;
+    const N: usize = 32;
+    let chunks = pw / 4;
+    let stride = N * 4;
+    let ones = _mm256_set1_epi16(1);
+    let w = sparse_weights.as_ptr();
+    let (mut a0, mut a1) = (_mm256_setzero_si256(), _mm256_setzero_si256());
+    let (mut a2, mut a3) = (_mm256_setzero_si256(), _mm256_setzero_si256());
+    let mut idx = [0u16; crate::nnue::NNUE_PW_BUF / 4 + 16];
+    for (buf, base) in [(stm_pw, 0usize), (ntm_pw, chunks)] {
+        let n = nnz_idx_avx2(buf.as_ptr(), chunks, idx.as_mut_ptr());
+        let src = buf.as_ptr() as *const u32;
+        for k in 0..n {
+            let ci = *idx.get_unchecked(k) as usize;
+            let inp = _mm256_set1_epi32(src.add(ci).read_unaligned() as i32);
+            let c = w.add((base + ci) * stride);
+            a0 = _mm256_add_epi32(a0, _mm256_madd_epi16(_mm256_maddubs_epi16(inp, _mm256_loadu_si256(c as *const __m256i)), ones));
+            a1 = _mm256_add_epi32(a1, _mm256_madd_epi16(_mm256_maddubs_epi16(inp, _mm256_loadu_si256(c.add(32) as *const __m256i)), ones));
+            a2 = _mm256_add_epi32(a2, _mm256_madd_epi16(_mm256_maddubs_epi16(inp, _mm256_loadu_si256(c.add(64) as *const __m256i)), ones));
+            a3 = _mm256_add_epi32(a3, _mm256_madd_epi16(_mm256_maddubs_epi16(inp, _mm256_loadu_si256(c.add(96) as *const __m256i)), ones));
+        }
+    }
+    let mut t = [0i32; 8];
+    for (j, acc) in [a0,a1,a2,a3].iter().enumerate() {
+        _mm256_storeu_si256(t.as_mut_ptr() as *mut __m256i, *acc);
+        for i in 0..8 { *output.add(j*8+i) = bias[j*8+i] as i32 * bias_scale + t[i]; }
+    }
+}
+
 /// Find non-zero 4-byte chunks in a u8 array.
 /// Returns the number of non-zero chunks found.
 /// nnz_indices is filled with the chunk indices.
@@ -1833,5 +1910,37 @@ mod tests {
 
         // Final sink read so dead-code elimination can't kill the loop.
         eprintln!("(sink = {})", sink);
+    }
+}
+
+#[cfg(test)]
+mod sparse_l1_32_tests {
+    use super::*;
+
+    /// The sparse kernel must be bit-identical to the dense kernel it would
+    /// replace — it changes only which chunks are visited, never the arithmetic.
+    #[test]
+    fn sparse_l1_32_matches_dense() {
+        if !is_x86_feature_detected!("avx2") { return; }
+        const N: usize = 32;
+        let mut rng: u64 = 0x51ee_d0ff_1234_9876;
+        let mut next = |m: u64| { rng ^= rng << 13; rng ^= rng >> 7; rng ^= rng << 17; rng % m };
+        for trial in 0..300 {
+            let pw = 4 * (8 + (trial % 120));
+            let chunks = 2 * (pw / 4);
+            let d = (trial % 10) as u64;
+            let (mut stm, mut ntm) = (vec![0u8; pw], vec![0u8; pw]);
+            for buf in [&mut stm, &mut ntm] {
+                for c in 0..pw / 4 { if next(10) < d { for b in 0..4 { buf[c*4+b] = next(256) as u8; } } }
+            }
+            let w: Vec<i8> = (0..chunks*N*4).map(|_| (next(256) as i32 - 128) as i8).collect();
+            let bias: Vec<i16> = (0..N).map(|_| (next(2000) as i32 - 1000) as i16).collect();
+            let (mut a, mut b) = (vec![0i32; N], vec![0i32; N]);
+            unsafe {
+                dense_l1_avx2_l1_32(&stm, &ntm, pw, &w, &bias, 3, a.as_mut_ptr());
+                sparse_l1_avx2_l1_32(&stm, &ntm, pw, &w, &bias, 3, b.as_mut_ptr());
+            }
+            assert_eq!(a, b, "trial {} pw {} density {}", trial, pw, d);
+        }
     }
 }
