@@ -374,7 +374,6 @@ tunables!(
     //
     // dext_margin = DEXT_MARGIN_PV   * is_pv
     //             - DEXT_MARGIN_QUIET * is_tt_quiet
-    //             - DEXT_MARGIN_CORR * |corr| / 128
     //             + DEXT_MARGIN_BASE
     //
     // The BASE term is Coda-specific and load-bearing: without it the margin
@@ -389,7 +388,6 @@ tunables!(
     // tested for Coda's regime and the signal was not there.
     (DEXT_MARGIN_PV, 169, 50, 400, 15.0, false),
     (DEXT_MARGIN_QUIET, 17, 0, 100, 4.0, false),
-    (DEXT_MARGIN_CORR, 25, 0, 64, 3.0, true),
     (DEXT_MARGIN_BASE, 33, -50, 150, 6.0, true),
     (DEXT_CAP, 11, 4, 32, 2.0, true),
     (QUIET_CHECK_BONUS, 14805, 2000, 30000, 1400.0, false),
@@ -5639,10 +5637,8 @@ fn negamax(
                     // BASE term puts us in a sensible starting basin; SPSA
                     // explores the equilibrium where pruning compensates.
                     let is_tt_quiet = !is_cap && !is_promo;
-                    let corr_abs = correction_value(info, board, ply_u).abs();
                     let dext_margin = tp(&DEXT_MARGIN_PV) * is_pv as i32
                                     - tp(&DEXT_MARGIN_QUIET) * is_tt_quiet as i32
-                                    - tp(&DEXT_MARGIN_CORR) * corr_abs / 128
                                     + tp(&DEXT_MARGIN_BASE);
 
                     singular_extension = 1;
