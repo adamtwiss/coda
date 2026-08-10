@@ -518,6 +518,14 @@ tunables!(
     // Minimum depth for internal iterative reduction. Floor runs low so SPSA
     // can explore "fire at any depth >= 1" rather than being clamped out of it.
     (IIR_MIN_DEPTH_10X, 40, 5, 100, 15.0, true),
+    // TT near-miss margin: base + per-ply term, capped. The margin was a flat
+    // 80cp regardless of depth, so a shallow entry and a deep one were trusted
+    // to the same tolerance. The uncertainty in a short-of-depth entry grows
+    // with how deep we are, so the safety margin should too; the cap stops it
+    // from making the cutoff unreachable at high depth.
+    (TT_NEARMISS_BASE, 60, 0, 200, 8.0, true),
+    (TT_NEARMISS_PER_DEPTH, 4, 0, 20, 1.0, true),
+    (TT_NEARMISS_CAP, 260, 80, 600, 20.0, true),
     // ProbCut floor lifted from 30 → 10 (audit 2026-05-19): SPSA at 32,
     // ~2% from floor. Lifting to 10 (eff 1) allows exploration of more
     // aggressive ProbCut activation.
@@ -4802,8 +4810,10 @@ fn negamax(
                 && FEAT_TT_NEARMISS.load(Ordering::Relaxed)
                 && halfmove_ok
             {
-                // TT near-miss cutoffs: accept entries 1 ply short with a score margin
-                let margin = 80;
+                // TT near-miss cutoffs: accept short-of-depth entries with a
+                // score margin that scales with the depth being searched.
+                let margin = (tp(&TT_NEARMISS_BASE) + tp(&TT_NEARMISS_PER_DEPTH) * depth)
+                    .min(tp(&TT_NEARMISS_CAP));
                 if tt_entry.flag == TT_FLAG_LOWER && tt_score - margin >= beta {
                     info.stats.tt_near_miss += 1;
                     return tt_score - margin;
