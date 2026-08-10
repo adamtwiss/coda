@@ -518,6 +518,14 @@ tunables!(
     // Minimum depth for internal iterative reduction. Floor runs low so SPSA
     // can explore "fire at any depth >= 1" rather than being clamped out of it.
     (IIR_MIN_DEPTH_10X, 40, 5, 100, 15.0, true),
+    // IIR_TT_DEPTH_SLACK: also reduce when a TT move EXISTS but its depth is
+    // far below the depth about to be searched (tt_depth < depth - slack).
+    // Such a move is weak evidence for ordering, and how stale it is grows
+    // with remaining depth. Applied at CUT nodes only: #3122 tried it at
+    // pv||cut and measured -4.0 — it did lower the EBF (bench -12.7%) but cost
+    // more than it saved, and a PV node is the expensive place to guess wrong.
+    // Cut nodes are where a cheap ordering guess is acceptable.
+    (IIR_TT_DEPTH_SLACK, 4, 1, 12, 1.0, true),
     // ProbCut floor lifted from 30 → 10 (audit 2026-05-19): SPSA at 32,
     // ~2% from floor. Lifting to 10 (eff 1) allows exploration of more
     // aggressive ProbCut activation.
@@ -5247,7 +5255,16 @@ fn negamax(
     // All 6 reference engines run NMP at full depth; IIR only applies to the moves loop.
     // Coda previously ran IIR before NMP, silently reducing null depth by 1 at cut nodes.
     // (NMP audit N2)
-    if depth >= tp10(&IIR_MIN_DEPTH_10X) && tt_move == NO_MOVE && !in_check && (is_pv || cut_node) && FEAT_IIR.load(Ordering::Relaxed) {
+    let iir_tt_stale = cut_node
+        && tt_hit
+        && tt_move != NO_MOVE
+        && (tt_entry.depth as i32) < depth - tp(&IIR_TT_DEPTH_SLACK);
+    if depth >= tp10(&IIR_MIN_DEPTH_10X)
+        && (tt_move == NO_MOVE || iir_tt_stale)
+        && !in_check
+        && (is_pv || cut_node)
+        && FEAT_IIR.load(Ordering::Relaxed)
+    {
         depth -= 1;
     }
 
