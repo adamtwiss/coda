@@ -466,7 +466,7 @@ tunables!(
     // before alpha is raised). Default 10 = +1.0 reduction per prior alpha-raise.
     (LMR_ALPHA_RAISE_10X, 5, 0, 40, 5.0, false),
     (FUT_THREATS_MARGIN, 38, 0, 200, 10.0, true),
-    (DISCOVERED_ATTACK_BONUS, 3534, 0, 30000, 1500.0, false),
+    (DISCOVERED_ATTACK_BONUS, 0, 0, 30000, 1500.0, false),
     // Three tunables retired off this surface, with DIFFERENT outcomes — the
     // distinction matters if any of them is ever reconsidered:
     //   BATTERY_BONUS          feature itself ablated neutral and was REMOVED
@@ -4916,15 +4916,6 @@ fn negamax(
     // (grandchild cutoff-counter reset, technique from SF).
     info.cutoff_count[ply_u + 2] = 0;
 
-    // Eval instability: detect sharp eval swings from parent node
-    let unstable = !in_check && ply >= 1 && ply_u >= 1
-        && info.static_evals[ply_u - 1] > -INFINITY
-        && {
-            let parent_eval = -info.static_evals[ply_u - 1];
-            let diff = (static_eval - parent_eval).abs();
-            diff > tp(&UNSTABLE_THRESH)
-        };
-
     // Detect if TT move is noisy. Captures, EP, AND promotions
     // (including non-capture promotions — they create a queen, are
     // tactically loud). Prior version classified non-capture promotion
@@ -5042,10 +5033,6 @@ fn negamax(
             }
             // Widen margin when opponent pawns attack our pieces (Minic/Berserk pattern)
             if has_pawn_threats { margin += margin / 3; }
-            // E2: widen margin when position is unstable (parent-child eval gap
-            // > UNSTABLE_THRESH). Static eval can't be trusted for RFP when
-            // eval is volatile. Mirrors unstable × ProbCut skip (#542 +6.7).
-            if unstable { margin += margin / 3; }
             if static_eval - margin >= beta {
                 trace_node!(info, board.hash, ply, "rfp_cut", depth);
                 info.stats.rfp_cutoffs += 1;
@@ -5301,7 +5288,6 @@ fn negamax(
         && info.excluded_move[ply_u] == NO_MOVE  // skip during SE verification
         && !probcut_tt_noshot  // TT says no chance
         && king_zone_pressure < tp10(&PROBCUT_KING_ZONE_MAX_10X)  // A3: skip in high-threat positions
-        && !unstable  // Skip ProbCut in eval-unstable positions (eval can't be trusted)
         && FEAT_PROBCUT.load(Ordering::Relaxed)
     {
         // SEE threshold: only consider captures that gain enough material
