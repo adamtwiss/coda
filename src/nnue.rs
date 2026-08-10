@@ -331,7 +331,7 @@ pub const NNUE_PW_BUF: usize = 1024;
 #[inline(always)]
 pub fn ft_deadzone() -> i16 {
     static V: std::sync::OnceLock<i16> = std::sync::OnceLock::new();
-    *V.get_or_init(|| std::env::var("CODA_FT_DEADZONE").ok().and_then(|s| s.parse().ok()).unwrap_or(0))
+    *V.get_or_init(|| std::env::var("CODA_FT_DEADZONE").ok().and_then(|s| s.parse().ok()).unwrap_or(16))
 }
 
 /// Prefetch the head of every weight row an accumulator update will gather.
@@ -1036,7 +1036,8 @@ unsafe fn simd_pairwise_pack_impl<const HAS_THREAT: bool>(
         let mut a = acc[i] as i32;
         let mut b = acc[pw + i] as i32;
         if HAS_THREAT { a += *threat.add(i) as i32; b += *threat.add(pw + i) as i32; }
-        out.add(i).write(((a.clamp(0, 255) * b.clamp(0, 255)) >> FT_SHIFT) as u8);
+        let v = (a.clamp(0, 255) * b.clamp(0, 255)) >> FT_SHIFT;
+        out.add(i).write(if v < ft_deadzone() as i32 { 0 } else { v } as u8);
         i += 1;
     }
 }
@@ -1449,7 +1450,8 @@ unsafe fn simd512_pairwise_pack_impl<const HAS_THREAT: bool>(
         let mut a = acc[i] as i32;
         let mut b = acc[pw + i] as i32;
         if HAS_THREAT { a += *threat.add(i) as i32; b += *threat.add(pw + i) as i32; }
-        out.add(i).write(((a.clamp(0, 255) * b.clamp(0, 255)) >> FT_SHIFT) as u8);
+        let v = (a.clamp(0, 255) * b.clamp(0, 255)) >> FT_SHIFT;
+        out.add(i).write(if v < ft_deadzone() as i32 { 0 } else { v } as u8);
         i += 1;
     }
 }
@@ -2155,7 +2157,8 @@ unsafe fn neon_pairwise_pack_fused(acc: &[i16], threat: *const i16, out: *mut u8
             a += *threat.add(i) as i32;
             b += *threat.add(pw + i) as i32;
         }
-        out.add(i).write(((a.clamp(0, 255) * b.clamp(0, 255)) >> FT_SHIFT) as u8);
+        let v = (a.clamp(0, 255) * b.clamp(0, 255)) >> FT_SHIFT;
+        out.add(i).write(if v < ft_deadzone() as i32 { 0 } else { v } as u8);
         i += 1;
     }
 }
@@ -3430,14 +3433,16 @@ impl NNUENet {
                 let tb = if has_threats { stm_threat[i + pw] as i32 } else { 0 };
                 let a = (stm_acc[i] as i32 + ta).clamp(0, QA);
                 let b = (stm_acc[i + pw] as i32 + tb).clamp(0, QA);
-                unsafe { stm_pw_ptr.add(i).write(((a * b) >> FT_SHIFT) as u8); }
+                let v = (a * b) >> FT_SHIFT;
+                unsafe { stm_pw_ptr.add(i).write(if v < ft_deadzone() as i32 { 0 } else { v } as u8); }
             }
             for i in 0..pw {
                 let ta = if has_threats { ntm_threat[i] as i32 } else { 0 };
                 let tb = if has_threats { ntm_threat[i + pw] as i32 } else { 0 };
                 let a = (ntm_acc[i] as i32 + ta).clamp(0, QA);
                 let b = (ntm_acc[i + pw] as i32 + tb).clamp(0, QA);
-                unsafe { ntm_pw_ptr.add(i).write(((a * b) >> FT_SHIFT) as u8); }
+                let v = (a * b) >> FT_SHIFT;
+                unsafe { ntm_pw_ptr.add(i).write(if v < ft_deadzone() as i32 { 0 } else { v } as u8); }
             }
         }
 
@@ -3461,14 +3466,16 @@ impl NNUENet {
                 let tb = if has_threats { stm_threat[i + pw] as i32 } else { 0 };
                 let a = (stm_acc[i] as i32 + ta).clamp(0, QA);
                 let b = (stm_acc[i + pw] as i32 + tb).clamp(0, QA);
-                unsafe { stm_pw_ptr.add(i).write(((a * b) >> FT_SHIFT) as u8); }
+                let v = (a * b) >> FT_SHIFT;
+                unsafe { stm_pw_ptr.add(i).write(if v < ft_deadzone() as i32 { 0 } else { v } as u8); }
             }
             for i in 0..pw {
                 let ta = if has_threats { ntm_threat[i] as i32 } else { 0 };
                 let tb = if has_threats { ntm_threat[i + pw] as i32 } else { 0 };
                 let a = (ntm_acc[i] as i32 + ta).clamp(0, QA);
                 let b = (ntm_acc[i + pw] as i32 + tb).clamp(0, QA);
-                unsafe { ntm_pw_ptr.add(i).write(((a * b) >> FT_SHIFT) as u8); }
+                let v = (a * b) >> FT_SHIFT;
+                unsafe { ntm_pw_ptr.add(i).write(if v < ft_deadzone() as i32 { 0 } else { v } as u8); }
             }
         }
 
@@ -3640,23 +3647,9 @@ impl NNUENet {
                 }
             }
             #[cfg(target_arch = "x86_64")]
-            L1Kernel::DenseAvx2L1_32X2 if std::env::var("CODA_L1_SPARSE").is_ok() => {
+            L1Kernel::DenseAvx2L1_32X2 => {
                 unsafe {
                     crate::sparse_l1::sparse_l1_avx2_l1_32(
-                        stm_pw, ntm_pw, pw, &self.l1_weights_sparse,
-                        &self.l1_biases[l1_off..], pw_scale, hidden32_ptr,
-                    );
-                }
-            }
-            L1Kernel::DenseAvx2L1_32X2 => {
-                // L1=32 AVX2 with maddubs-pair fusion: two input chunks per
-                // iteration, VPMADDUBSW products summed with one VPADDW
-                // before a single shared VPMADDWD — halves the madd count
-                // of the emulated dot product. Exactness guaranteed by the
-                // load-time x2_fusion_safe gate (else this arm is never
-                // selected).
-                unsafe {
-                    crate::sparse_l1::dense_l1_avx2_l1_32_x2(
                         stm_pw, ntm_pw, pw, &self.l1_weights_sparse,
                         &self.l1_biases[l1_off..], pw_scale, hidden32_ptr,
                     );
@@ -6794,7 +6787,8 @@ mod tests {
             };
             let a = (acc[i] as i32 + ta).clamp(0, QA);
             let b = (acc[i + pw] as i32 + tb).clamp(0, QA);
-            out[i] = ((a * b) >> FT_SHIFT) as u8;
+            let v = (a * b) >> FT_SHIFT;
+            out[i] = if v < ft_deadzone() as i32 { 0 } else { v } as u8;
         }
     }
 
