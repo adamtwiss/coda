@@ -5145,6 +5145,12 @@ fn negamax(
         && beta.abs() < MATE_IN_MAX_PLY  // Skip NMP for mate/TB scores
         && info.excluded_move[ply_u] == NO_MOVE  // Skip NMP during SE verification
         && cut_node  // cut-node gate: only attempt NMP at expected fail-high nodes (closes 30%->57% NMP cutoff-rate gap)
+        // A stored UPPER bound means a previous search of this node failed
+        // low — the least likely place for a null move to produce a cutoff, so
+        // the null search is usually a wasted subtree. The cut-node gate above
+        // uses the node's expected type; this uses what the TT actually
+        // recorded about it.
+        && !(tt_hit && tt_entry.flag == TT_FLAG_UPPER)
         && FEAT_NMP.load(Ordering::Relaxed)
     {
         info.stats.nmp_attempts += 1;
