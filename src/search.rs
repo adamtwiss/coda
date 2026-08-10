@@ -431,30 +431,6 @@ tunables!(
     // Null-move threat-escape bonus in quiet ordering (was hardcoded 8000).
     (NULL_THREAT_ESCAPE_BONUS, 8321, 0, 30000, 1000.0, false),
     (NMP_KING_ZONE_MAX_10X, 40, 20, 90, 15.0, true),
-    // T2.1 (Titan's next_ideas 2026-04-21): undefended-piece NMP suppression
-    // threshold. Count our pieces with >=1 enemy attacker AND zero of our own
-    // defenders ("hanging"); the opponent's free tempo is very likely to
-    // exploit a hanger, so raise the bar for NMP when we have them.
-    //
-    // NOT a binary skip any more (the comment here described the original
-    // gate `undefended_count < tp10(this)` long after it became a margin).
-    // It now feeds an ADDITIVE term in nmp_threat_margin:
-    //     (undefended_count - (tp10(this) - 1)).max(0) * 128
-    // so at the default the FIRST hanging piece is already free and each
-    // one after it adds 128cp to the beta the static eval must clear.
-    //
-    // BEWARE THE ROUNDING BUCKET when reading SPSA output: tp10 rounds
-    // ((v+5)/10), it does not truncate, so the whole raw range 15..=24 is
-    // effective 2 and behaviourally identical. Tune #2926 moved this
-    // 18 -> 23 and reported "+28.3% ***" while changing precisely nothing —
-    // verified bench-identical (2574558) with only this and
-    // NMP_KING_ZONE_MAX_10X applied. Any _10X param can post a large SPSA
-    // percentage that is pure noise; check the bucket before acting on it.
-    //
-    // Min 1 (not 0): tp10(0) = 0 makes the term `(count + 1) * 128`, adding
-    // 128cp even with nothing hanging — SPSA/ablation hitting this min would
-    // broadly suppress NMP while labelled "undefended guard off".
-    (NMP_UNDEFENDED_MAX_10X, 23, 1, 50, 10.0, true),
     (PROBCUT_KING_ZONE_MAX_10X, 80, 20, 90, 15.0, true),
     // Was 38 (tp10→4). Now FIXED-POINT. Default 40 → eff 4.0 ≡ old behavior.
     (LMR_THREAT_DIV_10X, 35, 10, 50, 15.0, true),
