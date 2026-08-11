@@ -30,6 +30,7 @@ macro_rules! scratch_slice {
     };
 }
 
+mod net_permute;
 mod types;
 mod bitboard;
 mod zobrist;
@@ -248,6 +249,22 @@ enum Commands {
     },
     /// Perft benchmark suite (6 standard positions)
     PerftBench,
+    /// Reorder a pairwise net's FT slots to lower L1 chunk density. The
+    /// reordering is output-preserving (a permutation of the hidden layer,
+    /// applied to FT columns and L1 rows together), so the net is bit-identical
+    /// -- it only changes how the live activations are distributed across the
+    /// 4-byte chunks the L1 kernel skips on. Verify with --verify before use.
+    PermuteNet {
+        /// Input .nnue
+        #[arg(long, short = 'i')]
+        input: String,
+        /// Output .nnue
+        #[arg(long, short = 'o')]
+        output: String,
+        /// Permutation file: pw entries, `perm[j] = k` means new slot j holds old slot k
+        #[arg(long)]
+        perm: String,
+    },
     /// Patch a .nnue file's header flag bits in-place. Primary use case:
     /// mark an already-converted net as HL-CReLU (sets bit 5 on extended_kb
     /// nets). Refuses to operate on nets without extended_kb since bit 5
@@ -1196,6 +1213,36 @@ fn main() {
             run_perft_bench();
         }
 
+        Some(Commands::PermuteNet { input, output, perm }) => {
+            let data = match std::fs::read(&input) {
+                Ok(d) => d,
+                Err(e) => { eprintln!("Error reading {}: {}", input, e); std::process::exit(1); }
+            };
+            match net_permute::describe(&data) {
+                Ok(d) => println!("{}: {}", input, d),
+                Err(e) => { eprintln!("Error: {}", e); std::process::exit(1); }
+            }
+            let p = match net_permute::read_perm(&perm) {
+                Ok(p) => p,
+                Err(e) => { eprintln!("Error: {}", e); std::process::exit(1); }
+            };
+            let identity = p.iter().enumerate().all(|(i, &v)| i == v);
+            match net_permute::permute(&data, &p) {
+                Ok(out) => {
+                    if identity && out != data {
+                        eprintln!("Error: identity permutation changed the file — layout parse is wrong");
+                        std::process::exit(1);
+                    }
+                    if let Err(e) = std::fs::write(&output, &out) {
+                        eprintln!("Error writing {}: {}", output, e); std::process::exit(1);
+                    }
+                    println!("Wrote {} ({} bytes, {} slots reordered)", output, out.len(),
+                        p.iter().enumerate().filter(|(i, &v)| *i != v).count());
+                    println!("VERIFY BEFORE USE: evals must match the source net exactly.");
+                }
+                Err(e) => { eprintln!("Error: {}", e); std::process::exit(1); }
+            }
+        }
         Some(Commands::PatchNet { input, output, set_hl_crelu, clear_hl_crelu,
                                    set_ft_screlu, clear_ft_screlu, inspect }) => {
             if set_hl_crelu && clear_hl_crelu {
