@@ -394,6 +394,16 @@ const QA: i32 = 255;  // accumulator scale (CReLU/SCReLU clip max)
 const QB: i32 = 64;   // output weight scale
 const QAB: i32 = QA * QB; // 16320
 const EVAL_SCALE: i32 = 400; // sigmoid → centipawns
+
+/// `CODA_L1_DENSE=1` restores the dense maddubs-pair L1 kernel in place of the
+/// branch-free sparse one. Measurement escape hatch only -- both produce
+/// identical output, so this can never change a result, only timing.
+#[cfg(target_arch = "x86_64")]
+#[inline(always)]
+fn l1_dense_override() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("CODA_L1_DENSE").is_ok())
+}
 const FT_SHIFT: i32 = 9; // pairwise product shift for v7 L1 input (consensus: 9)
 const PW_SCALE: i32 = (QA * QA) >> FT_SHIFT; // max packed value after shift (127 for >>9)
 
@@ -3637,11 +3647,32 @@ impl NNUENet {
                 // of the emulated dot product. Exactness guaranteed by the
                 // load-time x2_fusion_safe gate (else this arm is never
                 // selected).
+                // Branch-free sparse variant is the default here: extract the
+                // non-zero 4-byte input chunk indices with movemask + a
+                // 256-entry shuffle-compaction LUT, then accumulate over only
+                // those chunks. Bit-identical to the dense path (zero chunks
+                // contribute nothing) -- verified by fuzz and by an unchanged
+                // bench node count.
+                //
+                // Unconditional because it is never slower in measurement: at
+                // 74.45% input density it is 1.002x (parity, within noise) and
+                // improves monotonically as density falls -- 1.034x at the
+                // production net's 69.32%, 1.166x at 57.69%, 1.544x at 35.71%.
+                // The dense path's old advantage was over the earlier BRANCHY
+                // sparse kernel, not this one. CODA_L1_DENSE=1 restores the
+                // dense path for A/B measurement.
                 unsafe {
-                    crate::sparse_l1::dense_l1_avx2_l1_32_x2(
-                        stm_pw, ntm_pw, pw, &self.l1_weights_sparse,
-                        &self.l1_biases[l1_off..], pw_scale, hidden32_ptr,
-                    );
+                    if l1_dense_override() {
+                        crate::sparse_l1::dense_l1_avx2_l1_32_x2(
+                            stm_pw, ntm_pw, pw, &self.l1_weights_sparse,
+                            &self.l1_biases[l1_off..], pw_scale, hidden32_ptr,
+                        );
+                    } else {
+                        crate::sparse_l1::sparse_l1_avx2_l1_32(
+                            stm_pw, ntm_pw, pw, &self.l1_weights_sparse,
+                            &self.l1_biases[l1_off..], pw_scale, hidden32_ptr,
+                        );
+                    }
                 }
             }
             #[cfg(target_arch = "x86_64")]
