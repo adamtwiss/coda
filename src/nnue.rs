@@ -356,6 +356,11 @@ pub const NNUE_MAX_KING_BUCKETS: usize = 16;
 /// loadable net: pw = hidden_size/2 must be ≤ this, i.e. hidden_size ≤ 2×this.
 /// Enforced at net load (see Net::read) and asserted at the buffer.
 pub const NNUE_PW_BUF: usize = 1024;
+#[inline(always)]
+pub fn ft_deadzone() -> i16 {
+    static V: std::sync::OnceLock<i16> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("CODA_FT_DEADZONE").ok().and_then(|s| s.parse().ok()).unwrap_or(0))
+}
 
 /// Prefetch the head of every weight row an accumulator update will gather.
 /// The rows live in the 25 MB feature-transformer matrix and each update
@@ -1024,6 +1029,9 @@ unsafe fn simd_pairwise_pack_impl<const HAS_THREAT: bool>(
         let prod = _mm256_mullo_epi16(ca, cb);
         // >> FT_SHIFT to get [0, 127] (safe for VPMADDUBSW in L1)
         let d = _mm256_srli_epi16(prod, FT_SHIFT);
+        let dz = ft_deadzone();
+        let d = if dz > 0 { let t = _mm256_set1_epi16(dz);
+            _mm256_andnot_si256(_mm256_cmpgt_epi16(t, d), d) } else { d };
         // Pack i16 → u8: need to combine with next 16 for full 32 output
         if i + 32 <= pw {
             let mut a2 = _mm256_loadu_si256(acc.as_ptr().add(i + 16) as *const __m256i);
@@ -1036,6 +1044,8 @@ unsafe fn simd_pairwise_pack_impl<const HAS_THREAT: bool>(
             let cb2 = _mm256_min_epi16(_mm256_max_epi16(b2, zero), qa);
             let prod2 = _mm256_mullo_epi16(ca2, cb2);
             let d2 = _mm256_srli_epi16(prod2, FT_SHIFT);
+            let d2 = if dz > 0 { let t = _mm256_set1_epi16(dz);
+                _mm256_andnot_si256(_mm256_cmpgt_epi16(t, d2), d2) } else { d2 };
             let packed = _mm256_packus_epi16(d, d2);
             let fixed = _mm256_permute4x64_epi64(packed, 0xD8);
             _mm256_storeu_si256(out.add(i) as *mut __m256i, fixed);
@@ -3672,6 +3682,14 @@ impl NNUENet {
                 }
             }
             #[cfg(target_arch = "x86_64")]
+            L1Kernel::DenseAvx2L1_32X2 if std::env::var("CODA_L1_SPARSE").is_ok() => {
+                unsafe {
+                    crate::sparse_l1::sparse_l1_avx2_l1_32(
+                        stm_pw, ntm_pw, pw, &self.l1_weights_sparse,
+                        &self.l1_biases[l1_off..], pw_scale, hidden32_ptr,
+                    );
+                }
+            }
             L1Kernel::DenseAvx2L1_32X2 => {
                 // L1=32 AVX2 with maddubs-pair fusion: two input chunks per
                 // iteration, VPMADDUBSW products summed with one VPADDW
