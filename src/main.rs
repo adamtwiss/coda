@@ -724,6 +724,10 @@ fn main() {
                     (nodes as f64 / elapsed.as_secs_f64()) as u64
                 } else { 0 };
                 println!("\n{} nodes {} nps", nodes, nps);
+                if let Some((nz, tot)) = nnue::l1_density::report() {
+                    println!("L1 input density: {:.2}% ({} / {} non-zero 4-byte chunks)",
+                        100.0 * nz as f64 / tot as f64, nz, tot);
+                }
             } else {
                 let nnue_owned = nnue_path.map(|s| s.to_string());
                 // Thread 0 runs with stats printed (info lines, per-position
@@ -749,6 +753,10 @@ fn main() {
                     (total_nodes as f64 / elapsed.as_secs_f64()) as u64
                 } else { 0 };
                 println!("\n{} nodes {} nps ({} threads)", total_nodes, nps, threads);
+                if let Some((nz, tot)) = nnue::l1_density::report() {
+                    println!("L1 input density: {:.2}% ({} / {} non-zero 4-byte chunks)",
+                        100.0 * nz as f64 / tot as f64, nz, tot);
+                }
             }
         }
 
@@ -1433,6 +1441,10 @@ fn run_perft_bench() {
     let elapsed = start.elapsed();
     let nps = (total_nodes as f64 / elapsed.as_secs_f64()) as u64;
     println!("\nTotal: {} nodes in {:.3}s = {} NPS", total_nodes, elapsed.as_secs_f64(), nps);
+    if let Some((nz, tot)) = nnue::l1_density::report() {
+        println!("L1 input density: {:.2}% ({} / {} non-zero 4-byte chunks)",
+            100.0 * nz as f64 / tot as f64, nz, tot);
+    }
     if all_passed {
         println!("All perft tests PASSED");
     } else {

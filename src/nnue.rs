@@ -11,6 +11,34 @@
 /// - SCReLU: clamp [0, QA=255] then square
 /// - 8 output buckets selected by material count
 
+/// Env-gated L1 input density measurement (`CODA_L1_DENSITY=1`).
+///
+/// Reports the fraction of 4-byte L1 input chunks that are non-zero. This is
+/// the quantity that decides whether a sparse L1 kernel can beat the dense
+/// maddubs-pair path: measured crossover is ~50% density, and production has
+/// sat well above it. Always compiled (unlike `mat_stats`) so a net can be
+/// measured with a stock release binary; the cost when disabled is one
+/// relaxed atomic-bool read per eval.
+pub mod l1_density {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    pub(super) static NZ: AtomicU64 = AtomicU64::new(0);
+    pub(super) static TOT: AtomicU64 = AtomicU64::new(0);
+
+    pub(super) fn enabled() -> bool {
+        static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *ON.get_or_init(|| std::env::var("CODA_L1_DENSITY").is_ok())
+    }
+
+    /// `(non_zero_chunks, total_chunks)`, or `None` if the probe was off or
+    /// no eval ran.
+    pub fn report() -> Option<(u64, u64)> {
+        if !enabled() { return None; }
+        let t = TOT.load(Ordering::Relaxed);
+        if t == 0 { return None; }
+        Some((NZ.load(Ordering::Relaxed), t))
+    }
+}
+
 #[cfg(feature = "profile-materialize")]
 pub mod mat_stats {
     //! Per-bench materialize call-pattern counters.
@@ -3546,6 +3574,20 @@ impl NNUENet {
                     i += 1;
                 }
             }};
+        }
+        // Env-gated L1 input density probe (CODA_L1_DENSITY=1). Counts 4-byte
+        // input chunks that are non-zero -- the quantity that decides whether a
+        // sparse kernel can beat the dense maddubs-pair path (crossover ~50%).
+        // Off by default: one relaxed load of a static bool per eval.
+        if crate::nnue::l1_density::enabled() {
+            let mut nz = 0usize;
+            for buf in [&stm_pw[..pw], &ntm_pw[..pw]] {
+                for c in buf.chunks_exact(4) {
+                    if u32::from_ne_bytes([c[0], c[1], c[2], c[3]]) != 0 { nz += 1; }
+                }
+            }
+            crate::nnue::l1_density::NZ.fetch_add(nz as u64, std::sync::atomic::Ordering::Relaxed);
+            crate::nnue::l1_density::TOT.fetch_add((2 * (pw / 4)) as u64, std::sync::atomic::Ordering::Relaxed);
         }
         match self.l1_kernel {
             #[cfg(target_arch = "x86_64")]
