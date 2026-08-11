@@ -23,6 +23,44 @@ pub mod l1_density {
     use std::sync::atomic::{AtomicU64, Ordering};
     pub(super) static NZ: AtomicU64 = AtomicU64::new(0);
     pub(super) static TOT: AtomicU64 = AtomicU64::new(0);
+    /// Decomposition of the ZERO L1 inputs, counted at the pairwise pack:
+    /// `DEAD` = at least one of the pair clamped to 0; `SMALL` = both alive
+    /// but the product fell under the FT_SHIFT threshold (ca*cb < 512).
+    /// These attack different mechanisms and need different fixes, so the
+    /// split determines what is worth trying next.
+    pub(super) static DEAD: AtomicU64 = AtomicU64::new(0);
+    pub(super) static SMALL: AtomicU64 = AtomicU64::new(0);
+    pub(super) static ALIVE: AtomicU64 = AtomicU64::new(0);
+    pub(super) static PW_TOT: AtomicU64 = AtomicU64::new(0);
+    /// Per-pair live counts. Chunk density is set by how the live pairs are
+    /// DISTRIBUTED across 4-byte chunks, not by how many there are, so the
+    /// per-pair activity rates decide what a reordering can buy.
+    pub(super) static PAIR_LIVE: [AtomicU64; 1024] =
+        [const { AtomicU64::new(0) }; 1024];
+    pub(super) static PAIR_CALLS: AtomicU64 = AtomicU64::new(0);
+    pub(super) static PAIR_PW: AtomicU64 = AtomicU64::new(0);
+    /// Sampled per-pack live bitmasks (`CODA_PAIR_DUMP=<path>`). Chunk density
+    /// depends on WHICH pairs are live together, so the grouping problem needs
+    /// joint samples, not marginal rates. Dumped for offline optimisation.
+    pub(super) static MASKS: std::sync::Mutex<Vec<u64>> = std::sync::Mutex::new(Vec::new());
+
+    pub(super) fn dump_path() -> Option<&'static String> {
+        static P: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+        P.get_or_init(|| std::env::var("CODA_PAIR_DUMP").ok()).as_ref()
+    }
+
+    /// Write sampled masks as raw little-endian u64 words; returns count.
+    pub fn flush_masks() -> Option<(usize, usize)> {
+        let path = dump_path()?;
+        let pw = PAIR_PW.load(Ordering::Relaxed) as usize;
+        if pw == 0 { return None; }
+        let words = (pw + 63) / 64;
+        let m = MASKS.lock().ok()?;
+        let mut buf = Vec::with_capacity(m.len() * 8);
+        for w in m.iter() { buf.extend_from_slice(&w.to_le_bytes()); }
+        std::fs::write(path, &buf).ok()?;
+        Some((m.len() / words.max(1), pw))
+    }
 
     pub(super) fn enabled() -> bool {
         static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
@@ -31,6 +69,26 @@ pub mod l1_density {
 
     /// `(non_zero_chunks, total_chunks)`, or `None` if the probe was off or
     /// no eval ran.
+    /// `(dead, small, alive, total)` pairwise slots, or `None` if the probe
+    /// was off. `dead + small` is the zero population; the split says whether
+    /// sparsity comes from dead units or from small products.
+    pub fn report_pairwise() -> Option<(u64, u64, u64, u64)> {
+        if !enabled() { return None; }
+        let t = PW_TOT.load(Ordering::Relaxed);
+        if t == 0 { return None; }
+        Some((DEAD.load(Ordering::Relaxed), SMALL.load(Ordering::Relaxed),
+              ALIVE.load(Ordering::Relaxed), t))
+    }
+
+    /// `(rates, calls)` — per-pair fraction of packs in which the pair was live.
+    pub fn report_pair_rates() -> Option<(Vec<f64>, u64)> {
+        if !enabled() { return None; }
+        let calls = PAIR_CALLS.load(Ordering::Relaxed);
+        let pw = PAIR_PW.load(Ordering::Relaxed) as usize;
+        if calls == 0 || pw == 0 { return None; }
+        Some(((0..pw).map(|i| PAIR_LIVE[i].load(Ordering::Relaxed) as f64 / calls as f64).collect(), calls))
+    }
+
     pub fn report() -> Option<(u64, u64)> {
         if !enabled() { return None; }
         let t = TOT.load(Ordering::Relaxed);
@@ -1019,6 +1077,48 @@ unsafe fn simd_pairwise_pack_impl<const HAS_THREAT: bool>(
     out: *mut u8,
     pw: usize,
 ) {
+    // Probe-only scalar classification of every pairwise slot. Duplicates the
+    // clamp/multiply in scalar to attribute each ZERO output to its cause.
+    if crate::nnue::l1_density::enabled() {
+        use std::sync::atomic::Ordering as O;
+        let (mut dead, mut small, mut alive) = (0u64, 0u64, 0u64);
+        for i in 0..pw {
+            let (mut a, mut b) = (acc[i] as i32, acc[pw + i] as i32);
+            if HAS_THREAT { a += *threat.add(i) as i32; b += *threat.add(pw + i) as i32; }
+            let ca = a.clamp(0, QA);
+            let cb = b.clamp(0, QA);
+            if ca == 0 || cb == 0 { dead += 1; }
+            else if (ca * cb) >> FT_SHIFT == 0 { small += 1; }
+            else {
+                alive += 1;
+                if i < 1024 { crate::nnue::l1_density::PAIR_LIVE[i].fetch_add(1, O::Relaxed); }
+            }
+        }
+        let call_n = crate::nnue::l1_density::PAIR_CALLS.fetch_add(1, O::Relaxed);
+        crate::nnue::l1_density::PAIR_PW.store(pw.min(1024) as u64, O::Relaxed);
+        // Sample joint live-masks for offline grouping (every 16th pack, capped).
+        if crate::nnue::l1_density::dump_path().is_some() && call_n % 16 == 0 {
+            let words = (pw + 63) / 64;
+            if let Ok(mut m) = crate::nnue::l1_density::MASKS.lock() {
+                if m.len() < 40_000 * words {
+                    let base = m.len();
+                    m.resize(base + words, 0u64);
+                    for i in 0..pw {
+                        let (mut a2, mut b2) = (acc[i] as i32, acc[pw + i] as i32);
+                        if HAS_THREAT { a2 += *threat.add(i) as i32; b2 += *threat.add(pw + i) as i32; }
+                        let (ca2, cb2) = (a2.clamp(0, QA), b2.clamp(0, QA));
+                        if ca2 != 0 && cb2 != 0 && ((ca2 * cb2) >> FT_SHIFT) != 0 {
+                            m[base + i / 64] |= 1u64 << (i % 64);
+                        }
+                    }
+                }
+            }
+        }
+        crate::nnue::l1_density::DEAD.fetch_add(dead, O::Relaxed);
+        crate::nnue::l1_density::SMALL.fetch_add(small, O::Relaxed);
+        crate::nnue::l1_density::ALIVE.fetch_add(alive, O::Relaxed);
+        crate::nnue::l1_density::PW_TOT.fetch_add(pw as u64, O::Relaxed);
+    }
     let zero = _mm256_setzero_si256();
     let qa = _mm256_set1_epi16(QA as i16);
     let mut i = 0;

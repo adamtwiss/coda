@@ -728,6 +728,36 @@ fn main() {
                     println!("L1 input density: {:.2}% ({} / {} non-zero 4-byte chunks)",
                         100.0 * nz as f64 / tot as f64, nz, tot);
                 }
+                if let Some((dead, small, alive, ptot)) = nnue::l1_density::report_pairwise() {
+                    let f = |x: u64| 100.0 * x as f64 / ptot as f64;
+                    println!("  pairwise slots: alive {:.2}%  dead-unit {:.2}%  small-product {:.2}%  (n={})",
+                        f(alive), f(dead), f(small), ptot);
+                    println!("  of the {:.2}% zeros: {:.1}% dead units, {:.1}% small products",
+                        f(dead + small),
+                        100.0 * dead as f64 / (dead + small).max(1) as f64,
+                        100.0 * small as f64 / (dead + small).max(1) as f64);
+                }
+                if let Some((rates, calls)) = nnue::l1_density::report_pair_rates() {
+                    // Predicted chunk density under independence, for the
+                    // CURRENT pair order vs an activity-SORTED order. The gap
+                    // is what a pure FT permutation could buy.
+                    let chunk_density = |r: &[f64]| -> f64 {
+                        let n = r.len() / 4;
+                        (0..n).map(|c| 1.0 - (0..4).map(|k| 1.0 - r[c * 4 + k]).product::<f64>())
+                            .sum::<f64>() / n as f64
+                    };
+                    let mut sorted = rates.clone();
+                    sorted.sort_by(|a, b| b.partial_cmp(a).unwrap());
+                    let mut q = rates.clone();
+                    q.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                    println!("  per-pair live rate: min {:.4} p25 {:.4} median {:.4} p75 {:.4} max {:.4} (calls={})",
+                        q[0], q[q.len()/4], q[q.len()/2], q[3*q.len()/4], q[q.len()-1], calls);
+                    println!("  predicted chunk density: current order {:.2}%  activity-sorted {:.2}%",
+                        100.0 * chunk_density(&rates), 100.0 * chunk_density(&sorted));
+                }
+                if let Some((n, pw)) = nnue::l1_density::flush_masks() {
+                    println!("  dumped {} live-masks (pw={}) for offline grouping", n, pw);
+                }
             } else {
                 let nnue_owned = nnue_path.map(|s| s.to_string());
                 // Thread 0 runs with stats printed (info lines, per-position
@@ -756,6 +786,36 @@ fn main() {
                 if let Some((nz, tot)) = nnue::l1_density::report() {
                     println!("L1 input density: {:.2}% ({} / {} non-zero 4-byte chunks)",
                         100.0 * nz as f64 / tot as f64, nz, tot);
+                }
+                if let Some((dead, small, alive, ptot)) = nnue::l1_density::report_pairwise() {
+                    let f = |x: u64| 100.0 * x as f64 / ptot as f64;
+                    println!("  pairwise slots: alive {:.2}%  dead-unit {:.2}%  small-product {:.2}%  (n={})",
+                        f(alive), f(dead), f(small), ptot);
+                    println!("  of the {:.2}% zeros: {:.1}% dead units, {:.1}% small products",
+                        f(dead + small),
+                        100.0 * dead as f64 / (dead + small).max(1) as f64,
+                        100.0 * small as f64 / (dead + small).max(1) as f64);
+                }
+                if let Some((rates, calls)) = nnue::l1_density::report_pair_rates() {
+                    // Predicted chunk density under independence, for the
+                    // CURRENT pair order vs an activity-SORTED order. The gap
+                    // is what a pure FT permutation could buy.
+                    let chunk_density = |r: &[f64]| -> f64 {
+                        let n = r.len() / 4;
+                        (0..n).map(|c| 1.0 - (0..4).map(|k| 1.0 - r[c * 4 + k]).product::<f64>())
+                            .sum::<f64>() / n as f64
+                    };
+                    let mut sorted = rates.clone();
+                    sorted.sort_by(|a, b| b.partial_cmp(a).unwrap());
+                    let mut q = rates.clone();
+                    q.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                    println!("  per-pair live rate: min {:.4} p25 {:.4} median {:.4} p75 {:.4} max {:.4} (calls={})",
+                        q[0], q[q.len()/4], q[q.len()/2], q[3*q.len()/4], q[q.len()-1], calls);
+                    println!("  predicted chunk density: current order {:.2}%  activity-sorted {:.2}%",
+                        100.0 * chunk_density(&rates), 100.0 * chunk_density(&sorted));
+                }
+                if let Some((n, pw)) = nnue::l1_density::flush_masks() {
+                    println!("  dumped {} live-masks (pw={}) for offline grouping", n, pw);
                 }
             }
         }
