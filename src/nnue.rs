@@ -426,7 +426,22 @@ impl KbLayout {
 const QA: i32 = 255;  // accumulator scale (CReLU/SCReLU clip max)
 const QB: i32 = 64;   // output weight scale
 const QAB: i32 = QA * QB; // 16320
-const EVAL_SCALE: i32 = 400; // sigmoid → centipawns
+const EVAL_SCALE_DEFAULT: i32 = 400; // sigmoid → centipawns
+
+/// Measurement-only override (`CODA_EVAL_SCALE`). A net trained with an
+/// activation-sparsity penalty comes out on a smaller natural output scale,
+/// which silently de-calibrates every search threshold (RFP/futility/SEE/LMR)
+/// that is expressed in centipawns. This override exists to separate "the net
+/// is worse" from "the net is fine but the search is reading it at the wrong
+/// gain" -- it is a diagnostic, NOT the production fix, which is a retune.
+#[inline(always)]
+fn eval_scale() -> i32 {
+    static V: std::sync::OnceLock<i32> = std::sync::OnceLock::new();
+    *V.get_or_init(|| {
+        std::env::var("CODA_EVAL_SCALE").ok().and_then(|s| s.parse().ok())
+            .unwrap_or(EVAL_SCALE_DEFAULT)
+    })
+}
 const FT_SHIFT: i32 = 9; // pairwise product shift for v7 L1 input (consensus: 9)
 const PW_SCALE: i32 = (QA * QA) >> FT_SHIFT; // max packed value after shift (127 for >>9)
 
@@ -4011,13 +4026,13 @@ impl NNUENet {
                 for k in 0..l2 { acc += h2[k] * out_w[k]; }
                 acc
             };
-            return (out_f * EVAL_SCALE as f32) as i32;
+            return (out_f * eval_scale() as f32) as i32;
         }
 
         let out_w = &self.out_weights_f[bucket * l1_pb..bucket * l1_pb + l1_pb];
         let mut out_f = self.out_bias_f[bucket];
         for i in 0..l1 { out_f += l1_out[i] * out_w[i]; }
-        (out_f * EVAL_SCALE as f32) as i32
+        (out_f * eval_scale() as f32) as i32
     }
 
     /// v7 hidden layer forward pass (SCReLU).
@@ -4218,12 +4233,12 @@ impl NNUENet {
                 let out_w = &self.out_weights_f[bucket * l2..bucket * l2 + l2];
                 let mut out_f = self.out_bias_f[bucket];
                 for k in 0..l2 { out_f += h2[k] * out_w[k]; }
-                return (out_f * EVAL_SCALE as f32) as i32;
+                return (out_f * eval_scale() as f32) as i32;
             }
             let out_w = &self.out_weights_f[bucket * l1..bucket * l1 + l1];
             let mut out_f = self.out_bias_f[bucket];
             for i in 0..l1 { out_f += l1_out[i] * out_w[i]; }
-            return (out_f * EVAL_SCALE as f32) as i32;
+            return (out_f * eval_scale() as f32) as i32;
         }
 
         // NEON int8 path: pack SCReLU to u8, then NEON L1 matmul
@@ -4318,12 +4333,12 @@ impl NNUENet {
                 let out_w = &self.out_weights_f[bucket * l2..bucket * l2 + l2];
                 let mut out_f = self.out_bias_f[bucket];
                 for k in 0..l2 { out_f += h2[k] * out_w[k]; }
-                return (out_f * EVAL_SCALE as f32) as i32;
+                return (out_f * eval_scale() as f32) as i32;
             }
             let out_w = &self.out_weights_f[bucket * l1..bucket * l1 + l1];
             let mut out_f = self.out_bias_f[bucket];
             for i in 0..l1 { out_f += l1_out[i] * out_w[i]; }
-            return (out_f * EVAL_SCALE as f32) as i32;
+            return (out_f * eval_scale() as f32) as i32;
         }
 
         // Scalar fallback (bucket-aware)
@@ -4453,7 +4468,7 @@ impl NNUENet {
             for k in 0..l2 {
                 out_f += h2[k] * out_w[k];
             }
-            return (out_f * EVAL_SCALE as f32) as i32;
+            return (out_f * eval_scale() as f32) as i32;
         }
 
         // L1 → output (no L2)
@@ -4462,7 +4477,7 @@ impl NNUENet {
         for i in 0..l1 {
             out_f += l1_out[i] * out_w[i];
         }
-        (out_f * EVAL_SCALE as f32) as i32
+        (out_f * eval_scale() as f32) as i32
     }
 
     /// Forward pass with ThreatStack (new path).
@@ -4517,7 +4532,7 @@ impl NNUENet {
                     output += v * out_w[i] as i64;
                 }
             }
-            return (output * EVAL_SCALE as i64 / (QA as i64 * QB as i64)) as i32;
+            return (output * eval_scale() as i64 / (QA as i64 * QB as i64)) as i32;
         }
 
         // Fallback to old forward path
@@ -4602,7 +4617,7 @@ impl NNUENet {
                     sum += simd512_pairwise_dot(&ntm_acc[..pw], &ntm_acc[pw..], &out_w[pw..], pw);
                 }
                 output = sum / QA as i64 + bias;
-                let result = (output * EVAL_SCALE as i64 / QAB as i64) as i32;
+                let result = (output * eval_scale() as i64 / QAB as i64) as i32;
                 return result;
             }
 
@@ -4615,7 +4630,7 @@ impl NNUENet {
                     sum += simd_pairwise_dot(&ntm_acc[..pw], &ntm_acc[pw..], &out_w[pw..], pw);
                 }
                 output = sum / QA as i64 + bias;
-                let result = (output * EVAL_SCALE as i64 / QAB as i64) as i32;
+                let result = (output * eval_scale() as i64 / QAB as i64) as i32;
                 return result;
             }
 
@@ -4628,7 +4643,7 @@ impl NNUENet {
                     sum += neon_pairwise_dot(&ntm_acc[..pw], &ntm_acc[pw..], &out_w[pw..], pw);
                 }
                 output = sum / QA as i64 + bias;
-                let result = (output * EVAL_SCALE as i64 / QAB as i64) as i32;
+                let result = (output * eval_scale() as i64 / QAB as i64) as i32;
                 return result;
             }
 
@@ -4648,7 +4663,7 @@ impl NNUENet {
             }
             output = sum / QA as i64 + bias;
 
-            let result = (output * EVAL_SCALE as i64 / QAB as i64) as i32;
+            let result = (output * eval_scale() as i64 / QAB as i64) as i32;
             return result;
         }
 
@@ -4674,7 +4689,7 @@ impl NNUENet {
                 }
             }
 
-            let mut result = (output * EVAL_SCALE as i64 / QAB as i64) as i32;
+            let mut result = (output * eval_scale() as i64 / QAB as i64) as i32;
             if self.use_screlu {
                 result = result * 4 / 5;
             }
@@ -4703,7 +4718,7 @@ impl NNUENet {
                 }
             }
 
-            let mut result = (output * EVAL_SCALE as i64 / QAB as i64) as i32;
+            let mut result = (output * eval_scale() as i64 / QAB as i64) as i32;
             if self.use_screlu {
                 result = result * 4 / 5;
             }
@@ -4732,7 +4747,7 @@ impl NNUENet {
                 }
             }
 
-            let mut result = (output * EVAL_SCALE as i64 / QAB as i64) as i32;
+            let mut result = (output * eval_scale() as i64 / QAB as i64) as i32;
             if self.use_screlu {
                 result = result * 4 / 5;
             }
@@ -4767,7 +4782,7 @@ impl NNUENet {
 
         // Scale: output is at QA × QB = 16320
         // centipawns = output * 400 / 16320 (do division in i64 to avoid overflow)
-        let mut result = (output * EVAL_SCALE as i64 / QAB as i64) as i32;
+        let mut result = (output * eval_scale() as i64 / QAB as i64) as i32;
 
         // SCReLU scale correction: squared activation has wider dynamic range
         if self.use_screlu {
