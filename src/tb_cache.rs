@@ -100,12 +100,11 @@ impl TbCache {
     /// Probe by Zobrist key + halfmove clock. Returns the cached WDL if the
     /// slot matches.
     ///
-    /// C2 (2026-04-22 audit): shakmaty-syzygy's `probe_wdl` is
-    /// halfmove-aware — the same piece layout returns `Win` at halfmove=0
-    /// and `CursedWin` (with score +1) at halfmove=80. The cache was keyed
-    /// on Zobrist alone, so a probe from halfmove=80 cached a `CursedWin`
-    /// that later reached the same position at halfmove=0 got as "draw"
-    /// instead of a real win. Mix halfmove into the effective key.
+    /// shakmaty-syzygy's `probe_wdl` is halfmove-aware — the same piece
+    /// layout returns `Win` at halfmove=0 and `CursedWin` (score +1) at
+    /// halfmove=80. Keying on Zobrist alone lets a probe from halfmove=80
+    /// cache a `CursedWin` that a later visit at halfmove=0 reads as a draw
+    /// instead of a real win, so halfmove is mixed into the effective key.
     #[inline]
     pub fn probe(&self, key: u64, halfmove: u16) -> Option<i32> {
         if !self.enabled { return None; }
@@ -203,7 +202,7 @@ mod tests {
 
     #[test]
     fn different_halfmove_misses() {
-        // C2 invariant: same Zobrist, different halfmove → separate entries.
+        // Invariant: same Zobrist, different halfmove → separate entries.
         let c = TbCache::new(1);
         c.store(0x1234_5678, 0, 20000); // Win at halfmove=0
         c.store(0x1234_5678, 80, 1);    // CursedWin at halfmove=80

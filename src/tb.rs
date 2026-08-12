@@ -105,19 +105,17 @@ impl SyzygyTB {
     /// wdl_score: +20000 = definite win, +1 = cursed win, 0 = draw,
     /// -1 = blessed loss, -20000 = definite loss.
     ///
-    /// C8 audit LIKELY #42: the probe is valid at ANY halfmove — shakmaty
-    /// returns `CursedWin`/`BlessedLoss` (mapped to ±1) for what would be
-    /// a Win/Loss at halfmove=0 but is a draw-by-rule at high halfmove.
-    /// Cache is keyed by (hash, halfmove) after C2 so results don't
-    /// cross-contaminate. Previous comment "Only valid when halfmove == 0"
-    /// was misleading — the caller should just use the ambiguous result as
-    /// a near-draw signal.
+    /// The probe is valid at ANY halfmove — shakmaty returns
+    /// `CursedWin`/`BlessedLoss` (mapped to ±1) for what would be a Win/Loss
+    /// at halfmove=0 but is a draw-by-rule at high halfmove. The cache is
+    /// keyed by (hash, halfmove) so those results don't cross-contaminate.
+    /// Callers should treat the ambiguous values as a near-draw signal.
     pub fn probe_wdl(&self, board: &Board) -> Option<i32> {
         if crate::bitboard::popcount(board.occupied()) as usize > self.max_pieces {
             return None;
         }
-        // C8 audit LIKELY #43: Syzygy rejects positions with any castling
-        // right, so a positive probe is impossible here. Gate early to
+        // Syzygy rejects positions with any castling right, so a positive
+        // probe is impossible here. Gate early to
         // avoid wasted FEN formatting + Chess::from_setup work that
         // shakmaty does before its own castling check.
         if board.castling != 0 {
@@ -126,7 +124,7 @@ impl SyzygyTB {
 
         // Native-hash cache check first — avoids the Board→Chess translation
         // and the shakmaty decompression path when the slot is valid.
-        // Halfmove is part of the cache key (C2 fix): shakmaty's probe_wdl
+        // Halfmove is part of the cache key: shakmaty's probe_wdl
         // returns different results across halfmove, so we must cache per
         // halfmove to avoid serving a stale cursed-win/blessed-loss answer.
         if let Some(wdl) = self.cache.probe(board.hash, board.halfmove) {
@@ -150,7 +148,7 @@ impl SyzygyTB {
         if crate::bitboard::popcount(board.occupied()) as usize > self.max_pieces {
             return None;
         }
-        // Castling-gate parity with probe_wdl (C8 #43): Syzygy assumes no
+        // Castling-gate parity with probe_wdl: Syzygy assumes no
         // castling rights, so a probe here would be unsound. Decline → search.
         if board.castling != 0 {
             return None;
@@ -188,7 +186,7 @@ impl SyzygyTB {
         if crate::bitboard::popcount(board.occupied()) as usize > self.max_pieces {
             return None;
         }
-        // Castling-gate parity with probe_wdl (C8 #43): Syzygy assumes no
+        // Castling-gate parity with probe_wdl: Syzygy assumes no
         // castling rights, so a probe here would be unsound. Decline → search.
         if board.castling != 0 {
             return None;
@@ -284,8 +282,8 @@ fn board_to_shakmaty(board: &Board) -> Option<Chess> {
     Chess::from_setup(setup, CastlingMode::Standard).ok()
 }
 
-/// Reference implementation via a FEN string round-trip (the pre-2026-07-22 path).
-/// Retained only to verify the direct conversion above stays bit-for-bit identical.
+/// Reference implementation via a FEN string round-trip. Retained only to
+/// verify the direct conversion above stays bit-for-bit identical.
 #[cfg(test)]
 fn board_to_shakmaty_fen(board: &Board) -> Option<Chess> {
     use shakmaty::fen::Fen;
@@ -310,8 +308,8 @@ fn dtz_to_wdl_score(dtz: MaybeRounded<Dtz>, halfmove: i32) -> i32 {
     // positive = side to move loses. Invert for our score convention
     // (positive = good for side to move).
     //
-    // C8 audit LIKELY #41 + Finding 5: the win/loss converts only if it
-    // can zero the halfmove clock before the 50-move rule fires — i.e.
+    // The win/loss converts only if it can zero the halfmove clock before
+    // the 50-move rule fires — i.e.
     // `|DTZ| + halfmove <= 100`. Beyond that it is cursed-win/blessed-loss
     // (drawn by rule), so report ±1 to match `ambiguous_wdl_to_score`
     // rather than a "mate-ish" ±20000. Using the *current* halfmove (not a
@@ -424,8 +422,7 @@ mod tests {
     }
 
     fn tb_path() -> Option<String> {
-        // Check common tablebase locations (lichess deploy: /tablebases;
-        // dev hosts: ~/chess/tablebases).
+        // Check common tablebase locations.
         let home = std::env::var("HOME").unwrap_or_default();
         let candidates = [
             "/tablebases".to_string(),
@@ -516,10 +513,9 @@ mod tests {
 
     /// Each move emitted by `probe_root_pv` must be legal in the position it
     /// claims to apply to — walked from the root, applying each PV[i] in turn.
-    /// Lichess game oeZ7KRUt forfeit (move 79 / move 80, 2026-04-26): the PV
-    /// emitted as `e4f4 h3g2 d3g3 ...` had the move just played by the opponent
-    /// (h3g2) as the predicted ponder move. lichess-bot rejected it and ended
-    /// the game by resignation.
+    /// This forfeited a live game: the PV emitted as `e4f4 h3g2 d3g3 ...` had
+    /// the move just played by the opponent (h3g2) as the predicted ponder
+    /// move. The bot host rejected it and resigned the game.
     fn assert_pv_legal(tb: &SyzygyTB, fen: &str, label: &str) {
         let board = Board::from_fen(fen);
         let (pv, _wdl) = tb.probe_root_pv(&board, 32)
@@ -561,17 +557,17 @@ mod tests {
             None => { eprintln!("Skipping TB test: no tablebases found"); return; }
         };
 
-        // Lichess oeZ7KRUt move 79 — exact bug position (white to move,
-        // KR vs KP, halfmove=4 from 50mr cliff).
+        // The exact position from the forfeited game (white to move,
+        // KR vs KP, halfmove=4 from the 50mr cliff).
         assert_pv_legal(&tb,
             "8/8/8/8/4K1p1/3R4/6k1/8 w - - 4 79",
-            "lichess oeZ7KRUt move 79 (white to move)");
+            "ponder-bug position (white to move)");
 
         // Same position one ply later (after white's e4f4 — what ponder
         // would actually be reasoning about).
         assert_pv_legal(&tb,
             "8/8/8/8/5Kp1/3R4/6k1/8 b - - 5 79",
-            "lichess oeZ7KRUt move 79 (black to move, after Kf4)");
+            "ponder-bug position (black to move, after Kf4)");
 
         // Variety of TB-reachable endgames to keep the walker honest.
         assert_pv_legal(&tb,
@@ -586,7 +582,7 @@ mod tests {
 
     }
 
-    /// End-to-end search PV legality check for the lichess oeZ7KRUt bug.
+    /// End-to-end search PV legality check for the ponder-bug position.
     ///
     /// Runs a real search on the bug position, then validates that
     /// `info.pv_table[0][0..pv_len[0]]` walks legally — same check the UCI
@@ -669,7 +665,7 @@ mod tests {
         }
     }
 
-    // ===== Broader EGTB coverage (2026-05-30) =====
+    // ===== Broader EGTB coverage =====
     // WDL convention (probe_wdl / ambiguous_wdl_to_score): +20000 definite win,
     // +1 cursed win, 0 draw, -1 blessed loss, -20000 definite loss — from the
     // side-to-move POV. Verified against the loaded 5-man Syzygy set.

@@ -218,7 +218,7 @@ impl ThreatStack {
     /// off, a stray pop stays put rather than wrapping to usize::MAX
     /// and crashing on the next slice access. The debug_assert still
     /// catches the bug in dev builds; release silently no-ops at the
-    /// boundary. Audit 2026-04-25 §"Confirmed-clean / orderings".
+    /// boundary.
     pub fn pop(&mut self) {
         debug_assert!(self.index > 0);
         self.index = self.index.saturating_sub(1);
@@ -256,7 +256,7 @@ impl ThreatStack {
             std::mem::MaybeUninit::<[usize; MAX_ACTIVE_THREAT_FEATURES]>::uninit();
         let indices_ptr = scratch_ptr!(indices_storage, usize);
         let mut n_indices = 0usize;
-        // C8 audit LIKELY #18: track whether the enumerator produced more
+        // Track whether the enumerator produced more
         // features than the buffer can hold. Excess features would be dropped
         // and only `accurate[p]=false` (so children re-refresh) — but THIS
         // node's eval would still consume the truncated accumulator. With the
@@ -313,10 +313,9 @@ impl ThreatStack {
             // we cannot replay from any ancestor at or below i — the stored
             // deltas would apply with the wrong mirror or be incomplete.
             //
-            // Earlier code returned Some(i) on `accurate[i]` *before* doing
-            // this check, so a king-file-crossing at the current ply slipped
-            // through whenever the prior ply was accurate (the common case).
-            // Caught by the threat-accumulator fuzzer on 2026-04-17.
+            // Do NOT return Some(i) on `accurate[i]` before doing this check:
+            // that lets a king-file crossing at the current ply slip through
+            // whenever the prior ply was accurate — the common case.
             let entry = &self.stack[i + 1];
             if entry.mv != NO_MOVE {
                 if entry.delta.overflowed() {
@@ -988,7 +987,7 @@ mod incremental_tests {
         }
     }
 
-    /// C1 gap-fuzzer (2026-07-10): the original fuzzer above is forward-only
+    /// Gap fuzzer: the fuzzer above is forward-only
     /// (never pops/unmakes) and calls ensure_computed after EVERY move, so
     /// every replay has gap == 1 and the pop/re-push and gap >= 2 replay
     /// paths (update/update_dual spanning multiple plies, ancestors found

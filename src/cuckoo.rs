@@ -136,7 +136,7 @@ pub fn has_game_cycle(board: &Board, ply: i32) -> bool {
         // original_key ^ key_at(i), so it silently skips real matches for
         // i >= 5 and only worked at i == 3 by symmetric-undo coincidence.
         // This is a real incompleteness in upstream SF too, not a Coda-only
-        // bug — see docs/code_review_2026-06-30.md for the derivation).
+        // bug).
         let diff = original_key ^ key_at(i);
 
         let j;

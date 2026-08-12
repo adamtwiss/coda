@@ -75,7 +75,7 @@ struct MagicEntry {
 
 static mut BISHOP_MAGICS: [MagicEntry; 64] = unsafe { std::mem::zeroed() };
 static mut ROOK_MAGICS: [MagicEntry; 64] = unsafe { std::mem::zeroed() };
-// Fixed-size table (audit P bundle): the size is a compile-time constant —
+// Fixed-size table: the size is a compile-time constant —
 // 102,400 rook + 5,248 bishop entries — and IDENTICAL in both dispatch
 // modes (PEXT indexes by mask popcount, magic by ROOK_BITS/BISHOP_BITS,
 // which are equal per-square; init asserts this). The previous

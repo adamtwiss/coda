@@ -11,7 +11,7 @@
 //! 256-bit register; bishops/rooks have a scalar magic-lookup loop fallback
 //! + an AVX2 Kogge-Stone occluded fill.
 //!
-//! The AVX2 paths here were re-written in Coda's own code (Phase 4 of
+//! The AVX2 paths here were re-written in Coda's own code (see
 //! `docs/license_compliance_review_2026-07-11.md`): the knight kernel is a
 //! direct vectorisation of Coda's own scalar shift set below; the slider
 //! kernels implement the public-domain Kogge-Stone parallel-prefix fill (Chess

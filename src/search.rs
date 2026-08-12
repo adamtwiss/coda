@@ -24,13 +24,11 @@ use crate::types::*;
 /// this value is twice the deepest nominal depth; the other half is headroom
 /// for extensions and QS running ahead of nominal depth.
 ///
-/// History: 64 (depth 32) → 128 (depth 64) on 2026-05-20 to fix the
-/// depth-cap bug (`project_max_ply_depth_cap_bug.md`). An earlier attempt at
-/// 128 regressed STC ~-13 Elo (OB #664) because `pv_table` is O(MAX_PLY²)
-/// and spilled L1 on the hot pv-copy path — but that was measured when
-/// `Move` was 4 bytes (17 KB → 67 KB). `Move` is now `u16`, halving the
-/// footprint (128 → 32.5 KB), so the cache pressure that drove #664 is
-/// materially smaller.
+/// Raising this is not free: `pv_table` is O(MAX_PLY²) and sits on the hot
+/// pv-copy path, so an increase can spill L1 and cost more than the extra
+/// depth is worth — an earlier bump did exactly that, for about -13 Elo at
+/// STC. That was measured when `Move` was 4 bytes; at `u16` the footprint is
+/// half, so the pressure is materially lower now.
 ///
 /// UPPER BOUND — do not exceed 199. `MATE_IN_MAX_PLY = MATE_SCORE - MAX_PLY`
 /// (tt.rs) must stay strictly above `TB_WIN = 28800`, or tablebase scores are
@@ -39,7 +37,6 @@ use crate::types::*;
 /// would read as mate. A unit test in tt.rs asserts this invariant.
 pub const MAX_PLY: usize = 160;
 const INFINITY: i32 = 30000;
-// Contempt removed 2026-04-19 (SPRT #508 H1 +2.53).
 
 // Pawn history table size
 const PAWN_HIST_SIZE: usize = 512;
@@ -97,9 +94,6 @@ tunables!(
     // effective value, so such a parameter can post a large SPSA percentage
     // while changing nothing at all. Check the bucket before acting on a mover.
     (NMP_BASE_R_10X, 76, 20, 80, 15.0, true),
-    // Ceiling lifted from 60 → 200 (audit 2026-05-20): SPSA at 55, 90%
-    // from min, only ~9% headroom. Symmetric to a floor pin — gradient
-    // clamped at the top. Lifting lets SPSA find the true optimum.
     (NMP_DEPTH_DIV_10X, 56, 10, 200, 15.0, true),
     (NMP_EVAL_DIV, 83, 50, 400, 17.5, true),
     (NMP_EVAL_MAX_10X, 35, 10, 60, 5.0, false),
@@ -110,7 +104,6 @@ tunables!(
     // as the zugzwang guard.
     (NMP_VERIFY_DEPTH_10X, 76, 40, 200, 20.0, true),
     (RFP_DEPTH, 20, 2, 20, 2.0, true),
-    // Floors lifted to 0 (audit 2026-05-20): both pinned within ~10% of floor.
     (RFP_MARGIN_IMP, 22, 0, 150, 6.0, true),
     (RFP_MARGIN_NOIMP, 30, 0, 200, 7.5, true),
     // Root-depth-aware RFP relaxation (single-set, self-adapts STC<->LTC):
@@ -140,43 +133,40 @@ tunables!(
     (FUT_BASE, 72, 0, 200, 9.0, true),
     (FUT_PER_DEPTH, 66, 40, 250, 10.5, true),
     (FUT_LMR_DEPTH, 12, 6, 24, 2.0, true),
-    // HIST_PRUNE_DEPTH_10X / HIST_PRUNE_MULT removed 2026-06-02 — see hist-prune
-    // removal block in main negamax body for rationale (three H0 SPRTs).
     (SEE_QUIET_MULT, 20, 5, 80, 3.75, true),
-    // Low-increment TM multiplier ceiling (2026-06-18). The factor product
+    // Low-increment TM multiplier ceiling. The factor product
     // (stability×fail-low×forced×subtree×score-trend, up to ~13.8×) is only
     // clamped for no_inc; at increments that are SMALL RELATIVE TO THE CLOCK
     // it ran uncapped, so a complex middlegame drew deep on a RUN of moves the
     // increment can't refill -> clock drained by early middlegame -> flag
-    // (lichess rapid 10+1 = 600s+1s). The discriminator is increment relative
+    // (seen at rapid 10+1 = 600s+1s). The discriminator is increment relative
     // to the per-move budget: inc_cover = inc / (timeLeft/mtg). Cap by an
     // inc_cover-scaled ceiling: cmin at inc_cover->0 (starved), rising to cmax
     // (≈ uncapped) at inc_cover >= TM_INC_COVER_REF/100.
-    //   inc_cover ≈ 0.04 at lichess 600+1 (capped);  0.24 at OB STC 10s+0.1s
-    //   and 0.4 at 600+10 (both ~uncapped) — so OB STC / LTC / big-inc are
-    //   untouched, only true low-inc-vs-clock (rapid) is throttled.
-    // NB: an earlier ABSOLUTE-inc form (inc/12000) crushed OB STC (inc 100ms
-    // -> 1.6× cap) and lost 24 Elo (#2075). _10X ceilings are /10.
-    // core: false — and NOT because TM is "invisible at STC": it is one of the
-    // highest-leverage STC levers in BOTH directions. The Phase-13 TM rework was
-    // +135 self-play / ~+75 x-engine at 10+0.1 (#1568, biggest single recent
-    // gain); a bad TM form lost -24 (#2075). It's kept OUT of the routine --core
-    // pruning sweep *because* it's that high-leverage and deployment-critical:
-    // TM is tuned deliberately, TC-matched and cross-engine/ponder-validated,
-    // not perturbed incidentally by a broad ~33-iter/param STC core retune where
-    // a noisy TM movement could regress lichess. Still UCI-loadable for
-    // deliberate TM tunes; just not swept by --core.
+    //   inc_cover ≈ 0.04 at 600+1 (capped);  0.24 at 10+0.1
+    //   and 0.4 at 600+10 (both ~uncapped) — so short, long and big-inc TCs
+    //   are untouched, and only true low-inc-vs-clock (rapid) is throttled.
+    // NB: keying this on ABSOLUTE increment rather than inc_cover does not work
+    // — an inc/12000 form gave a 1.6x cap at inc=100ms, crushing short TCs for
+    // about -24 Elo. _10X ceilings are /10.
+    //
+    // WHY THE WHOLE TM_* BLOCK IS NON-CORE: not because TM is invisible at STC
+    // — it is one of the highest-leverage levers in BOTH directions, and a bad
+    // TM form has cost ~24 Elo. It is excluded from the routine --core sweep
+    // precisely because it is that high-leverage and deployment-critical: TM
+    // wants deliberate, TC-matched, cross-engine and ponder-validated tuning,
+    // not incidental perturbation by a broad STC sweep where a noisy movement
+    // regresses real games. Still UCI-loadable for deliberate TM tunes.
     (TM_INC_COVER_REF, 20, 5, 60, 4.0, false),
     (TM_MULT_CEIL_MIN_10X, 15, 10, 40, 2.0, false),
     (TM_MULT_CEIL_MAX_10X, 130, 40, 140, 8.0, false),
-    // Cross-thread best-move-instability TM factor (concept from SF, 2026-07-05).
+    // Cross-thread best-move-instability TM factor (concept from SF).
     // factor = BASE/1000 + MULT/1000 * (Σ per-thread bmc)/n_threads, applied
     // to the soft budget only at Threads>1. Defaults are SF's 1.088 / 2.315
     // instability shape; will want a focused TM-cluster retune-on-branch since
     // Coda's TM uses the standard opt/hard/max + factor-product shape.
-    // Fixed-point /1000 for the sub-integer
-    // precision these multiplicative constants need. Not --core (TM is tuned
-    // deliberately, TC-matched, never swept by the STC core retune).
+    // Fixed-point /1000 for the sub-integer precision these multiplicative
+    // constants need.
     // BASE defaults to 1000 (=1.0), NOT SF's 1088: SF's base is balanced
     // against SF's OWN factor product; on Coda's already-calibrated product a
     // >1.0 base would add a blanket ~9% time to EVERY position (settled or not),
@@ -185,26 +175,27 @@ tunables!(
     // lift BASE if beneficial. MULT starts at SF's 2.315.
     (TM_BMC_INSTAB_BASE, 1000, 900, 1500, 25.0, false),
     (TM_BMC_INSTAB_MULT, 2315, 500, 4000, 100.0, false),
-    // Subtree-factor base (docs/tm_spikiness_experiment_2026-07-10.md).
-    // Factor = (BASE/100 - best_move_node_fraction) * 1.4, floor 0.55 (the
-    // floor cannot bind at the 1.62 default — frac would need to exceed 1.23
-    // — so default behavior is identical to the pre-tunable formula).
-    // Phase-0 showed the factor inflating 66% of moves (neutral only at
-    // frac=0.905), but the re-center probe (130) was −48 Elo differential vs
-    // SF17/SF18 while EVEN in Coda self-play: "our best move dominated our
-    // own search" is a bad confidence proxy against stronger opponents, and
-    // the up-bias is insurance. DO NOT put this in any OB SPSA — self-play
-    // cannot see the cross-engine cost; deliberate cross-engine RR only.
+    // Subtree factor = (BASE/100 - best_move_node_fraction) * 1.4, floor 0.55
+    // (the floor cannot bind at the 1.62 default — frac would need to exceed
+    // 1.23).
+    //
+    // DO NOT TUNE THIS IN SELF-PLAY. The factor inflates ~66% of moves and
+    // looks over-generous, but re-centring it measured EVEN in self-play while
+    // costing ~48 Elo against stronger opponents. "Our best move dominated our
+    // own search" is a poor confidence proxy against a stronger engine, so the
+    // upward bias is deliberate insurance — and self-play cannot see the cost.
+    // Cross-engine RR only.
     (TM_SUBTREE_BASE_100, 162, 100, 180, 4.0, false),
-    // Low-inc absolute single-move ceiling (2026-06-22, overspend PART2).
-    // inc_cover (PART1) caps the factor MULTIPLIER, so adjusted_soft stays
+    // Low-inc absolute single-move ceiling — the companion to the inc_cover
+    // multiplier cap above.
+    // inc_cover caps the factor MULTIPLIER, so adjusted_soft stays
     // ~11% of clock — but a single deep iteration that starts just under
     // adjusted_soft runs uninterrupted (the soft check only fires BETWEEN
     // iterations) until the mid-iteration hard check stops it at hard = 46%
-    // of clock. At low-inc-ratio TCs (lichess 600+1 == OB 60+0.1, inc/base
-    // ~0.0017) the engine reaches deep enough for one iteration to span
-    // soft->hard, so a single move eats 46% of the clock, repeatedly,
-    // geometric-draining the clock (lichess J4tHOcvR/OO0ADWTA/ozALf371).
+    // of clock. At low-inc-ratio TCs (600+1, inc/base ~0.0017) the engine
+    // reaches deep enough for one iteration to span soft->hard, so a single
+    // move eats 46% of the clock — repeatedly, geometric-draining it. This
+    // lost several live games before it was fixed.
     // Fix: lower the hard/max ceiling directly when the increment is small,
     // keyed on the (constant) increment so it never flips mid-game:
     //   inc_ceiling = inc * TM_INC_HARD_MULT + TM_INC_HARD_FLOOR_MS
@@ -213,19 +204,17 @@ tunables!(
     // bind), while capping 600+1 at 40s (was 276s) and 60+0.1 at 13s.
     (TM_INC_HARD_MULT, 30, 0, 120, 4.0, false),
     (TM_INC_HARD_FLOOR_MS, 10000, 0, 60000, 1000.0, false),
-    // No-inc adaptive mtg divisor (2026-07-02): base assumed moves-to-go
-    // and growth rate once a game outlives that assumption — see
-    // compute_tm_budgets for the full derivation. Tuned by focused SPSA
-    // #2444 (1000 iters, 30+0 zero-inc): base 40->34.4, growth 100->94.3.
+    // No-inc adaptive mtg divisor: base assumed moves-to-go, and the growth
+    // rate once a game outlives that assumption — see compute_tm_budgets for
+    // the full derivation.
     (NO_INC_MTG_BASE, 34, 20, 80, 4.0, false),
     (NO_INC_MTG_GROWTH_PCT, 94, 0, 200, 10.0, false),
-    // TM window + factor constants. These are Coda's own tunable parameters,
-    // tuned and validated on Coda's own search + net by a TM-cluster SPSA
-    // (#2738); provenance in docs/license_analysis_2026-07-13.md. ALL non-core:
-    // TM is high-leverage and deployment-critical, tuned deliberately and
-    // TC/ponder-matched, never swept by the routine --core retune (same rationale
-    // as the TM_* block above). TM constants are bench-invariant (bench is
-    // fixed-depth; TM budgets aren't consulted), so a TM tune never moves the bench.
+    // TM window + factor constants. Coda's own parameters, tuned and validated
+    // on Coda's own search and net; provenance in
+    // docs/license_analysis_2026-07-13.md. All non-core, for the reason given
+    // in the TM_* block above. Note TM constants are bench-invariant (bench is
+    // fixed-depth and never consults the budgets), so a TM tune cannot move the
+    // bench — do not read an unchanged bench as "the tune did nothing".
     (TM_MAX_BANK_1000, 599, 400, 750, 15.0, false),   // max_time = clock * N/1000
     (TM_HARD_WINDOW_PCT, 47, 25, 65, 2.5, false),     // hard_time = clock * N/100
     (TM_OPT_WINDOW_PCT, 73, 45, 95, 3.0, false),      // opt = computed * N/100
@@ -257,11 +246,8 @@ tunables!(
     //             reduction.
     //   DECAY_NUM changes the curve's SHAPE — multiplicative all-node
     //             inflation `r += r*NUM/(256d+285)`, so proportionally MORE
-    //             reduction shallow and LESS deep. Replaced a flat +1-ply
-    //             all-node bump, whose flat profile is the wrong shape.
-    //
-    // See docs/ltc_regime_investigation_2026-07-07.md for the deep-EBF
-    // rationale.
+    //             reduction shallow and LESS deep. A flat +1-ply all-node
+    //             bump is the wrong shape for this.
     (LMR_BASE_CENTI, 27, 0, 120, 6.0, true),
     (LMR_ALLNODE_DECAY_NUM, 573, 0, 1600, 80.0, true),
     // Cut-node LMR bump, in centi-ply. Cut nodes reduce by this amount
@@ -320,9 +306,9 @@ tunables!(
     (QS_MAX_CAPTURES, 5, 2, 32, 2.0, false),
     (CORR_W_PAWN, 203, 100, 600, 25.0, true),
     (CORR_W_NP, 109, 0, 400, 17.5, true),
-    // CORR_W_MINOR / CORR_W_MAJOR were removed: minor_key/major_key are
-    // strict subsets of non_pawn_key, so their contributions were redundant
-    // with np_corr and they sat at weight 0 consuming SPSA budget.
+    // There is deliberately no minor-key or major-key correction source:
+    // both are strict subsets of non_pawn_key, so such terms are redundant
+    // with np_corr and simply consume SPSA budget at weight 0.
     (CORR_W_CONT, 121, 0, 400, 18.5, true),
     // Transition (zobrist-delta) correction weight (Cinder idea): correction
     // keyed by hash(ply-1) ^ hash(ply) — a hash of the last move IN CONTEXT
@@ -330,14 +316,11 @@ tunables!(
     // "this structural CHANGE tends to be mis-evaluated."
     (CORR_W_TRANS, 72, 0, 400, 18.5, true),
     (FH_BLEND_DEPTH_10X, 21, 0, 80, 15.0, false),
-    // Re-expose 4 hardcoded search constants (audit 2026-05-21).
-    // All bench-neutral at current defaults.
-    //
     // TT_DAMP_TT_WEIGHT: weight of tt_score in TT-LOWER non-PV cutoff score
-    // dampening. Formula: (W*tt_score + beta) / (W+1). Old hardcoded W=3.
+    // dampening. Formula: (W*tt_score + beta) / (W+1).
     (TT_DAMP_TT_WEIGHT_10X, 31, 10, 100, 5.0, false),
     // PROBCUT_TT_DEPTH_SLACK: TT depth must be >= current depth - SLACK for
-    // ProbCut-TT-noshot to consider the entry. Old hardcoded 3.
+    // ProbCut-TT-noshot to consider the entry.
     (PROBCUT_TT_DEPTH_SLACK, 3, 0, 10, 0.5, false),
     (HIST_BONUS_MULT, 283, 50, 400, 17.5, true),
     (HIST_BONUS_MAX, 1458, 500, 3000, 125.0, true),
@@ -398,26 +381,21 @@ tunables!(
     // into the first-searched slot. Margin on Coda's pawn=100 SEE scale:
     // a check that loses more than this by SEE gets no ordering bonus.
     (QUIET_CHECK_SEE_MARGIN, 90, 0, 300, 12.0, true),
-    // Floor lowered 256 -> 64 (2026-07-27). SPSA pinned this at the old floor
-    // for three consecutive applied tunes (#2664 450, #2733 372, #2794 279)
-    // while the weights kept ~70% headroom, so the bound — not the optimum —
-    // was setting the value. Effective correction magnitude is
-    // sum(W) / (DIV * GRAIN_T); the descent since the corrhist reworks is a
-    // real ~1.7x strengthening, not a walk along the weights/divisor
-    // degeneracy (the weight sum fell only 25% against the divisor's 73%).
-    // c_end 192 -> 64: at an operating point near 279 a 192 perturbation is
-    // ~69% of the value and would clamp against the new floor constantly.
+    // Effective correction magnitude is sum(W) / (DIV * GRAIN_T), so this
+    // divisor trades off directly against the CORR_W_* weights — the pair is
+    // degenerate and must be read together, never one in isolation. The floor
+    // is deliberately low: a bound this parameter pins against would be setting
+    // the value instead of the optimum. Keep c_end well under the operating
+    // point, or perturbations clamp against the floor every iteration.
     (CORR_HIST_DIV, 308, 64, 4096, 64.0, true),
-    // 4 -> 16 with T2.4: the floor-pin at 4 was calibrated for the
-    // sign-only (err-clamped) regime; consensus weights ~depth uncapped.
+    // Caps the per-update weight. The ceiling suits depth-proportional weights;
+    // a much lower cap only makes sense in a sign-only (error-clamped) regime.
     (CORR_UPDATE_WEIGHT_MAX, 14, 4, 48, 2.2, true),
-    // Was 32 (tp10→3). Now FIXED-POINT. Default 30 → eff 3.0 ≡ old behavior.
+    // Fixed-point /10.
     (CORR_BONUS_CAP_DIV_10X, 38, 10, 160, 15.0, false),
     (CORR_HIST_GRAIN_T, 13, 1, 32, 1.55, false),
-    // Floor lifted from 10 → 0 (audit 2026-05-19): SPSA converged 25, ~2%
-    // from the floor. Lifting allows exploration of looser clamps.
-    // Correction-history output scaling: an input pre-clamp was replaced by
-    // scaling the output instead —
+    // Correction-history output scaling — the output is scaled rather than the
+    // input pre-clamped:
     //   bonus = err * (depth+1).min(W) / CORR_ERR_DIV
     // clamped at the gravity cap only.
     (CORR_ERR_DIV_10X, 55, 20, 640, 30.0, false),
@@ -428,13 +406,11 @@ tunables!(
     // cont-hist / NMP / margin shape around them.
     (ESCAPE_BONUS_Q, 17819, 0, 30000, 1500.0, false),
     (ESCAPE_BONUS_MINOR, 5250, 0, 30000, 1000.0, false),
-    // Null-move threat-escape bonus in quiet ordering (was hardcoded 8000).
+    // Null-move threat-escape bonus in quiet ordering.
     (NULL_THREAT_ESCAPE_BONUS, 8321, 0, 30000, 1000.0, false),
     (NMP_KING_ZONE_MAX_10X, 40, 20, 90, 15.0, true),
     (PROBCUT_KING_ZONE_MAX_10X, 80, 20, 90, 15.0, true),
-    // Was 38 (tp10→4). Now FIXED-POINT. Default 40 → eff 4.0 ≡ old behavior.
     (LMR_THREAT_DIV_10X, 35, 10, 50, 15.0, true),
-    // Was 68 (tp10→7). Now FIXED-POINT. Default 70 → eff 7.0 ≡ old behavior.
     (LMR_KING_PRESSURE_DIV_10X, 70, 20, 90, 15.0, true),
     // Reduce later moves more once this node has already raised alpha N times
     // (alpha_raises reduction, a known LMR refinement). Fixed-point ×10: reduction += raises *
@@ -443,26 +419,13 @@ tunables!(
     (LMR_ALPHA_RAISE_10X, 5, 0, 40, 5.0, false),
     (FUT_THREATS_MARGIN, 38, 0, 200, 10.0, true),
     (DISCOVERED_ATTACK_BONUS, 0, 0, 30000, 1500.0, false),
-    // Three tunables retired off this surface, with DIFFERENT outcomes — the
-    // distinction matters if any of them is ever reconsidered:
-    //   BATTERY_BONUS          feature itself ablated neutral and was REMOVED
-    //                          from movepicker.
-    //   QSEE_BONUS             ablation showed the feature IS load-bearing;
-    //                          only the tunable went, and the feature stays
-    //                          hardcoded in movepicker at its tuned value.
-    //   SE_KING_PRESSURE_MARGIN  retuned at _10X precision, which confirmed the
-    //                          optimum is genuinely 0. Earlier conflicting
-    //                          reads were SPSA noise on integer rounding.
-    //                          Direction closed.
     // xray-SE: when the TT move is from an x-ray blocker square (moving it
     // uncovers our slider's attack on an enemy), this flat bonus is
     // SUBTRACTED from singular_beta (`singular_beta = tt_score - depth -
     // xray_bonus`). That LOWERS singular_beta → WIDENS the SE margin →
     // STRICTER singularity test → FEWER extensions on x-ray-blocker TT moves,
-    // not more. (Empirically good: #604 H1 +1.1, and SPSA drives the value UP
-    // away from the 0 floor — so do NOT "fix" the sign. The earlier comment
-    // here described the mechanism backwards.) Ordering signal for these moves
-    // is delivered separately in movepicker (#502, +52).
+    // not more. This reads backwards but is correct: SPSA drives the value UP
+    // away from the 0 floor, so do NOT "fix" the sign.
     (SE_XRAY_BLOCKER_MARGIN_10X, 39, 0, 400, 20.0, true),
     // Continuation-history weight in quiet move ordering. Range runs to 0 so
     // SPSA can disable the term entirely rather than pinning at a floor.
@@ -481,61 +444,43 @@ tunables!(
     // has previously drifted it below the safe band. The floor is set so the
     // effective value cannot fall under 5.
     (LMR_ENDGAME_PIECES_10X, 45, 45, 90, 15.0, true),
-    // --- Previously-hardcoded pruning depth gates, now tunable ---
-    // Per 2026-04-24 strategy: at our strength/eval regime, optimal
-    // depth caps/gates are sensitive to eval quality and will need
-    // re-tuning after each net change. Exposing them as SPSA-tunables
-    // lets retunes re-calibrate without code changes. Defaults match
-    // the previously-hardcoded values so this commit is bench-neutral.
+    // --- Pruning depth gates ---
+    // These are sensitive to eval quality and want re-calibrating after a net
+    // change, which is why they are tunable rather than hardcoded.
     //
-    // Future retune-on-branch cycles will sweep these with the
-    // eval+pruning co-tune; expect meaningful movement as net quality
-    // changes.
     // Minimum depth for internal iterative reduction. Floor runs low so SPSA
     // can explore "fire at any depth >= 1" rather than being clamped out of it.
     (IIR_MIN_DEPTH_10X, 40, 5, 100, 15.0, true),
-    // ProbCut floor lifted from 30 → 10 (audit 2026-05-19): SPSA at 32,
-    // ~2% from floor. Lifting to 10 (eff 1) allows exploration of more
-    // aggressive ProbCut activation.
-    (PROBCUT_MIN_DEPTH_10X, 15, 10, 120, 15.0, false),     // was hardcoded 5 (ProbCut activation gate)
+    (PROBCUT_MIN_DEPTH_10X, 15, 10, 120, 15.0, false),     // ProbCut activation gate
     (PROBCUT_ROOT_MIN_DEPTH_10X, 34, 0, 80, 8.0, true),
-    (SEE_CAP_DEPTH_10X, 85, 30, 150, 15.0, true),         // was hardcoded 6 (SEE capture prune depth cap)
+    (SEE_CAP_DEPTH_10X, 85, 30, 150, 15.0, true),         // SEE capture prune depth cap
     // Capture-SEE prune margin, SF-shaped (search.cpp): margin = depth*MULT +
-    // capt_hist*HIST/1024, prune if SEE < -margin. Was sharing the hardcoded
-    // SEE_MATERIAL_SCALE=215 (a QS-delta constant) with NO history term, giving
-    // a flat 2.15 pawn/depth margin — ~2.5× wider than SF's 0.84 pawn/depth, so
-    // Coda pruned far fewer bad captures. The capt-hist term is load-bearing:
-    // it protects historically-good captures (which produce cutoffs) so the
-    // base can be lowered without over-pruning them (a naive base-only drop to
-    // 130 cost +17% bench nodes). Base 110 (1.1 pawn/depth, toward SF's 0.84);
-    // HIST 11 ≈ SF's 34/1024 rescaled for Coda's ±16384 capt-hist. Audit #3.
+    // capt_hist*HIST/1024, prune if SEE < -margin. MULT is ~1.1 pawn/depth,
+    // toward SF's 0.84; HIST ≈ SF's 34/1024 rescaled for Coda's ±16384
+    // capt-hist range.
+    //
+    // The capt-hist term is load-bearing, not decoration: it protects
+    // historically-good captures (the ones that produce cutoffs) so the base
+    // can be lowered without over-pruning them. Dropping the base alone,
+    // without the history term, cost +17% bench nodes.
     (SEE_CAP_MULT, 96, 40, 250, 12.0, true),
     (SEE_CAP_HIST, 8, 0, 40, 2.0, false),
-    (BAD_NOISY_DEPTH_10X, 84, 40, 150, 15.0, true),       // was hardcoded 4 (BNFP depth cap)
-    // Second pass — additional gates exposed for the feature-utility
-    // audit tune. Widened ranges allow SPSA to reach disable-endpoint
-    // values where appropriate (per feedback_spsa_as_feature_utility_diagnostic).
-    // De-gated 75 → 25 (eff 8 → 3) with the RFP-before-NMP reorder: with RFP
-    // running first, shallow NMP only sees nodes static pruning couldn't cut,
-    // removing the free-cutoff interception that killed #1904. SPSA had pushed
-    // this to 8 as compensation for NMP-first ordering + per-cutoff verify cost.
-    (NMP_MIN_DEPTH_10X, 55, 20, 200, 15.0, true),              // was hardcoded 3 (NMP activation gate, 2 sites)
-    // Floor lifted from 10 → 0 (audit 2026-05-20): pinned at 25, 8% from floor.
-    // 1 -> 17 (eff 0 -> 2, consensus floor): tune #1959 on the post-T1.2
-    // trunk. The diagnostic was seeded at eff 2 and SPSA HELD (17.1) rather
-    // than reverting to the old floor-pin at 0 — the pin was compensation
-    // for the stale prior_reduction signal fixed by #1939, not signal.
+    (BAD_NOISY_DEPTH_10X, 84, 40, 150, 15.0, true),       // BNFP depth cap
+    // NMP activation gate (2 sites). This can sit low because RFP runs FIRST:
+    // shallow NMP then only sees nodes static pruning could not already cut,
+    // so it no longer intercepts free cutoffs. Reordering NMP ahead of RFP
+    // would require pushing this gate back up to compensate.
+    (NMP_MIN_DEPTH_10X, 55, 20, 200, 15.0, true),
     (HINDSIGHT_MIN_DEPTH_10X, 46, 0, 200, 15.0, true),
-    // Net output scale in percent (eval-scale normalization experiment,
-    // 2026-06-12). Final NNUE eval is multiplied by PCT/100. Different
-    // nets train to very different natural scales (eval RMS 219-369
-    // measured across same-recipe S200 runs) while all cp-denominated
-    // search margins are calibrated to prod's scale — this knob lets a
-    // probe rescale a candidate net to prod's scale (e.g. 127 = dual-s200
-    // RMS 254 -> baseline 323) to de-confound net-vs-net SPRTs. 100 = off.
+    // Net output scale in percent: the final NNUE eval is multiplied by
+    // PCT/100. Nets train to very different natural scales (eval RMS has
+    // ranged 219-369 across same-recipe runs) while every cp-denominated
+    // search margin is calibrated to the production net's scale. This knob
+    // rescales a candidate onto that scale so a net-vs-net SPRT measures the
+    // net rather than its units. 100 = off.
     (EVAL_SCALE_PCT, 100, 50, 200, 5.0, false),
     // Fail-low prior-countermove cont-hist bonus, % of history_bonus(depth)
-    // (SF fail-low history harvesting, simple core — audit 2026-07-05 T1#2).
+    // (SF fail-low history harvesting).
     (FAIL_LOW_PREV_BONUS_PCT, 59, 0, 150, 15.0, false),
     // Cross-MOVE score-trend TM coefficient (×1e-4). Folds the deterioration
     // across MOVES (prev-`go` final score − current running score) into the
@@ -544,17 +489,17 @@ tunables!(
     // Complements the within-search drop term (fixed 0.0025). Default matches
     // that scale (25 → 0.0025). TM change: validate via local cross-engine RR.
     (CROSS_MOVE_TREND, 25, 0, 150, 8.0, false),
-    // Non-core: excluded from --core retunes, but kept on the SPSA surface. It
-    // was demoted (frozen) in batch 2 on a "noise-dominated, nothing to give"
-    // read; the 2026-07-15 focused single-param tune (2743) falsified that —
-    // 215->211 passed SPRT 2746 (H1, +0.72). Left non-core so it stays visible
-    // and re-tunable. NOTE for full sweeps: it retains loose-knob gradient
-    // noise, so exclude it from --no-core runs if it destabilises neighbours.
+    // Converts SEE material (centipawns) into eval units for QS delta pruning:
+    // `stand_pat + see_value(victim) * SCALE/100`. It is therefore the
+    // material<->eval exchange rate, and a net whose eval sits on a different
+    // scale needs this moved with it. Non-core, but it carries loose-knob
+    // gradient noise — exclude it from full sweeps if it destabilises
+    // neighbours.
     (SEE_MATERIAL_SCALE, 211, 30, 300, 13.5, false),
     // Endgame eval-scaling base: eval *= (MAT_SCALE_BASE + non_pawn_material) / 32768.
     // Lower base = more aggressive damp of the net's output in low-material
-    // endgames (the net-leaf endgame-overrate lever, gauntlet 2026-07-19). Default
-    // 22400 = prior hardcoded value (bench-neutral). Non-core / experimental.
+    // endgames — the lever against the net over-rating simplified positions.
+    // Non-core / experimental.
     (MAT_SCALE_BASE, 22400, 14000, 30000, 1000.0, false),
 );
 
@@ -566,10 +511,10 @@ tunables!(
 pub static FH_BLEND_OFFSET: AtomicI32 = AtomicI32::new(1);
 pub static SE_TT_DEPTH_SLACK: AtomicI32 = AtomicI32::new(3);
 pub static MVV_CAP_MULT: AtomicI32 = AtomicI32::new(28);
-// Same rationale, second batch. Note SEE_MATERIAL_SCALE was later un-demoted
-// back onto the SPSA surface after a focused single-parameter tune found real
-// Elo in it — demotion is reversible, and a knob dismissed as noise under a
-// broad sweep can still pay under a targeted one.
+// Same rationale, second batch. Demotion is reversible: SEE_MATERIAL_SCALE was
+// demoted from this list and later put back after a focused single-parameter
+// tune found real Elo in it. A knob dismissed as noise under a broad sweep can
+// still pay under a targeted one.
 pub static QS_SEE_THRESHOLD: AtomicI32 = AtomicI32::new(-26);
 pub static CAP_HIST_BASE: AtomicI32 = AtomicI32::new(42);
 pub static LMR_COMPLEXITY_DIV: AtomicI32 = AtomicI32::new(152);
@@ -583,8 +528,7 @@ pub static TT_CUTOFF_HALFMOVE_MAX: AtomicI32 = AtomicI32::new(89);
 /// credit below 100% saturates to the 50ms floor at STC — a ponder of twice the
 /// soft budget zeroes it outright — after which realized spend is
 /// iteration-quantized bleed up to the hard limit plus grace. That was the
-/// dominant cause of a large ponder deficit. See
-/// docs/ponder_diagnosis_2026-07-05.md.
+/// dominant cause of a large ponder deficit.
 ///
 /// Full charge is affordable because of its two compensators: the instant
 /// reply on a settled ponder hit (`should_instant_reply`) and the ponder-on
@@ -641,23 +585,23 @@ pub const MIN_PONDER_ELAPSED_FOR_INSTANT_MS: u64 = 10;
 /// enforcement floor).
 pub const MIN_POST_PONDERHIT_MS: u64 = 50;
 
-/// FL-EXT (2026-07-05, fail-low extension tail): hard-frame extension per
-/// root fail-low event in the post-ponderhit frame, in percent of the hard
-/// budget — the single step of the aspiration fail-low factor
-/// (1 + 0.34·min(2, fl), SF shape) applied to the post-hit
-/// deadlines. The 2026-07-05 ponder diagnosis measured SF spending >1s
-/// post-hit on 3.3% of moves (its fail-low re-thinks) vs our 0.0% — the P2
-/// cap clipped exactly those. Consts, DELIBERATELY NOT tunables: OB cannot
-/// ponder, SPSA would detune them on noise; sweep in a local ponder
-/// gauntlet only.
+/// Hard-frame extension per root fail-low event in the post-ponderhit frame,
+/// as a percent of the hard budget — the aspiration fail-low factor
+/// (1 + 0.34·min(2, fl), SF shape) applied to the post-hit deadlines.
+///
+/// Without it, a post-hit cap clips exactly the fail-low re-thinks: SF spends
+/// >1s post-hit on ~3.3% of moves where we spent none.
+///
+/// Consts, DELIBERATELY NOT tunables: OB cannot ponder, so SPSA would detune
+/// them on noise; sweep in a local ponder gauntlet only.
 pub const PH_FL_HARD_EXT_PCT: u64 = 34;
 /// Max fail-low deadline extensions per post-hit search (SF's min(2, fl)).
 pub const PH_FL_MAX_EXTENSIONS: u32 = 2;
 /// Minimum root depth for a during-post-hit fail-low to trigger a deadline
-/// extension. Shallow aspiration-window misses (d4-8) are routine noise and
-/// burned the whole extension budget within milliseconds in v1 (mechanism
-/// run 2026-07-05: events at now=2ms, tail still 0.0%); only a fail-low at
-/// a real search frontier signals genuine destabilization.
+/// extension. Without this floor, shallow aspiration-window misses (d4-8) —
+/// which are routine noise — burn the entire extension budget within
+/// milliseconds. Only a fail-low at a real search frontier signals genuine
+/// destabilization.
 pub const PH_FL_MIN_DEPTH: i32 = 10;
 
 /// stopOnPonderhit-class instant-reply decision (SF stopOnPonderhit
@@ -708,8 +652,7 @@ fn tp(param: &AtomicI32) -> i32 {
 /// Read a `_10X`-scaled tunable, returning the effective integer value
 /// (round-half-away-from-zero of stored/10). Tunables with the `_10X`
 /// suffix store 10× their effective value so SPSA can express decimal
-/// precision and retain decimal progress across tune cycles. See
-/// memory feedback_floor_pin_tunables_cross_recipe.md for rationale.
+/// precision and retain decimal progress across tune cycles.
 #[inline(always)]
 pub fn tp10(param: &AtomicI32) -> i32 {
     let v = param.load(Ordering::Relaxed);
@@ -722,22 +665,16 @@ pub static FEAT_NMP: AtomicBool = AtomicBool::new(true);
 /// Off by default, controlled by UCI option `TMDebug`.
 pub static TM_DEBUG: AtomicBool = AtomicBool::new(false);
 pub static FEAT_RFP: AtomicBool = AtomicBool::new(true);
-pub static FEAT_PROBCUT: AtomicBool = AtomicBool::new(true); // re-enabled after fixing missing qsearch filter, SEE threshold, and excluded_move guard
+pub static FEAT_PROBCUT: AtomicBool = AtomicBool::new(true);
 pub static FEAT_LMR: AtomicBool = AtomicBool::new(true);
 pub static FEAT_LMP: AtomicBool = AtomicBool::new(true);
 pub static FEAT_FUTILITY: AtomicBool = AtomicBool::new(true);
-pub static FEAT_SEE_PRUNE: AtomicBool = AtomicBool::new(true); // confirmed: -17 Elo without (clean CPU retest)
-pub static FEAT_BAD_NOISY: AtomicBool = AtomicBool::new(true); // confirmed: -26 Elo without (retested without CPU contention)
+pub static FEAT_SEE_PRUNE: AtomicBool = AtomicBool::new(true); // load-bearing: -17 Elo without
+pub static FEAT_BAD_NOISY: AtomicBool = AtomicBool::new(true); // load-bearing: -26 Elo without
 pub static FEAT_EXTENSIONS: AtomicBool = AtomicBool::new(true);
-pub static FEAT_FH_BLEND: AtomicBool = AtomicBool::new(true); // gates fail-high score blending (replaces dead FEAT_ALPHA_REDUCE — see below)
-// FEAT_ALPHA_REDUCE removed 2026-06-06: it gated the `alpha_raised` LMR
-// adjustment that was deleted in 21c8f7f (Apr 7, "LMR simplify", H0'd
-// -2..-4). The flag was orphaned — never read (.load) anywhere — so its
-// env var / disable_all entry silently did nothing and the "-4 Elo" comment
-// was stale (described the removed feature). Repurposed the slot to give
-// fail-high score blending (previously unablatable) a real ablation flag.
+pub static FEAT_FH_BLEND: AtomicBool = AtomicBool::new(true); // gates fail-high score blending
 pub static FEAT_IIR: AtomicBool = AtomicBool::new(true);
-pub static FEAT_HINDSIGHT: AtomicBool = AtomicBool::new(true); // confirmed: -18 Elo without (clean CPU retest)
+pub static FEAT_HINDSIGHT: AtomicBool = AtomicBool::new(true); // load-bearing: -18 Elo without
 pub static FEAT_CORRECTION: AtomicBool = AtomicBool::new(true);
 pub static FEAT_PVS: AtomicBool = AtomicBool::new(true);
 pub static FEAT_TT_CUTOFF: AtomicBool = AtomicBool::new(true);
@@ -906,9 +843,9 @@ pub struct PruneStats {
     // Behavior-preserving: the RFP cutoff is returned regardless.
     pub rfp_audit_attempts: [u64; 24],
     pub rfp_audit_fp: [u64; 24],
-    // TREESTATS parity counters (tree-shape comparison vs the instrumented
-    // SF build, 2026-07-11; dumped by the UCI `treestats` command in the
-    // same line format as the instr-stockfish patch). Bucket 0 = qsearch;
+    // TREESTATS parity counters, for tree-shape comparison against an
+    // instrumented SF build; dumped by the UCI `treestats` command in the same
+    // line format that patch emits. Bucket 0 = qsearch;
     // interior nodes bucket by ENTRY depth min(31) — same convention both
     // sides so per-depth lines stay mutually consistent. Reset per `go`
     // (Coda's existing stats convention; harness dumps after each go).
@@ -939,10 +876,9 @@ pub enum ForcedState {
 }
 
 /// Search state for one thread.
-/// Stop-time snapshot of the Phase-13 dynamic-TM factor values, captured on
-/// the last iteration that evaluated the factor product. TMDebug-gated
-/// diagnostics only — never read by search logic. (TM spikiness Phase 0,
-/// docs/tm_spikiness_experiment_2026-07-10.md)
+/// Stop-time snapshot of the dynamic-TM factor values, captured on the last
+/// iteration that evaluated the factor product. TMDebug-gated diagnostics
+/// only — never read by search logic.
 #[derive(Default, Clone, Copy)]
 struct TmDbg {
     stab: f64,
@@ -975,8 +911,8 @@ pub struct SearchInfo {
     /// Thread count for the current search (1 for the single-thread path). Set
     /// by search_smp; gates the cross-thread instability factor to Threads>1.
     pub num_threads: usize,
-    /// Last per-thread node count flushed into global_nodes (delta flushing,
-    /// TM audit 2026-06-13 A4). Cell: should_stop takes &self.
+    /// Last per-thread node count flushed into global_nodes (delta flushing).
+    /// Cell because should_stop takes &self.
     last_flushed_nodes: std::cell::Cell<u64>,
     pub silent: bool,  // suppress UCI output (for datagen)
     pub stats: PruneStats,
@@ -992,7 +928,7 @@ pub struct SearchInfo {
     pub tt: std::sync::Arc<TT>,  // shared across Lazy SMP threads
     pub history: Box<History>,
     pub stop: std::sync::Arc<AtomicBool>,  // shared stop flag
-    /// EXTERNAL stop flag (TM audit 2026-06-13 A2): set ONLY by the UCI
+    /// EXTERNAL stop flag: set ONLY by the UCI
     /// thread on `stop`/`quit`/abandon (uci.rs shares its external_stop
     /// Arc here). Distinct from `stop`, which the search itself also sets
     /// internally (e.g. to halt helpers during the stockpile-floor sleep)
@@ -1013,9 +949,9 @@ pub struct SearchInfo {
     tm_prev_score: i32,
     tm_best_stable: i32,
     /// Cumulative count of aspiration fail-lows in the current search.
-    /// Reset at search start. Consumed by the Phase 13 fail-low factor
-    /// `1.0 + 0.34 * min(2, asp_fail_low)` applied to both opt and hard
-    /// windows — a smooth ramp, replacing an earlier thresholded form.
+    /// Reset at search start. Consumed by the fail-low TM factor
+    /// `1.0 + 0.34 * min(2, asp_fail_low)`, applied to both the opt and hard
+    /// windows as a smooth ramp rather than a threshold.
     tm_asp_fail_low: u32,
     /// Cumulative count of aspiration fail-highs in the current search.
     /// Currently diagnostic-only; not used by TM yet (asymmetric vs
@@ -1023,10 +959,9 @@ pub struct SearchInfo {
     /// expected — already captured by score_factor's upward sense).
     tm_asp_fail_high: u32,
     /// Cumulative count of root best-move changes between iterations,
-    /// reset at search start. Since Phase 13 this is DIAGNOSTIC-ONLY
-    /// (TMDebug output) — the upward multiplier it used to drive was
-    /// dropped. Candidate for re-use as an SF-style
-    /// within-iteration instability factor (TM audit 2026-06-13, B3).
+    /// reset at search start. DIAGNOSTIC-ONLY (TMDebug output) — the upward
+    /// multiplier it once drove was dropped. A candidate for re-use as an
+    /// SF-style within-iteration instability factor.
     tm_best_move_changes: u32,
     /// Forced-move detection state. Set after an ID iteration
     /// at the root when `detect_forced_move` finds that excluding the current best
@@ -1050,16 +985,17 @@ pub struct SearchInfo {
     /// which would grow the clock instead of spending it (stockpile). 0 when
     /// there is no increment.
     soft_floor: u64,
-    /// True when our increment is exactly zero (lichess 3+0, 60+0, 180+0,
-    /// tournament 40/15). Tightened gate (2026-05-23) replacing the earlier
-    /// `soft_floor == 0` form, which incidentally captured STC 10+0.1
-    /// (inc == overhead == 100ms → soft_floor=0 by coincidence) and disabled
-    /// the forced-move detector at our SPRT TC, costing ~3 Elo at STC for
-    /// reasons orthogonal to the lichess no-inc fix.
+    /// True when our increment is exactly zero (3+0, 60+0, 180+0, 40/15).
+    ///
+    /// Test the increment directly, NOT `soft_floor == 0`: at 10+0.1 the
+    /// increment equals the move overhead, so soft_floor lands on 0 by
+    /// coincidence and the looser form silently disables the forced-move
+    /// detector at short TCs — worth about 3 Elo, for reasons unrelated to
+    /// no-increment play.
     tm_no_inc: bool,
     /// Absolute max time we will ever spend on a single move, computed as 60%
-    /// of our_clock (2026-05-26 redesign). Replaces Phase 10h's hard×0.5 cap
-    /// with a single max-bank ceiling; factors multiply soft up against this.
+    /// of our_clock. A single max-bank ceiling rather than a separate cap on
+    /// hard; the TM factors multiply soft up against this.
     tm_max_time: u64,
     /// Our increment (ms) for the current search — feeds the low-increment
     /// multiplier ceiling. 0 when there is no increment.
@@ -1111,8 +1047,8 @@ pub struct SearchInfo {
     /// e.g. movetime/depth/infinite searches). This is independent of the soft/
     /// hard TM budget — it's the last line of defence against search overrun
     /// (iteration overflow, ponder accounting, thread startup, clock lag) that
-    /// the fractional `hard` cap can't prevent at low clock. "Never forfeit with
-    /// time on the clock" (lichess MJ4lEpXF no-inc flag, loss-55 inc flag).
+    /// the fractional `hard` cap can't prevent at low clock. The rule it
+    /// enforces is "never forfeit with time on the clock".
     pub abs_deadline: u64,
     /// ABSOLUTE forfeit-guard deadline for the IN-FLIGHT post-ponderhit search
     /// (ms since start_time; 0 = unset). Shared atomic counterpart of
@@ -1159,12 +1095,12 @@ pub struct SearchInfo {
     /// iteration in both ID loops. Visible at every node so depth-dependent
     /// formulas adjust by the OVERALL search depth (= the time control's
     /// reach), giving a single tunable set that self-adapts STC<->LTC instead
-    /// of two constant sets (Adam directive 2026-06-13).
+    /// of two constant sets.
     pub root_depth: i32,
     /// TMDebug-only stop-time snapshot of the dynamic-TM factors (see TmDbg).
     tm_dbg: TmDbg,
-    /// SNAP forensics (CODA_TRACE_LINE env, 2026-07-12): zobrist hashes of
-    /// the positions along a target line from the root, and the line's moves.
+    /// Line-trace forensics (CODA_TRACE_LINE env): zobrist hashes of the
+    /// positions along a target line from the root, and the line's moves.
     /// Empty (= disabled, zero hot-path cost beyond one is_empty check) unless
     /// the env var is set. When a search node's hash matches trace_hashes[ply],
     /// hooks log which pruning gate discards trace_line_mv[ply], to stderr.
@@ -1172,7 +1108,7 @@ pub struct SearchInfo {
     pub trace_line_mv: Vec<Move>,
     /// Ply barrier for NMP verification: prevents NMP from re-triggering
     /// inside its own verification subtree (all peers: Alexandria,
-    /// Stormphrax use nmpMinPly / nmp_min_ply). Default 0 = no barrier. (audit B1)
+    /// Stormphrax use nmpMinPly / nmp_min_ply). Default 0 = no barrier.
     pub nmp_min_ply: i32,
     /// Triangular PV table
     pub pv_table: [[Move; MAX_PLY + 1]; MAX_PLY + 1],
@@ -1190,7 +1126,7 @@ pub struct SearchInfo {
     pub excluded_move: [Move; MAX_PLY + 1],
     /// Double extension counter — propagated from parent, capped to prevent search explosion
     double_ext_count: [i32; MAX_PLY + 1],
-    /// Per-ply beta-cutoff counter (SF cutoffCnt, T1.2). Incremented at the fail-high
+    /// Per-ply beta-cutoff counter (SF cutoffCnt). Incremented at the fail-high
     /// site; each node clears its GRANDCHILD slot on entry so
     /// `cutoff_count[ply+1]` reflects only fail-highs under this node's own
     /// subtree. Read in LMR: a child ply that keeps failing high means
@@ -1208,9 +1144,8 @@ pub struct SearchInfo {
     pawn_corr: Box<[[i32; CORR_HIST_SIZE]; 2]>,
     /// Non-pawn correction history: [stm][color][nonpawn_hash % size]
     np_corr: Box<[[[i32; CORR_HIST_SIZE]; 2]; 2]>,
-    /// Continuation correction history: [piece][to_square]
-    // Paired continuation correction (H1, 2026-07-10): [prev_piece][prev_to][cur_piece][cur_to],
-    // go_piece 1-12 (slot 0 unused). Read/updated at ply-2 and ply-4 offsets.
+    /// Paired continuation correction: [prev_piece][prev_to][cur_piece][cur_to],
+    /// go_piece 1-12 (slot 0 unused). Read/updated at ply-2 and ply-4 offsets.
     cont_corr: Box<[[[[i32; 64]; 13]; 64]; 13]>,
     /// Transition correction history: [stm][(hash(ply-1) ^ hash(ply)) % size]
     trans_corr: Box<[[i32; CORR_HIST_SIZE]; 2]>,
@@ -1343,13 +1278,11 @@ impl SearchInfo {
         let acc = crate::nnue::NNUEAccumulator::new(net.hidden_size);
         // Activate threat stack if net has threat features.
         //
-        // C8 audit LIKELY #36: previously only the `has_threats` branch
-        // touched threat_stack. On net swap from v9 (has_threats=true) to
-        // v5 (has_threats=false), the existing threat_stack would keep
-        // `active=true` even though the new net doesn't use threats —
-        // search would try to run threat computation against a net that
-        // doesn't consume it. Reset unconditionally first; activate only
-        // when the new net needs it.
+        // Reset unconditionally first, then activate only if the new net needs
+        // it. Touching threat_stack only inside the `has_threats` branch leaks
+        // state across a net swap: going from a threats net to one without,
+        // the stack stays `active=true` and search runs threat computation
+        // against a net that never consumes it.
         self.threat_stack = crate::threat_accum::ThreatStack::new(net.hidden_size);
         if net.has_threats {
             self.threat_stack.active = true;
@@ -1426,10 +1359,10 @@ impl SearchInfo {
         if self.stop.load(Ordering::Relaxed) {
             return true;
         }
-        // Flush local node count to global counter every 4096 nodes.
-        // Delta-tracked (TM audit 2026-06-13 A4): the old flat
-        // fetch_add(4096) double-counted when should_stop was re-invoked
-        // from ID-loop sites at an unchanged boundary-resting count.
+        // Flush local node count to global counter every 4096 nodes. Track the
+        // DELTA rather than adding a flat 4096: should_stop can be re-invoked
+        // from ID-loop sites while the count rests on a boundary, and a flat
+        // add double-counts there.
         if self.nodes & 4095 == 0 && self.nodes > self.last_flushed_nodes.get() {
             self.global_nodes.fetch_add(self.nodes - self.last_flushed_nodes.get(), Ordering::Relaxed);
             self.last_flushed_nodes.set(self.nodes);
@@ -1440,14 +1373,14 @@ impl SearchInfo {
         // made `go nodes N` overshoot by ~N*T at T threads. Check global
         // counter so all threads stop together; up to T*4096 unflushed nodes
         // of slack is acceptable.
-        // Exact accounting (2026-07-06): include this thread's UNFLUSHED local
-        // delta, not just the 4096-granular global counter — the stale-global
-        // check made `go nodes N` overshoot by up to 4095 nodes (+23% at
-        // N=10000, measured vs SF which enforces exactly; it inflated
-        // Coda's fixed-node RR results). Helpers still contribute at flush
-        // granularity (bounded T*4096 slack, documented above); the main
-        // thread — the one that matters at T=1 fixed-node testing — is now
-        // node-exact. Zero cost unless max_nodes > 0 (never set on OB).
+        // Include this thread's UNFLUSHED local delta, not just the
+        // 4096-granular global counter. Checking the global alone lets
+        // `go nodes N` overshoot by up to 4095 nodes — +23% at N=10000, which
+        // is enough to inflate fixed-node results against an engine that
+        // enforces the limit exactly. Helpers still contribute at flush
+        // granularity (the bounded slack above); the main thread, which is the
+        // one that matters for T=1 fixed-node testing, is node-exact. Zero
+        // cost unless max_nodes > 0.
         if self.max_nodes > 0
             && self.global_nodes.load(Ordering::Relaxed)
                 + (self.nodes - self.last_flushed_nodes.get())
@@ -1468,7 +1401,6 @@ impl SearchInfo {
             // ABSOLUTE forfeit guard — checked FIRST, with NO grace and NO
             // ponder exception. Makes flagging impossible regardless of what the
             // soft/hard budget, ponder accounting, or iteration overflow do.
-            // (lichess MJ4lEpXF no-inc flag, loss-55 inc flag.)
             if self.abs_deadline > 0 && elapsed >= self.abs_deadline {
                 self.stop.store(true, Ordering::Relaxed);
                 return true;
@@ -1501,8 +1433,8 @@ impl SearchInfo {
                 // finishing the in-flight iteration has real value. But past
                 // 2× the slice, cut the iteration: the pre-fix behavior
                 // (hard + 500ms grace as the only mid-iteration bound) let a
-                // single deep iteration bleed up to ~4s at 10+0.1 = 40% of
-                // the base clock (ponder diagnosis 2026-07-05, max 4147ms).
+                // single deep iteration bleed up to ~4s at 10+0.1 — 40% of the
+                // base clock on one move.
                 // ponderhit_floor carries the post-hit slice length, so
                 // `soft + slice` = "elapsed exceeds soft by 2×" in the
                 // post-hit frame regardless of how long the ponder ran.
@@ -1663,7 +1595,7 @@ impl SearchInfo {
                 }
 
                 // ---------------------------------------------------------------
-                // THREAT-ACCUMULATOR VERIFICATION (C1 diagnostic, 2026-07-10).
+                // THREAT-ACCUMULATOR VERIFICATION (diagnostic).
                 // The PSQ force_recompute above is blind to threat drift: it
                 // re-evaluates with the SAME (possibly desynced) threat_stack.
                 // Here we additionally recompute the threat features from
@@ -1782,14 +1714,13 @@ impl SearchInfo {
         // `eval()` the scaling factor would be frozen into the TT entry at
         // write time, and re-probing the same position at a higher halfmove
         // would use a stale scale. With aggressive scaling (our current
-        // formula) that bakes in gross errors and wipes out the
-        // correction — hence SPRT #610 showed −8 Elo at 1000 games before
-        // we caught this. The fix is structural: keep TT storage
-        // halfmove-independent, apply scale freshly on read.
+        // formula) that bakes in gross errors and wipes out the correction —
+        // worth about -8 Elo. The fix is structural: keep TT storage
+        // halfmove-independent, and apply the scale freshly on read.
         let final_score = score * (tp(&MAT_SCALE_BASE) + material) / 32 / 1024;
 
-        // Dual-net dispatch instrumentation (2026-08-01, both paths still
-        // call the big net). Proxy = SIGNED piece-material balance in SEE
+        // Dual-net dispatch instrumentation (both paths still call the big
+        // net). Proxy = SIGNED piece-material balance in SEE
         // units — the candidate dispatch signal: position-intrinsic,
         // changes only on captures/promotions. Per |proxy| bucket we count
         // evals, sum |internal eval|, and count near-equal evals
@@ -1837,9 +1768,8 @@ impl SearchInfo {
 /// Consensus form, shared by the entire reference set — SF `v - v*rule50/199`,
 /// Obsidian/Berserk `(200 - hm)/200`, PlentyChess `(293 - rule50)/293`
 /// — which all HALVE (not zero) the eval at the 50-move cliff. The previous
-/// `(100 - hm)/100` was a 2× outlier that nulls a won eval to 0.00 at the
-/// cliff; Coda's own conversion study (docs/conversion_failure_study
-/// _2026-06-29.md) traced won-position draws to exactly that over-damping.
+/// `(100 - hm)/100` is a 2x outlier that nulls a won eval to 0.00 at the
+/// cliff, and that over-damping has been traced to real won-position draws.
 #[inline]
 fn apply_halfmove_scale(score: i32, halfmove: u16) -> i32 {
     // Leave sentinel scores untouched so downstream comparisons with
@@ -1851,8 +1781,8 @@ fn apply_halfmove_scale(score: i32, halfmove: u16) -> i32 {
     score * (200 - hm) / 200
 }
 
-/// TT-cutoff child-consistency verification (technique from SF, re-implemented
-/// via the 2026-07-05 SF search audit, Tier 1 #3). Before trusting a DEEP
+/// TT-cutoff child-consistency verification (technique from SF, independently
+/// re-implemented). Before trusting a DEEP
 /// (depth >= 7) TT cutoff, make the TT move (board-only — no NNUE work),
 /// probe the child's TT entry, and unmake. Returns true (decline the cutoff,
 /// search the node normally) when the child entry exists and its negated
@@ -1990,7 +1920,7 @@ pub fn build_dirty_piece(
     d
 }
 
-/// Paired continuation correction (H1, 2026-07-10). Index by the LAST move
+/// Paired continuation correction. Index by the LAST move
 /// (ply-1) and select the subtable by the move at ply-2 AND ply-4, summing both
 /// — the SF 2-D continuation form, replacing Coda's flat
 /// 1-ply `[piece][to]` (the sole 6/6 flat-1-ply outlier). Uses
@@ -2067,12 +1997,12 @@ fn corrected_eval(info: &SearchInfo, board: &Board, raw_eval: i32, ply: usize) -
         } else { 0 }
     } else { 0 };
 
-    // Weighted blend: pawn, whiteNP, blackNP, cont, transition (minor/major dropped 2026-05-19)
+    // Weighted blend: pawn, whiteNP, blackNP, cont, transition
     let total_corr = (pawn_corr * tp(&CORR_W_PAWN) as i64 + white_np_corr * tp(&CORR_W_NP) as i64 + black_np_corr * tp(&CORR_W_NP) as i64
         + cont_corr * tp(&CORR_W_CONT) as i64 + trans_corr * tp(&CORR_W_TRANS) as i64) / tp(&CORR_HIST_DIV) as i64;
-    // mat_damp (piece-count fortress guard) removed 2026-07-09: the residual
-    // update baseline (finding #1) makes corrhist converge to the true (~0)
-    // correction in low-signal positions, so the material band-aid is redundant.
+    // There is deliberately no material damping here: the residual update
+    // baseline makes corrhist converge to the true (~0) correction in
+    // low-signal positions, so a piece-count fortress guard is redundant.
     let adjusted = raw_eval + (total_corr as i32) / tp(&CORR_HIST_GRAIN_T);
     // Keep the corrected static eval strictly inside the non-mate band so it
     // can never be read back as a mate by the MATE_IN_MAX_PLY guards. (Real
@@ -2093,10 +2023,10 @@ fn update_corr_entry(entry: &mut i32, scaled_err: i32, cap_div_10x: i32) {
 
 /// Update all correction history tables.
 fn update_correction_history(info: &mut SearchInfo, board: &Board, search_score: i32, raw_eval: i32, depth: i32, ply: usize) {
-    // T2.4 consensus shape: feed the FULL error scaled by depth, clamping
-    // only the resulting bonus (at the gravity cap, in update_corr_entry).
-    // The old ±3cp err pre-clamp (CORR_HIST_ERR_MAX) made corrhist a
-    // sign-only integrator — max update 21 vs cap ~341. No surveyed engine
+    // Consensus shape: feed the FULL error scaled by depth, clamping only the
+    // resulting bonus (at the gravity cap, in update_corr_entry). Pre-clamping
+    // the error instead — e.g. to ±3cp — turns corrhist into a sign-only
+    // integrator, with a max update of 21 against a cap near 341. No surveyed engine
     // clamps the input error: SF err*depth*12/128, Obsidian err*depth/8, all clamped at the output only.
     let err = search_score - raw_eval;
     let weight = (depth + 1).min(tp(&CORR_UPDATE_WEIGHT_MAX));
@@ -2148,8 +2078,8 @@ fn update_correction_history(info: &mut SearchInfo, board: &Board, search_score:
 /// the UCI thread while helper threads are reading) is not Rust UB on
 /// concurrent access. Relaxed ordering is sufficient — readers tolerate
 /// either-old-or-new per-cell values; there's no data dependency between
-/// cells. 2026-05-31 audit (H3): prior `static mut [[i32; 64]; 64]` was UB
-/// under Rust's memory model and ARM-visible inconsistent reads during
+/// cells. Do NOT revert this to `static mut [[i32; 64]; 64]`: that is UB under
+/// Rust's memory model, and produced ARM-visible inconsistent reads during
 /// setoption storms.
 static LMR_TABLE: [[AtomicI32; 64]; 64] = {
     const Z: AtomicI32 = AtomicI32::new(0);
@@ -2165,8 +2095,8 @@ static LMR_TABLE_CAP: [[AtomicI32; 64]; 64] = {
 /// Centi-ply fixed-point scale for the LMR reduction accumulator: reductions
 /// are carried in 1/100ths of a ply and FLOOR-rounded to integer plies once,
 /// at the end of the LMR block. floor(floor(100x)/100) == floor(x), so at
-/// default behaviour the integer plies are bit-identical to the old tables
-/// (fractional-LMR enabler, re-implementation of #2192 on the 2026-07 trunk).
+/// default behaviour the integer plies are bit-identical to an unscaled table.
+/// This is what makes fractional (centi-ply) reductions expressible.
 pub const LMR_SCALE: i32 = 100;
 
 pub fn init_lmr() {
@@ -2176,8 +2106,8 @@ pub fn init_lmr() {
             if depth >= 3 && moves >= 3 {
                 let c = tp(&LMR_C_QUIET) as f64 / 100.0;
                 // Additive base in exact centi (post-scale, so 20 = 0.20 plies
-                // uniformly — NOT inside the float-to-int truncation, which is
-                // the bug that made atlas/lmr-base-offset a no-op).
+                // uniformly). It must stay OUTSIDE the float-to-int
+                // truncation, or the offset rounds away to a no-op.
                 let r = tp(&LMR_BASE_CENTI)
                     + (LMR_SCALE as f64 * (depth as f64).ln() * (moves as f64).ln() / c) as i32;
                 LMR_TABLE[depth][moves].store(r.min((depth - 2) as i32 * LMR_SCALE), Ordering::Relaxed);
@@ -2278,11 +2208,11 @@ pub(crate) fn create_helper_info(main: &SearchInfo) -> SearchInfo {
     // and the misleading "TT 1 MB" info string that prints before swap).
     let mut helper = SearchInfo::new_with_tt(main.tt.clone());
     helper.stop = main.stop.clone();         // share the same stop flag
-    // C8 audit LIKELY #35: share ponderhit_time so helpers respect the
-    // ponderhit deadline set by the UCI thread. Previously helpers kept
-    // their own AtomicU64 stuck at 0, so they ignored the ponderhit
-    // deadline and only stopped when main set the shared stop flag —
-    // burning CPU for the grace window on every ponderhit.
+    // Share ponderhit_time so helpers respect the ponderhit deadline set by
+    // the UCI thread. If a helper keeps its own AtomicU64 it stays at 0, the
+    // helper ignores the deadline entirely, and it only stops when main sets
+    // the shared stop flag — burning CPU for the grace window on every
+    // ponderhit.
     helper.ponderhit_time = main.ponderhit_time.clone();
     helper.ponderhit_soft = main.ponderhit_soft.clone();
     helper.ponderhit_floor = main.ponderhit_floor.clone();
@@ -2350,7 +2280,7 @@ pub(crate) fn create_helper_info(main: &SearchInfo) -> SearchInfo {
 /// Corrhist is COPIED from main every go on purpose: it feeds the corrected
 /// static eval, so a helper running its OWN corrhist would evaluate differently
 /// from main, its shared-TT entries would carry divergent scores, and the
-/// search would diverge at T>1 (the -8 class, OB #2539). Move-ordering history
+/// search would diverge at T>1 (worth about -8 Elo). Move-ordering history
 /// (below) is different — divergence there IS the Lazy-SMP diversity mechanism.
 fn refresh_helper_common(helper: &mut SearchInfo, main: &SearchInfo) {
     helper.tt = main.tt.clone();
@@ -2372,7 +2302,7 @@ fn refresh_helper_common(helper: &mut SearchInfo, main: &SearchInfo) {
 
     // pawn_hist is position-specific (indexed by pawn hash); a helper's
     // self-accumulated table carries toxic stale ordering across positions
-    // (measured -8 at T=4, OB #2539), so it is cleared every go even in Stage 2.
+    // (measured -8 Elo at T=4), so it is cleared every go even in Stage 2.
     helper.clear_pawn_hist();
     // Per-search scalars a fresh helper had zeroed.
     helper.nmp_min_ply = 0;
@@ -2487,22 +2417,19 @@ pub fn compute_tm_budgets(
     fullmove: u16,
     ponder_on: bool,
 ) -> (u64, u64, u64, u64) {
-    // TM windows (2026-05-26 redesign): opt/hard/max model with a
-    // multiplicative factor product — the structure common to modern engines
-    // (SF, Obsidian, Hobbes, PlentyChess all run
-    // variants of it). Coda's earlier TM was a different shape: 6 factors
-    // compounding to ~30×, plus a separate hard×0.5 cap (Phase 10h). A
-    // cross-engine audit (TM_DIAG, 2026-05-26) found that outlier structure
-    // clamped 65% of iterations to the cap, blocking legitimate 4-11× signals,
-    // so this rewrite moved to the standard decomposition:
+    // TM windows: opt/hard/max model with a multiplicative factor product —
+    // the structure common to modern engines (SF, Obsidian, Hobbes and
+    // PlentyChess all run variants of it):
     //
     //   max_time  = clock × 0.60 − overhead   (absolute single-move ceiling)
     //   hard_time = clock × 0.46              (mid-search abort, clamped to max)
     //   opt_time  = (clock/24 + inc × 0.94 − overhead) × 0.73, clamped to hard
     //
     // The dynamic-block factor multiplier scales opt UP toward hard/max, so no
-    // separate cap is needed — a wide hard window with bounded factors, rather
-    // than Coda's prior tight hard window with wide factors + cap.
+    // separate cap is needed. A wide hard window with bounded factors is
+    // deliberate: the alternative (tight hard window, wide factors, explicit
+    // cap) clamps most iterations at the cap, which silently swallows the
+    // legitimate 4-11x spikes the factors exist to produce.
     //
     // The window fractions and factor constants are Coda's own tunable
     // parameters, tuned and validated on Coda's own search + net (see the TM
@@ -2523,17 +2450,15 @@ pub fn compute_tm_budgets(
     // inc, every spent second is gone forever. The default 25-moves-left
     // assumption produces ~7s/move on 3+0 (180s base) — but real games
     // run 40-80 moves, so 25-move pacing leaves the engine massively
-    // out of time. Use 40 moves at no-inc to pace tighter.
-    // Lichess game 1yV9VbAA: Coda at 3+0 spent 8-12s on early moves,
-    // forfeited on time.
-    // Phase 10a (2026-05-24): lower base optimum at moderate-inc TCs from
-    // 25 → 35. Cross-engine review (9 engines) found Coda's base optimum
-    // at moderate-inc is ~4.8% of remaining vs SF/Obsidian ~2-3%.
-    // Lower base gives multiplicative factors more headroom to produce
-    // sharp spikes without forfeiting (top engines spike to 4-5× p95/p50
-    // partly because they're spiking off a lower baseline). No-inc path
-    // unchanged (moves_left=40 from earlier hotfix); movestogo path
-    // unchanged (already uses the explicit movestogo count).
+    // out of time — observed in live play as 8-12s early moves at 3+0 and a
+    // forfeit. Use 40 moves at no-inc to pace tighter.
+    //
+    // At moderate inc the base moves-to-go is deliberately HIGH (i.e. a low
+    // base spend, ~2-3% of remaining, matching SF/Obsidian rather than the
+    // ~4.8% a 25-move assumption gives). A low baseline is what gives the
+    // multiplicative factors headroom to spike 4-5x without forfeiting; spiking
+    // off a high baseline just hits the ceiling. The no-inc and explicit-
+    // movestogo paths do not use this value.
     // Window fractions (provenance in the header). Read from the (non-core) TM
     // tunables so a TM-cluster SPSA can move them; the defaults reproduce the
     // prior hardcoded values exactly. max_time is the single-move ceiling.
@@ -2545,9 +2470,9 @@ pub fn compute_tm_budgets(
 
     // No-inc sudden-death TCs need a tighter ceiling. The 60%/46% windows
     // are fine at moderate-inc (each spent ms gets refilled
-    // by inc) but catastrophic at 3+0: lichess qiHdjT7k (2026-05-27) — at
-    // move 6 with 166s clock, hard_time = 76s; a deep single iteration ran
-    // to that ceiling, geometric-decayed to flag-fall by move 24.
+    // by inc) but catastrophic at 3+0, as seen in live play: at move 6 with a
+    // 166s clock, hard_time is 76s; one deep iteration runs to that ceiling
+    // and the geometric decay from there reaches flag-fall by move 24.
     // For no-inc sudden death: cap max at 15% of clock, hard at 10%. With
     // movestogo > 0 the explicit count drives allocation, so no extra cap
     // needed there.
@@ -2581,29 +2506,23 @@ pub fn compute_tm_budgets(
     // calibrated for inc TCs where the inc term dominates pacing — at
     // no-inc the 24 produces an opt that's high enough for the factor
     // multiplier (up to ~6.5×) to consistently blow past hard_time,
-    // making hard the binding constraint every move (uniform-spend
-    // pattern, lichess MJ442247 / 3+0).
+    // making hard the binding constraint every move — a flat uniform-spend
+    // pattern, seen in live 3+0 play.
     //
-    // Adaptive tightening (2026-07-02): a FIXED base assumption never
-    // tightens as a game outlives it (move 80 still assumes "40 moves
-    // left"). Diagnosed from real coda_bot Lichess losses (all "outoftime"
-    // zero-inc bullet forfeits) and confirmed via local RR (Coda vs
-    // Obsidian/Berserk/Alexandria, 30+0, no adjudication): 0/320
-    // forfeits for the 4 peer engines vs 7/320 for Coda, all preceded by
-    // 70-88% of the clock burned by move ~60 in games running 130-220+
-    // plies. Once fullmove exceeds NO_INC_MTG_BASE, grow the divisor by
-    // NO_INC_MTG_GROWTH_PCT% of the overrun: effective_mtg = base +
-    // growth_pct/100 * max(0, fullmove - base).
+    // The assumption also has to ADAPT: a fixed base never tightens as a game
+    // outlives it (at move 80 it still assumes "40 moves left"). Symptom, from
+    // both live losses and local no-adjudication RR at 30+0: 70-88% of the
+    // clock burned by move ~60 in games running 130-220+ plies, then an
+    // out-of-time forfeit, while peer engines forfeited none. So once fullmove
+    // exceeds NO_INC_MTG_BASE, grow the divisor by NO_INC_MTG_GROWTH_PCT% of
+    // the overrun:
+    //     effective_mtg = base + growth_pct/100 * max(0, fullmove - base)
     //
-    // A first attempt with fixed constants (base=40, growth=100%, OB
-    // #2438) fully eliminated forfeits in local RR (0/320) but was a real
-    // SPRT regression (-3.5 ±2.5, LLR -2.95 H0 at N=17,670 at 30+0) — the
-    // mechanism works but over-tightens mid-game allocation even in games
-    // that were never going to forfeit. Exposed as tunables instead and
-    // SPSA-tuned (#2444, focused 2-param, 1000 iters, 30+0 zero-inc):
-    // base 40->34.4, growth_pct 100->94.3 (both significant movement,
-    // held steady across the whole tune). Applied here as new defaults;
-    // re-verify forfeit-count + non-regression SPRT before merge.
+    // These two must stay TUNABLE, not hardcoded. Fixed constants (base=40,
+    // growth=100%) eliminate forfeits entirely yet still lose ~3.5 Elo: the
+    // mechanism is right but that operating point over-tightens mid-game
+    // allocation in the majority of games, which were never going to forfeit.
+    // Any change here needs both a forfeit count and a non-regression SPRT.
     let no_inc_mtg_base = tp(&NO_INC_MTG_BASE).max(1) as u64;
     let no_inc_growth_pct = tp(&NO_INC_MTG_GROWTH_PCT).max(0) as u64;
     let no_inc_effective_mtg = no_inc_mtg_base
@@ -2611,11 +2530,10 @@ pub fn compute_tm_budgets(
     let mtg_divisor = if no_inc_sd { no_inc_effective_mtg.max(1) } else { default_moves_to_go };
 
     let opt_time_base = if movestogo > 0 {
-        // Movestogo: divisor is clamped to [2, default_mtg]. TM audit
-        // 2026-06-13 (A4): the increment term was missing here — the
-        // sudden-death branch credits 94% of inc but this one didn't,
-        // systematically under-allocating ~0.7*inc/move at movestogo+inc
-        // TCs (CCRL-style). Same INC_FRAC weighting as the SD branch.
+        // Movestogo: divisor is clamped to [2, default_mtg]. The increment
+        // term matters here too — omitting it (while the sudden-death branch
+        // credits its 94%) under-allocates ~0.7*inc per move at movestogo+inc
+        // TCs, the CCRL-style ones. Same INC_FRAC weighting as the SD branch.
         let divisor = (movestogo as u64).clamp(2, default_moves_to_go);
         let computed = time_left / divisor + our_inc * inc_frac_pct / 100;
         (computed.min(max_time) * opt_window_pct / 100).max(1)
@@ -2625,42 +2543,35 @@ pub fn compute_tm_budgets(
         ((computed.min(max_time) * opt_window_pct / 100).min(hard_time)).max(1)
     };
 
-    // Phase 13.1 (2026-05-26): phase scaling (Hobbes pattern).
+    // Opening-phase damp (Hobbes pattern). Without it the opening is grossly
+    // overspent: stability is 0 at search start, so the factor multiplier is at
+    // its 2.5× maximum on the very first moves, and ten of those can eat an
+    // entire 30+0.25 budget before the middlegame. Hobbes embeds the damp in
+    // its base — `soft_scale = 0.024 + 0.042 × (1 - exp(-0.045 × fm))`, a
+    // ~0.36 → 1.0 ramp. Coda applies the same exponential as a multiplier:
     //
-    // First Phase 13 RR at 30+0.25 showed -35 Elo and 2× opening overspend
-    // (median 42% vs Coda.main's 24%). Root cause: with stability=0 at search
-    // start, the multiplier is 2.5×; at opt_base=1.08s the per-move adj_soft
-    // becomes 2.7s — across 10 opening moves that's 27s = entire 30+0.25
-    // budget burnt in opening.
-    //
-    // Top engines (Hobbes) embed phase
-    // scaling in their base: `soft_scale = 0.024 + 0.042 × (1 - exp(-0.045 × fm))`
-    // grows from ~0.024 at fm=0 to 0.066 at fm=40+. Ratio ~0.36 → 1.0.
-    //
-    // Apply the same exponential here as a multiplier:
-    //   phase_mult = 0.22 + 0.78 × (1 - exp(-0.045 × fullmove))   (Phase 13.3)
+    //   phase_mult = 0.22 + 0.78 × (1 - exp(-0.045 × fullmove))
     //     fm=1:  0.25×
     //     fm=5:  0.38×
     //     fm=10: 0.50×
     //     fm=20: 0.68×
     //     fm=40: ~0.87×
-    // Skip when movestogo > 0 (movestogo path computes from explicit count).
+    //
+    // The 0.22 floor is load-bearing and was arrived at empirically: a softer
+    // floor (0.36, giving 0.39× at fm=1) still left most games overspending the
+    // opening. Skip the damp when movestogo > 0 — that path paces from the
+    // explicit count.
     let opt_time = if movestogo > 0 {
         opt_time_base
     } else {
-        // Phase 13.3: tighter floor 0.36 → 0.22, sharper opening discipline.
-        // p13_2 still 66% of games over 35% opening-overspend threshold (main: 23%).
-        // Lowering floor cuts fm=1 from 0.39× to 0.25×, bringing opening allocation
-        // closer to Coda's prior calibrated level.
         let phase_mult = 0.22 + 0.78 * (1.0 - (-0.045 * fullmove as f64).exp());
         ((opt_time_base as f64) * phase_mult.clamp(0.22, 1.0)) as u64
     };
-    // P3 (2026-07-05, ponder diagnosis): +25% optimum when the Ponder UCI
-    // option is on — SF ponder-optimum pre-funding semantics. Pre-funding applied
-    // on EVERY move when pondering is enabled: the average move is refunded
-    // by the pondered time itself (full-charge model) and by the
-    // stopOnPonderhit-style instant replies. Do NOT ship without those
-    // compensators (fix plan P1/P2 — the pieces work as a set).
+    // +25% optimum when the Ponder UCI option is on — SF's ponder-optimum
+    // pre-funding semantics, applied on EVERY move when pondering is enabled.
+    // The average move is refunded by the pondered time itself (full-charge
+    // model) and by the stopOnPonderhit-style instant replies. Those
+    // compensators are not optional: the bump only balances as a set with them.
     //
     // Plain const, DELIBERATELY NOT in `tunables!`: OB/fastchess cannot
     // ponder, so SPSA would only ever see this as a dead knob and detune it
@@ -2686,12 +2597,11 @@ pub fn compute_tm_budgets(
 
 /// Run Lazy SMP search: main thread + N-1 helper threads.
 pub fn search_smp(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits, threads: usize) -> Move {
-    // C8 audit LIKELY #37: advance TT generation here (before spawning
-    // helpers) rather than inside search(). Previously helpers could
-    // start writing TT entries with the old generation in the microsecond
-    // window between spawn and main's new_search() call, leaving them
-    // looking freshest in replacement. Main's search() no longer bumps;
-    // single-thread path bumps here too for consistency.
+    // Advance the TT generation HERE, before spawning helpers — not inside
+    // search(). Otherwise helpers write TT entries with the old generation in
+    // the microsecond window between spawn and main's new_search() call, and
+    // those stale entries then look freshest to replacement. search() does not
+    // bump; the single-thread path bumps here too, for consistency.
     info.tt.new_search();
     info.num_threads = threads; // gates the cross-thread instability TM factor
 
@@ -3064,11 +2974,11 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
 
     // Age history tables (×0.80) to preserve useful move ordering from prior searches.
     // Killers and counter-moves are cleared (position-specific).
-    // T2.1: correction history PERSISTS across `go` (cleared on ucinewgame
-    // only, uci.rs) — all 5 surveyed engines persist within a game. With
-    // the T2.4 full-error updates the table converges fast enough that
-    // plain persistence (#1930, flat under the ±3cp clamp) becomes
-    // load-bearing: each move starts from a warm eval-calibration.
+    // Correction history PERSISTS across `go` (cleared on ucinewgame only, in
+    // uci.rs) — as it does in every engine surveyed. This only pays off given
+    // the full-error corrhist updates: under a tight error pre-clamp the table
+    // converges too slowly for persistence to matter, but with them each move
+    // starts from a warm eval calibration.
     info.history.age(4, 5);
     info.stats = PruneStats::default();
     // Age pawn history (×0.80, matching main/capture history aging)
@@ -3135,7 +3045,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
         (limits.btime, limits.binc)
     };
 
-    // C6 (2026-04-22 audit): SearchInfo persists across `go` commands.
+    // SearchInfo persists across `go` commands.
     // Without explicit reset, stale soft_limit/hard_limit from a prior
     // `go wtime/btime` leak into subsequent `go movetime`, `go depth`, or
     // `go nodes` — the dynamic-TM gate then scales them and can break the
@@ -3148,9 +3058,9 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     info.tm_no_inc = false;
     info.tm_baseline = 0;
     info.abs_deadline = 0;
-    // TM audit 2026-06-13 (A4): tm_max_time was the one TM field missing
-    // from this reset. Latent today (every soft_limit setter also sets
-    // it) but one refactor away from a stale clamp.
+    // tm_max_time belongs in this reset even though it is latent today (every
+    // soft_limit setter also sets it) — it is one refactor away from being a
+    // stale clamp.
     info.tm_max_time = 0;
 
     if limits.infinite {
@@ -3216,7 +3126,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     info.max_nodes = limits.nodes;
 
     // TT generation is advanced by the entry-point caller (search_smp or
-    // datagen), not here — see C8 audit LIKELY #37 fix.
+    // datagen), not here — see the generation note at the top of search_smp.
 
     let mut best_move = NO_MOVE;
     let mut prev_score = 0i32;
@@ -3227,17 +3137,17 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     // otherwise the bestmove emit can pair the prior iteration's best_move
     // with the current iteration's *partial* pv_table[0][1], producing a
     // ponder move that doesn't apply to the actual position-after-best
-    // (lichess oeZ7KRUt forfeit, 2026-04-26).
+    // (this cost a forfeited game in live play).
     let mut stable_pv_len: usize = 0;
     let mut stable_pv: [Move; MAX_PLY + 1] = [NO_MOVE; MAX_PLY + 1];
 
-    // P1.4: the best root PV seen during the CURRENT iteration (captured after
+    // The best root PV seen during the CURRENT iteration (captured after
     // each aspiration search, so a widening re-search or a mid-iteration abort
     // can't wipe a proven fail-high move). On abort we bank this deepest
     // completed root result instead of reverting to the previous iteration's
     // shallower `stable_pv`. pv_table[0] is internally paired (move + its
-    // ponder), so banking it never reintroduces the oeZ7KRUt old-move/new-ponder
-    // mismatch. iter_pv_len is declared fresh each iteration (below); the array
+    // ponder), so banking it never reintroduces the old-move/new-ponder
+    // mismatch described above. iter_pv_len is declared fresh each iteration; the array
     // is reused (only iter_pv[..iter_pv_len] is ever read).
     let mut iter_pv: [Move; MAX_PLY + 1] = [NO_MOVE; MAX_PLY + 1];
 
@@ -3245,8 +3155,8 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     let root_legal = generate_legal_moves(board);
     if root_legal.len > 0 {
         best_move = root_legal.get(0);
-        // TM audit 2026-06-13 (A4): prefer the TT move (previous search's
-        // best for this position) over raw movegen order as the
+        // Prefer the TT move (the previous search's best for this
+        // position) over raw movegen order as the
         // emergency fallback — nearly free, and the move actually emitted
         // if abs_deadline expires before depth 1 completes.
         let tt_entry = info.tt.probe(board.hash);
@@ -3278,16 +3188,16 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
         // Ponderhit check: stop between iterations (not mid-search) to avoid
         // partial TT entries and PV inconsistency. The engine completes the
         // current iteration fully before stopping, producing clean state.
-        // A1 publish protocol (TM audit 2026-06-13): the ponderhit deadline
+        // Publish protocol: the ponderhit deadline
         // trio (hard=ponderhit_time, soft=ponderhit_soft, floor=
         // ponderhit_floor) is published by the UCI thread as
         //   floor (Relaxed) → soft (Relaxed) → hard (Release)
         // so hard is the publish flag. We load hard with Acquire FIRST and
         // read soft/floor ONLY after observing hard != 0 — the Acquire pairs
         // with the Release store, guaranteeing both Relaxed-stored fields
-        // are visible. Keying the arming off soft alone (the pre-fix shape)
-        // could, on ARM, observe soft > 0 with a STALE floor == 0 (killing
-        // the stockpile floor) or stale hard == 0.
+        // are visible. Do NOT key the arming off soft alone: on ARM that can
+        // observe soft > 0 with a STALE floor == 0 (killing the stockpile
+        // floor) or a stale hard == 0.
         let ph = info.ponderhit_time.load(std::sync::atomic::Ordering::Acquire);
         if ph > 0 {
             if info.start_time.elapsed().as_millis() as u64 >= ph {
@@ -3313,12 +3223,13 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                 info.soft_limit = soft_remaining;
                 info.hard_limit = hard_remaining;
                 info.soft_floor = floor;
-                // H7 (Atlas review): init tm_max_time on the ponder path. The
-                // dynamic-TM consumer caps via .min(tm_max_time); it's never set
-                // on `go ponder` (C6 reset + infinite branch both skip it), so it
-                // carries 0 → min(soft*mult,0).max(1)=1ms → instant emit. Bites at
-                // inc>=500 (the dynamic-TM path); the gate-removal above handles
-                // the inc<500 path. Both fixes are needed and independent.
+                // Init tm_max_time on the ponder path. The dynamic-TM consumer
+                // caps via .min(tm_max_time), and nothing else sets it on
+                // `go ponder` (both the up-front reset and the infinite branch
+                // skip it), so it would carry 0 → min(soft*mult,0).max(1) = 1ms
+                // → instant emit. This bites at inc>=500 (the dynamic-TM path);
+                // the gate removal above handles the inc<500 path. Both are
+                // needed and independent.
                 info.tm_max_time = hard_remaining;
             }
         }
@@ -3341,7 +3252,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             loop {
                 let result = negamax(board, info, alpha, beta, asp_depth, 0, false);
 
-                // P1.4: capture this search's root PV before the widening
+                // Capture this search's root PV before the widening
                 // re-search (or an abort) wipes it. A fail-high search populates
                 // pv_table[0] with a proven-better move; a fail-low leaves
                 // pv_len[0]==0 (no move raised alpha), so nothing to bank there.
@@ -3366,7 +3277,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                     // below. Relaxed: independent bool gate, no dependent
                     // data (see field doc).
                     info.root_fail_low.store(true, std::sync::atomic::Ordering::Relaxed);
-                    // FL-EXT v2 during-post-hit half (2026-07-05): a root
+                    // Fail-low extension, during-post-hit half: a root
                     // fail-low at a REAL search frontier (depth floor below)
                     // inflates the intended optimum SF-style and re-publishes
                     // the post-hit soft deadline in the from-go-ponder frame:
@@ -3451,14 +3362,14 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             score = asp_result;
         } else {
             score = negamax(board, info, -INFINITY, INFINITY, depth, 0, false);
-            // P1.4: snapshot this single search's root PV (depth<4 path).
+            // Snapshot this single search's root PV (depth<4 path).
             if info.pv_len[0] > 0 {
                 iter_pv_len = info.pv_len[0].min(iter_pv.len());
                 iter_pv[..iter_pv_len].copy_from_slice(&info.pv_table[0][..iter_pv_len]);
             }
         }
 
-        // P1.4: unified mid-iteration abort handling. Bank this iteration's
+        // Unified mid-iteration abort handling. Bank this iteration's
         // deepest completed root result (iter_pv — an internally-paired
         // move+ponder that a root move actually proved this iteration, deeper
         // than stable_pv). Only revert to the previous iteration's stable_pv
@@ -3543,10 +3454,10 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
 
         // UCI info output
         let elapsed = info.start_time.elapsed().as_millis() as u64;
-        // Exact node count (2026-07-06, sibling of the `go nodes` accounting
-        // fix): the global counter only updates at 4096-node flushes, so info
-        // lines reported nodes 0 / 4096 / 8192... at shallow depths — garbage
-        // for nodes-per-depth measurement. Add this thread's unflushed delta.
+        // Exact node count: the global counter only updates at 4096-node
+        // flushes, so on its own it reports 0 / 4096 / 8192... at shallow
+        // depths — garbage for nodes-per-depth measurement. Add this thread's
+        // unflushed delta.
         let global = info.global_nodes.load(Ordering::Relaxed)
             + (info.nodes - info.last_flushed_nodes.get());
         let nps = if elapsed > 0 { global * 1000 / elapsed } else { 0 };
@@ -3569,9 +3480,9 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                 // (e.g. a fail-high / stable_pv restore that overran pv_len, or
                 // an unguarded child-PV copy at the propagation site). Printing
                 // it verbatim would emit an illegal PV move — a cutechess
-                // "Illegal PV move" warning and a latent lichess forfeit risk
-                // (same class as oeZ7KRUt 2026-04-26, guarded at the TT-cutoff
-                // stuff site). Stop the PV at the first move not legal in the
+                // "Illegal PV move" warning and a latent forfeit risk
+                // (the same class of bug guarded at the TT-cutoff stuff
+                // site). Stop the PV at the first move not legal in the
                 // current pv_board, mirroring the TT-extension tail below.
                 if pv_mv == NO_MOVE
                     || !crate::movepicker::is_pseudo_legal(&pv_board, pv_mv)
@@ -3670,12 +3581,12 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                     break;
                 }
                 // Build PV string from pv_table[0] via the SHARED guarded
-                // helper. This site previously joined pv_table[0] verbatim with
-                // no legality walk — the only PV emission in the engine without
-                // one. Dormant at the default MultiPV=1 (this loop is
-                // `1..info.multipv`), but a live illegal-PV emitter for anyone
-                // running MultiPV>1. Printing an illegal PV move is a critical
-                // bug, so the logic is shared, not re-derived.
+                // helper — do NOT join pv_table[0] verbatim here. The legality
+                // walk is dormant at the default MultiPV=1 (this loop is
+                // `1..info.multipv`), which makes it easy to skip, but it is a
+                // live illegal-PV emitter for anyone running MultiPV>1.
+                // Printing an illegal PV move is a critical bug, so this logic
+                // is shared, not re-derived.
                 let line_pv = build_pv_string(info, board, depth);
                 let line_score = crate::tt::format_uci_score(sc);
                 let s_elapsed = info.start_time.elapsed().as_millis() as u64;
@@ -3712,7 +3623,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                     info.tm_best_stable += 1;
                 } else {
                     info.tm_best_stable = 0;
-                    // Phase 1: cumulative count of root best-move changes since
+                    // Cumulative count of root best-move changes since
                     // search start. Drives an upward multiplier on tactically
                     // unstable positions (Stockfish's best-move-instability
                     // multiplier pattern).
@@ -3750,34 +3661,29 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
         // Sticky once set — the verification itself is expensive (depth ~3-5
         // re-search with NMP/RFP/probcut gated by excluded_move) so we run it
         // at most once per search. Skip for mate scores and early depths.
-        // TC gate (Phase 6b, 2026-05-22): skip the detector when the floor
-        // already occupies ≥ 1/3 of the soft budget. At high-inc TCs (e.g.
-        // 60+5 → floor 2.45s vs soft 6.4s = 38%) the detector's downward
-        // multiplier can't actually push adjusted_soft below the floor by a
-        // meaningful amount — verification cost is paid but actual spend
-        // barely changes. Local 60+5 RR (n=170) showed phase6 (with detector)
-        // 13 Elo worse than phase6a (floor only) at that TC. At low-inc TCs
-        // the floor fraction stays small and the detector pays back (LTC
-        // SPRT delta phase6 − phase6a = +2.8 Elo).
+        // TC gate: skip the detector when the floor already occupies ≥ 1/3 of
+        // the soft budget. At high-inc TCs (e.g. 60+5 → floor 2.45s vs soft
+        // 6.4s = 38%) the detector's downward multiplier can't push
+        // adjusted_soft below the floor by a meaningful amount — verification
+        // cost is paid but actual spend barely changes, measured at ~13 Elo
+        // worse than not running it at all. At low-inc TCs the floor fraction
+        // stays small and the detector pays back (~+2.8 Elo at LTC).
         //
         // Behaviour table:
         // 60+5: floor/soft = 0.38 → skip
         // 60+1: floor/soft = 0.14 → fire
         // LTC:  floor/soft = 0.00 → fire
         //
-        // Additional gate (2026-05-23 hotfix): skip at NO-INC TCs.
-        // At no-inc TCs (1+0, 3+0, 60+0, 180+0) lichess showed time
-        // forfeit regression — detector verification at depth 3-5 costs
-        // 50-150ms per move and accumulates over the game. With no inc
-        // to recover spent time, this cumulative overhead drains the
-        // clock and causes time forfeits.
+        // Additional gate: skip at NO-INC TCs. At 1+0, 3+0, 60+0, 180+0 live
+        // play showed a time-forfeit regression — detector verification at
+        // depth 3-5 costs 50-150ms per move, and with no increment to recover
+        // it that overhead accumulates until the clock runs out.
         //
-        // Earlier (also 2026-05-23) used `info.soft_floor == 0`, which
-        // incidentally fired at STC 10+0.1 because `inc == overhead ==
-        // 100ms` made `soft_floor=0` by coincidence — SPRT #1475 caught
-        // this, the gate was disabling the forced-move detector at STC
-        // (~-3 Elo). Now keyed directly on `tm_no_inc`, which is true
-        // only when our increment is exactly zero (sudden-death).
+        // Key this on `tm_no_inc` (true only when our increment is exactly
+        // zero), NOT on `info.soft_floor == 0`. The latter also fires at STC
+        // 10+0.1, where `inc == overhead == 100ms` makes soft_floor 0 by
+        // coincidence — that disabled the forced-move detector at STC for
+        // about -3 Elo.
         let floor_dominates = info.soft_floor * 3 >= info.soft_limit;
         let no_inc = info.tm_no_inc;
         if info.tm_forced_state == ForcedState::None
@@ -3821,50 +3727,48 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             }
         }
 
-        // Dynamic TM (2026-05-26 redesign): a multiplicative factor product
-        // applied to the soft budget, clamped to max_time (no separate
-        // Phase-10h cap). A bounded product (~9.5× max vs Coda's prior ~30×)
-        // against a wider hard window (46% of clock from compute_tm_budgets)
-        // lets the factors express real variety without overflowing; max_time
-        // (60% of clock) is the only single-move ceiling. Coda adds two
-        // factors beyond the standard set (score-trend #5, cross-thread #6).
+        // Dynamic TM: a multiplicative factor product applied to the soft
+        // budget, clamped to max_time — there is no separate cap. A bounded
+        // product (~9.5× max) against a wide hard window (46% of clock, from
+        // compute_tm_budgets) lets the factors express real variety without
+        // overflowing; max_time (60% of clock) is the only single-move
+        // ceiling. Two of the factors are beyond the standard set: the
+        // cross-move score trend (#5) and cross-thread instability (#6).
         if info.soft_limit > 0 && depth >= 4 && !info.should_stop() {
             // Mate early-emit: if we've found a forced mate and the best move
             // has held for at least one further iteration, stop deepening —
             // more search cannot improve on a forced mate, and burning the
             // soft budget (and the post-ponderhit floor below) on a position
-            // we've already solved just wastes clock and looks terrible (e.g.
-            // 18.8s to play a mate-in-1 at 60+10 under ponder — lichess
-            // KsX0b6KG). Require stability >= 1 so a one-iteration mate flicker
+            // we've already solved just wastes clock and looks terrible (18.8s
+            // to play a mate-in-1 at 60+10 under ponder, in one observed
+            // game). Require stability >= 1 so a one-iteration mate flicker
             // that later flips doesn't cause a premature emit. Also sets the
             // floor to 0 so the stockpile-prevention sleep is skipped.
-            // TM audit 2026-06-13 (A4): gate on prev_score > 0 — the old
-            // sign-agnostic check also fired when stably LOSING by force,
-            // stopping the search instead of hunting longer defenses or
-            // swindle lines with the remaining budget.
+            //
+            // The `prev_score > 0` gate matters: a sign-agnostic check also
+            // fires when we are stably LOSING by force, stopping the search
+            // instead of hunting longer defenses or swindle lines with the
+            // budget we still have.
             if prev_score > 0 && is_mate_score(prev_score) && info.tm_best_stable >= 1 {
                 info.soft_floor = 0;
                 break;
             }
-            // Factor 1: Stability multiplier (table-indexed by stable count).
-            // Stability table, indexed by consecutive-stable count [2.50, 1.20, 0.90, 0.80, 0.75]
-            //   0 stable:  2.50× (uncertain, search more)
-            //   1 stable:  1.20×
+            // Factor 1: Stability multiplier, indexed by the consecutive-stable
+            // count. Defaults (see the TM_STAB_* tunables):
+            //   0 stable:  1.75× (uncertain, search more)
+            //   1 stable:  1.22×
             //   2 stable:  0.90× (settling)
             //   3 stable:  0.80×
-            //   4+ stable: 0.75× (confident, search less)
-            // This single factor absorbs what Coda previously split across
-            // stability_factor (0.5-1.71) + bmc_factor (1.0-5.0) into a single
-            // table lookup.
-            // Phase 13.2 (2026-05-26): lower stability_table[0] from 2.50 to 1.71.
-            // Phase 13.1 (initial table with [0]=2.5 + phase scaling) still produced
-            // -41 Elo at 30+0.25 with opening overspend 37% (main: 21%).
-            // The 2.5× initial multiplier was 1.46× more aggressive than
-            // Coda's prior 1.71× stability_factor maximum. Even with phase
-            // scaling the per-move spend overshot Coda's pre-Phase-10h
-            // calibrated opening allocation. 1.71 matches Coda's prior
-            // stability_factor ceiling; preserves variety in middlegame
-            // (where stab=0 only briefly) while reducing opening spike.
+            //   4+ stable: 0.74× (confident, search less)
+            // One table lookup covers what is often split into a stability
+            // factor plus a separate best-move-change factor.
+            //
+            // The [0] entry is the sensitive one and its range is deliberately
+            // capped below 2.6: an initial multiplier around 2.5 overshoots the
+            // opening badly even with the phase damp applied (opening spend
+            // ~37% of clock against a healthy ~21%, worth tens of Elo at
+            // moderate-inc TCs). Keep it near the ceiling of what the opening
+            // can afford, not at the value the middlegame would prefer.
             let stability_table: [f64; 5] = [
                 tp(&TM_STAB_0_100) as f64 / 100.0,
                 tp(&TM_STAB_1_100) as f64 / 100.0,
@@ -3940,7 +3844,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                 // on a real previous move (sentinel) and non-decisive scores.
                 // is_decisive (not is_mate_score): TB scores (~28600-28800) sit
                 // below the mate band and would otherwise pin the factor at a
-                // clamp rail (C2, persistent-state audit 2026-07-10). Ceiling
+                // clamp rail. Ceiling
                 // raised to 1.55 to give the combined term headroom in
                 // worsening positions.
                 let cross = if info.tm_cross_prev_score != i32::MIN
@@ -3951,15 +3855,15 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                 } else {
                     0.0
                 };
-                // ABLATION (issue #13): floor raised 0.80 -> 1.00. The lower
-                // rail made the engine allocate up to 20% LESS time when its
-                // own eval was RISING — and measured over 317,887 plies of the
-                // 0.9.3 gauntlet, plies whose depth dipped >=3 ply vs the local
-                // baseline had 2.05x the eval swing INTO them, spent HALF the
-                // time (0.12s vs 0.22s), and were 1.86x more likely to be
-                // followed by a >=400cp reversal. goni-K's four games show the
-                // same shape: eval spikes, depth collapses, position flips.
-                // Keeps the validated "more time when worsening" half intact.
+                // The 1.00 floor is deliberate: this factor may add time, never
+                // subtract it. A sub-1.0 rail allocates up to 20% LESS time
+                // when our own eval is RISING, and that is exactly the shape
+                // that precedes blunders. Measured over 317,887 plies: plies
+                // whose depth dipped >=3 ply against the local baseline had
+                // 2.05x the eval swing into them, spent half the time (0.12s vs
+                // 0.22s), and were 1.86x more likely to be followed by a
+                // >=400cp reversal. The "more time when worsening" half of the
+                // term is validated and stays.
                 (1.0 + 0.0025 * drop + (tp(&CROSS_MOVE_TREND) as f64 * 1e-4) * cross)
                     .clamp(1.00, 1.55)
             };
@@ -3994,21 +3898,21 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                 * cross_thread_instability;
             // No-inc clamp: factor product up to 6.5× at no-inc TCs blows
             // adjusted_soft past hard_time via iteration-overflow even with
-            // the smaller no-inc opt baseline. lichess MJ442247 (3+0):
-            // moves 8-19 every spent exactly hard = 10% of clock. Cap the
+            // the smaller no-inc opt baseline — observed at 3+0 as a run of a
+            // dozen moves each spending exactly hard = 10% of clock. Cap the
             // multiplier so adjusted_soft stays well below hard at no-inc,
             // letting the soft check actually fire and giving per-move
             // variability instead of uniform hard-cap saturation.
             if info.tm_no_inc {
                 multiplier = multiplier.min(2.5);
             } else {
-                // Low-increment ceiling (2026-06-18). When the increment is
-                // small RELATIVE TO THE CLOCK it can't refill a run of deep
-                // moves, so cap the factor product. Discriminator is
-                // inc_cover = inc / (timeLeft/mtg): ~0.04 at lichess 600+1
-                // (capped), ~0.24 at OB STC 10s+0.1s and ~0.4 at 600+10 (both
-                // ~uncapped). cmin at inc_cover->0, rising to cmax at
-                // inc_cover >= TM_INC_COVER_REF/100.
+                // Low-increment ceiling. When the increment is small RELATIVE
+                // TO THE CLOCK it can't refill a run of deep moves, so cap the
+                // factor product. The discriminator is
+                // inc_cover = inc / (timeLeft/mtg): ~0.04 at 600+1 (capped),
+                // ~0.24 at 10+0.1 and ~0.4 at 600+10 (both ~uncapped). The
+                // ceiling is cmin at inc_cover->0, rising to cmax at
+                // inc_cover >= TM_INC_COVER_REF/100. mtg here is
                 // TM_DEFAULT_MTG (the inc-path sudden-death mtg).
                 let base_move = (info.tm_time_left / tp(&TM_DEFAULT_MTG).max(2) as u64).max(1);
                 let inc_cover = (info.tm_our_inc as f64) / (base_move as f64);
@@ -4020,8 +3924,8 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                 multiplier = multiplier.min(inc_ceiling);
             }
 
-            // Phase 13: adjusted_soft = soft × multiplier, clamped to max_time
-            // (the ONLY cap — no separate hard×0.5).
+            // adjusted_soft = soft × multiplier, clamped to max_time (the ONLY
+            // cap).
             let adjusted_soft_raw = (info.soft_limit as f64 * multiplier) as u64;
             let adjusted_soft = adjusted_soft_raw.min(info.tm_max_time).max(1);
             // Phase-0 instrumentation: snapshot the factor values in force.
@@ -4045,11 +3949,11 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             // moment, not search start. tm_baseline is 0 for normal `go`
             // (unchanged behaviour); set to elapsed-at-ponderhit when
             // post-ponderhit dynamic TM arms above.
-            // TM audit 2026-06-13 (A4): re-read the clock — the iteration-top
-            // `elapsed` snapshot predates the info-line print and any
-            // forced-move verification (50-150ms), letting one extra
-            // iteration start past the soft budget on exactly the
-            // iteration the detector fires.
+            // Re-read the clock here rather than reusing the iteration-top
+            // `elapsed` snapshot: that one predates the info-line print and any
+            // forced-move verification (50-150ms), which lets an extra
+            // iteration start past the soft budget on exactly the iteration the
+            // detector fires.
             let elapsed_now = info.start_time.elapsed().as_millis() as u64;
             let elapsed_since_tm = elapsed_now.saturating_sub(info.tm_baseline);
             if elapsed_since_tm >= adjusted_soft {
@@ -4090,8 +3994,8 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     // Publish this move's final score for the NEXT `go`'s cross-move trend
     // term. `info.last_score` holds the last completed iteration's score;
     // sign-comparable across our consecutive moves (opponent moves between).
-    // Publish ONLY from searches that produced a played game move (C2,
-    // persistent-state audit 2026-07-10): a clock-managed search
+    // Publish ONLY from searches that produced a played game move: a
+    // clock-managed search
     // (soft_limit > 0, which includes a `go ponder` converted by ponderhit
     // at the top of the ID loop), any search that saw a ponderhit
     // (ponderhit_time is cleared by the UCI thread before every spawn and
@@ -4121,21 +4025,20 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     // Don't stockpile: if the ID loop finished below the soft_floor (e.g. all
     // iterations were TT hits in a repetitive endgame), wait out the rest of
     // the floor time before emitting. Prevents clock growth from instant emits
-    // at 1s-inc bullet on lichess (PZ7pCyrx). Polls the EXTERNAL stop flag so
+    // at 1s-inc bullet. Polls the EXTERNAL stop flag so
     // the UCI thread can still interrupt — `info.stop` cannot serve here
     // because the line below sets it ourselves (to halt helpers), and on the
     // ponderhit fresh-search path the floor can equal the entire remaining
     // clock, so an un-interruptible sleep would block `stop`/`quit` for that
-    // long (TM audit 2026-06-13 A2). Skip when there's no time budget (depth/
-    // node-limited search) or when already stopped.
+    // long. Skip when there's no time budget (depth/node-limited search) or
+    // when already stopped.
     //
-    // C8 audit LIKELY #29: set the shared stop flag BEFORE the sleep so
-    // helper threads stop searching immediately rather than burning CPU
-    // through the entire stockpile-prevention window. Previously helpers
-    // kept running until hitting their own hard_limit or main unblocked,
-    // wasting tens-hundreds of ms of CPU per ponderhit grace window at
-    // blitz+inc. Main thread already has its best move, just waiting to
-    // emit.
+    // Set the shared stop flag BEFORE the sleep so helper threads stop
+    // searching immediately rather than burning CPU through the entire
+    // stockpile-prevention window: otherwise they run until their own
+    // hard_limit or until main unblocks, wasting tens to hundreds of ms of CPU
+    // per ponderhit grace window at blitz+inc. The main thread already has its
+    // best move here and is only waiting to emit.
     // Never sleep out the floor on a forced mate — we've solved the position
     // and should emit immediately (covers mate paths that bypass the dynamic-TM
     // loop above: depth<4 mate, single-legal-move). prev_score holds the last
@@ -4224,10 +4127,10 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     // `go nodes 15000`), corrupting any NPS/nodes-from-logs analysis. Emit the
     // true totals once before returning (SF prints the same final update).
     //
-    // INCLUDE THE PV (2026-07-21): previously this line was emitted WITHOUT a pv,
-    // on the assumption that GUIs keep the last full-line PV. Broadcast parsers
-    // that render the PV from the *latest* info line (CCRL) then showed a short /
-    // empty PV on the played move — optically bad. Re-emit the current
+    // The PV must be INCLUDED here. Omitting it (on the assumption that GUIs
+    // keep the last full-line PV) breaks broadcast parsers that render the PV
+    // from the *latest* info line, which then show a short or empty PV on the
+    // played move. Re-emit the current
     // (bestmove-consistent) PV so the last line is always complete. pv_table[0]
     // here holds the adopted final line (deepest completed, or the banked
     // partial on a mid-iteration abort); build_pv_string applies the same
@@ -4313,8 +4216,6 @@ fn negamax(
     // `apply_halfmove_scale(info.eval(board), halfmove)` returns a possibly-
     // nonzero scaled eval — eval doesn't know about insufficient material
     // or repetition (only halfmove via the scale itself handles 50mr).
-    // Found via correctness audit 2026-05-23, adjacent to the prior
-    // MAX_PLY=64→128 fix family.
     if ply > 0 {
         let draw_score: i32 = 0;
         if board.halfmove >= 100 {
@@ -4334,11 +4235,11 @@ fn negamax(
         return apply_halfmove_scale(info.eval(board), board.halfmove);
     }
 
-    // Leaf node — dispatch to quiescence at the TOP of negamax (P2.1),
+    // Leaf node — dispatch to quiescence at the TOP of negamax,
     // after the draw checks + MAX_PLY guard but BEFORE the interior preamble
     // (reductions reset, mate-distance pruning, TT prefetch, enemy_attacks /
-    // xray computation, TB probe, TT probe). Every depth<=0 entry (~14% of
-    // calls) previously paid that whole preamble and then re-ran draw checks,
+    // xray computation, TB probe, TT probe). Dispatching later makes every
+    // depth<=0 entry (~14% of calls) pay that whole preamble and re-run draw checks,
     // prefetch and a second TT probe inside quiescence, plus a duplicate
     // `info.nodes += 1` (~10% boundary node-count inflation that also leaked
     // into the TM node-fraction signal). SF dives to qsearch as the
@@ -4357,9 +4258,9 @@ fn negamax(
     info.stats.nodes_by_depth[ts_bucket] += 1;
     trace_node!(info, board.hash, ply, "visit", depth);
 
-    // C8 audit LIKELY #3: reset reductions slot at node entry so NMP and
-    // any other pre-move-loop child call reads "no prior reduction", not
-    // a sibling's stale LMR value from an earlier visit to this ply.
+    // Reset the reductions slot at node entry so NMP and any other
+    // pre-move-loop child call reads "no prior reduction", not a sibling's
+    // stale LMR value from an earlier visit to this ply.
     if ply_u <= MAX_PLY {
         info.reductions[ply_u] = 0;
     }
@@ -4435,9 +4336,7 @@ fn negamax(
     info.nodes += 1;
 
 
-    // Draw detection moved above the MAX_PLY guard (2026-05-23 audit fix
-    // for ply >= MAX_PLY in drawn positions). Note: kept the broader
-    // contempt + jitter context comments at the new location for history.
+    // (Draw detection lives above the MAX_PLY guard — see the note there.)
 
     // Syzygy tablebase probe at interior nodes.
     // Probe WDL when piece count is within TB range. Returns a score that
@@ -4524,8 +4423,7 @@ fn negamax(
     // NNUE weight traffic between nodes, so these reads otherwise miss.
     // All indices derive from board state available right now. Wasted on
     // TT-cutoff / in-check exits — measured +0.5% median cycles, 63/100
-    // positive pairs, sign-test p=0.006 (same-binary toggle protocol,
-    // 2026-07-26).
+    // positive pairs, sign-test p=0.006 (same-binary toggle protocol).
     #[cfg(target_arch = "x86_64")]
     {
         use std::arch::x86_64::{_mm_prefetch, _MM_HINT_T0};
@@ -4585,18 +4483,18 @@ fn negamax(
             // below sees the sanitized score.
             let tt_score = score_from_tt(tt_entry.score, ply, board.halfmove);
 
-            // P2 (halfmove-gated TT cutoff): TT scores are stored without halfmove
+            // Halfmove-gated TT cutoff: TT scores are stored without halfmove
             // context. Near the 50-move cliff a cached mate-in-N may be unreachable,
             // and a stored bound may be over/understated by the time we revisit.
             // Gate ALL return-from-TT paths (direct + bounds-narrow collapse +
-            // near-miss + QS) on halfmove < 90. Window-narrowing is still applied —
-            // it only biases the search, while returning stale tt_score is unsafe.
+            // near-miss + QS) on TT_CUTOFF_HALFMOVE_MAX. Window-narrowing is still
+            // applied — it only biases the search, while returning a stale
+            // tt_score is unsafe.
             let halfmove_ok = (board.halfmove as i32) < tp(&TT_CUTOFF_HALFMOVE_MAX);
-            // P1.8: require +1 ply of TT depth for a fail-high (LOWER) cutoff —
-            // SF/Obsidian/PlentyChess all demand `depth > depth - (value
-            // <= beta)`, i.e. fail-lows accept at tt_depth>=depth but fail-highs
-            // need tt_depth>=depth+1. Coda's symmetric `>= depth` is more
-            // permissive on fail-highs than the top 3.
+            // Require +1 ply of TT depth for a fail-high (LOWER) cutoff, as
+            // SF/Obsidian/PlentyChess do: fail-lows accept at tt_depth>=depth
+            // but fail-highs need tt_depth>=depth+1. A symmetric `>= depth` is
+            // notably more permissive on fail-highs.
             if tt_depth > depth - (tt_score <= beta) as i32 && FEAT_TT_CUTOFF.load(Ordering::Relaxed) {
                 // Unified TT cutoff with node-type guard (Alexandria pattern):
                 // At non-PV nodes, accept TT cutoff when:
@@ -4608,16 +4506,15 @@ fn negamax(
                 } else {
                     tt_entry.flag == TT_FLAG_UPPER || tt_entry.flag == TT_FLAG_EXACT
                 };
-                // `is_pv` at line 2559 captured pre-mate-dist (`beta - alpha > 1`).
-                // Mate-distance pruning may have collapsed a PV window to zero;
-                // in that case the TT cutoff SHOULD fire (we're effectively ZW),
-                // but the stale is_pv blocks it. Use the post-mate-dist window
-                // directly (alpha at this point is still alpha_orig — TT
-                // narrowing happens at line 2776+ after this check).
-                // 2026-05-31 audit finding B.
+                // The node-level `is_pv` was captured BEFORE mate-distance
+                // pruning, which may since have collapsed a PV window to zero.
+                // In that case the TT cutoff SHOULD fire (we're effectively at
+                // a zero window) but the stale is_pv blocks it, so recompute
+                // from the post-mate-dist window. alpha here is still
+                // alpha_orig — TT narrowing happens after this check.
                 let tt_cut_is_pv = beta - alpha > 1;
                 // Child-consistency verification for DEEP cutoffs (concept
-                // from SF; 2026-07-05 audit Tier1 #3): at depth>=7,
+                // from SF, independently re-implemented): at depth>=7,
                 // make the TT move, probe the child's entry, unmake; decline
                 // the cutoff when the child's (negated) value contradicts the
                 // cutoff direction — rejects stale/one-sided deep cutoffs.
@@ -4633,11 +4530,11 @@ fn negamax(
                         info.stats.tt_cross_gen_cutoffs += 1;
                     }
                     // Defence-in-depth: validate tt_move is fully legal before
-                    // stuffing it into pv_table. Diagnosed during PV_PONDER_BUG
-                    // chase as a path that *could* plant an illegal move (hash
-                    // collision, torn-write surviving XOR) — empirically never
-                    // fires, but the cost is O(1) and the failure mode is a
-                    // forfeited game on lichess (oeZ7KRUt 2026-04-26).
+                    // stuffing it into pv_table. This is a path that *could*
+                    // plant an illegal move (hash collision, torn write
+                    // surviving the XOR check) — empirically it never fires,
+                    // but the cost is O(1) and the failure mode is an illegal
+                    // PV move and a forfeited game.
                     if tt_move != NO_MOVE && ply_u <= MAX_PLY
                         && crate::movepicker::is_pseudo_legal(board, tt_move)
                         && board.is_legal(tt_move, board.pinned(), board.checkers())
@@ -4651,12 +4548,12 @@ fn negamax(
                     // in context of our move before that (Alexandria pattern).
                     // "Your move led to a position we already know is lost for you."
                     //
-                    // C8 audit LIKELY #6: read pieces from moved_piece_stack (set
-                    // pre-move, captures pre-promotion pawn) rather than
-                    // board.piece_at(to) (post-move, reports promoted piece for
-                    // promotions). Write-side (beta-cutoff bonuses) uses
-                    // moved_piece_stack; the old asymmetry meant malus on promotion
-                    // moves landed in the queen/rook bin where reads never look.
+                    // Read pieces from moved_piece_stack (set pre-move, so it
+                    // holds the pre-promotion pawn), NOT board.piece_at(to)
+                    // (post-move, reports the promoted piece). The write side
+                    // — beta-cutoff bonuses — uses moved_piece_stack, and any
+                    // asymmetry here lands the malus for promotion moves in the
+                    // queen/rook bin, where reads never look.
                     let stack_len = board.undo_stack.len();
                     if score_above_beta && stack_len >= 2 && ply_u >= 2 {
                         let opp_undo = &board.undo_stack[stack_len - 1];
@@ -4684,13 +4581,14 @@ fn negamax(
                 }
 
                 // Fall through: use TT bounds to narrow alpha/beta window at non-PV nodes.
-                // Gated on halfmove_ok for the same reason the returns below are (P2/#628):
+                // Gated on halfmove_ok for the same reason the returns below are:
                 // near the 50-move cliff the stored tt_score is untrustworthy. At a
                 // zero-window node this narrowing can only ever fully collapse the window
                 // (tt_score > alpha implies tt_score >= beta), and the collapse-return
-                // below IS halfmove-gated — so without this gate, at halfmove >= 89 the
-                // node fell through with an inverted window (alpha >= beta) and searched +
-                // TT-stored a degenerate full-depth bound. (P0.3, 2026-07-01 review.)
+                // below IS halfmove-gated — so without this gate, past the halfmove
+                // threshold the node falls through with an inverted window
+                // (alpha >= beta) and searches + TT-stores a degenerate full-depth
+                // bound.
                 if halfmove_ok {
                     match tt_entry.flag {
                         TT_FLAG_LOWER => {
@@ -4725,11 +4623,10 @@ fn negamax(
                         }
 
                         // History bonus for TT cutoff: reinforce move ordering.
-                        // Promotions are NOISY here (audit 2026-07-22) — this site
-                        // previously classified non-capture promotions as quiet,
-                        // asymmetric with tt_move_noisy (2026-05-31 finding D fixed
-                        // that site only), so promo cutoffs wrote main-history
-                        // bonuses into from/to cells that genuine quiets read.
+                        // Promotions count as NOISY here. Classifying non-capture
+                        // promotions as quiet (asymmetric with tt_move_noisy)
+                        // makes promo cutoffs write main-history bonuses into
+                        // from/to cells that genuine quiets then read.
                         // Promos are ordered in the capture stage (MVV promo bonus
                         // + capt-hist empty slot), so the capture branch below is
                         // the one the read side actually consults.
@@ -4792,7 +4689,7 @@ fn negamax(
         }
     }
 
-    // (Leaf-node quiescence dispatch hoisted to the top of negamax — P2.1.)
+    // (Leaf-node quiescence dispatch happens at the top of negamax.)
 
     // Compute pinned, checkers, in_check
     let pinned = board.pinned();
@@ -4810,9 +4707,9 @@ fn negamax(
     //
     // Keeping these separate fixes the TT staleness bug where a position
     // first seen at hm=20 stored an eval scaled against hm=20, then
-    // revisited at hm=85 used the stale-scaled value — exposed by the
-    // aggressive `(100-hm)/100` scaling (SPRT #610, flat at -8 Elo after
-    // 1000g). TT now stores raw_eval; every consumer scales fresh.
+    // revisited at hm=85 used the stale-scaled value — worth about -8 Elo
+    // under aggressive `(100-hm)/100` scaling. TT stores raw_eval; every
+    // consumer scales fresh.
     let mut static_eval = -INFINITY;
     let mut raw_eval = -INFINITY;
     let mut scaled_eval = -INFINITY;
@@ -4863,12 +4760,12 @@ fn negamax(
         }
         // Improving: our eval is better than 2 plies ago.
         //
-        // C8 audit LIKELY #2: when ply-2 was in-check, static_evals[ply-2]
-        // was set to -INFINITY (see the else branch below). Comparing
-        // `static_eval > -INFINITY` trivialised to true, so improving fired
-        // on every post-check comeback, inflating RFP/LMP/futility/LMR.
-        // SF falls back to ply-4 when ply-2 is unavailable; skip
-        // entirely when neither ply is usable.
+        // When ply-2 was in-check, static_evals[ply-2] is -INFINITY (see the
+        // else branch below), so a naive `static_eval > static_evals[ply-2]`
+        // trivialises to true and improving fires on every post-check
+        // comeback, inflating RFP/LMP/futility/LMR. Fall back to ply-4 when
+        // ply-2 is unavailable (as SF does), and skip entirely when neither
+        // ply is usable.
         if ply >= 2 && ply_u >= 2 {
             let prev2 = info.static_evals[ply_u - 2];
             if prev2 > -INFINITY + 1 {
@@ -4893,10 +4790,9 @@ fn negamax(
     info.cutoff_count[ply_u + 2] = 0;
 
     // Detect if TT move is noisy. Captures, EP, AND promotions
-    // (including non-capture promotions — they create a queen, are
-    // tactically loud). Prior version classified non-capture promotion
-    // as `!noisy`, asymmetric with tt_move_is_quiet at line 3155 which
-    // calls it quiet. 2026-05-31 audit finding D.
+    // (including non-capture promotions — they create a queen, so they are
+    // tactically loud). This must stay symmetric with the other
+    // quiet/noisy classifications of the TT move in this file.
     let tt_move_noisy = tt_move != NO_MOVE && {
         board.piece_type_at(move_to(tt_move)) != NO_PIECE_TYPE
             || move_flags(tt_move) == FLAG_EN_PASSANT
@@ -4960,14 +4856,13 @@ fn negamax(
     let king_zone = crate::attacks::king_attacks(our_king_sq as u32) | (1u64 << our_king_sq);
     let king_zone_pressure = popcount(enemy_attacks & king_zone) as i32;
 
-    // RFP moved BEFORE NMP (consensus order: SF/Obsidian/Berserk all
-    // run the free static prune first; the null search only sees nodes static
-    // pruning couldn't cut). Reorder alone tested neutral (#1882, -0.06 ±1.9),
-    // but it removes the mechanism that killed shallow NMP in #1904 (NMP-first
-    // intercepted free RFP cutoffs), enabling the min-depth de-gate below.
+    // RFP runs BEFORE NMP (consensus order: SF/Obsidian/Berserk all
+    // run the free static prune first, so the null search only sees nodes
+    // static pruning couldn't cut). The reorder is Elo-neutral on its own, but
+    // it removes the mechanism that kills shallow NMP — NMP-first intercepts
+    // free RFP cutoffs — which is what enables the min-depth de-gate below.
     if !in_check {
-        // Razoring (re-added 2026-06-11, audit T2.6; removed d996d6f on
-        // pre-v9-eval evidence). 10/10 stronger engines have the
+        // Razoring. 10/10 stronger engines have the
         // qsearch-verified non-PV form: when static eval is hopelessly below
         // alpha at shallow depth, drop to qsearch and trust its fail-low.
         // Runs before RFP (consensus order: razor -> RFP -> NMP).
@@ -5103,10 +4998,10 @@ fn negamax(
         // Adaptive reduction: scales with depth and eval margin above beta
         let mut r = tp10(&NMP_BASE_R_10X) + depth / tp10(&NMP_DEPTH_DIV_10X);
         // Reduce more after captures: opponent just captured, null move more likely to work.
-        // NOT a live cross-engine consensus (SF's R is flat; Obsidian keys on the
-        // CURRENT node's ttMoveNoisy, and that port is dead ×4 — #732/#754/#768/#2270).
-        // This term is kept purely on Coda's own evidence: #195 H1 +3.5 (with retune),
-        // removal #1067 H0 −2.6.
+        // NOT a cross-engine consensus: SF's R is flat, and Obsidian keys on
+        // the CURRENT node's ttMoveNoisy instead (a shape that has failed four
+        // separate SPRTs here). This term is kept purely on Coda's own
+        // evidence — worth ~+3.5 Elo with a retune, and removing it costs.
         if !board.undo_stack.is_empty() && board.undo_stack[board.undo_stack.len() - 1].captured != NO_PIECE_TYPE {
             r += 1;
         }
@@ -5124,8 +5019,8 @@ fn negamax(
         let null_key = board.hash; // save hash for threat detection after unmake
         if let Some(acc) = &mut info.nnue_acc { acc.push(DirtyPiece::incremental(&[])); }
         if info.threat_stack.active { info.threat_stack.push(crate::types::NO_MOVE, crate::types::NO_PIECE_TYPE); }
-        // C3 (2026-04-22 audit): set null sentinel on moved_piece_stack /
-        // moved_to_stack at ply_u. Without this, child at ply+1 reads
+        // Set the null sentinel on moved_piece_stack /
+        // moved_to_stack at ply_u. Without this, the child at ply+1 reads
         // stale (piece, to) from a prior sibling move at this ply, feeding
         // cont-hist and LMR-history adjustment with
         // unrelated data. Stockfish sets the null sentinel similarly.
@@ -5185,7 +5080,7 @@ fn negamax(
         }
     }
 
-    // SF one-liner (audit T1.5): a static eval already at/above beta counts
+    // SF one-liner: a static eval already at/above beta counts
     // as improving for the whole move loop, even if it's worse than 2 plies
     // ago — the node is beating its window. Placed after NMP/RFP (both read
     // the plain 2-ply definition, matching SF's ordering); upgrades LMP's
@@ -5196,9 +5091,8 @@ fn negamax(
     }
 
     // IIR: moved after NMP so null search uses full depth, not IIR-reduced depth.
-    // All 6 reference engines run NMP at full depth; IIR only applies to the moves loop.
-    // Coda previously ran IIR before NMP, silently reducing null depth by 1 at cut nodes.
-    // (NMP audit N2)
+    // All 6 reference engines run NMP at full depth; IIR only applies to the
+    // moves loop. Running IIR first silently reduces null depth by 1 at cut nodes.
     if depth >= tp10(&IIR_MIN_DEPTH_10X) && tt_move == NO_MOVE && !in_check && (is_pv || cut_node) && FEAT_IIR.load(Ordering::Relaxed) {
         depth -= 1;
     }
@@ -5208,15 +5102,14 @@ fn negamax(
     // ProbCut: at moderate+ depths, if a shallow search of captures with
     // raised beta confirms the position is winning, prune the node.
     //
-    // C8 audit LIKELY #7/#8: two fixes to this gate.
-    // - #8: add !is_pv — SF/Obsidian/Berserk all gate ProbCut to
-    //   non-PV. Pruning PV nodes on a raised-beta shallow search is too
+    // Two subtleties in this gate:
+    // - !is_pv is required. SF/Obsidian/Berserk all restrict ProbCut to
+    //   non-PV nodes; pruning a PV node on a raised-beta shallow search is too
     //   aggressive for a node whose score we need exactly.
-    // - #7: the "TT says no chance" skip read `tt_entry.score` raw (no ply
-    //   adjust) and accepted ANY flag. A LOWER bound < probcut_beta means
-    //   "score is AT LEAST X" — it does not mean "no chance at probcut_beta",
-    //   the true score can be much higher. Only UPPER/EXACT bounds are
-    //   evidence of a ceiling. Switch to ply-adjusted score + bound gate.
+    // - the "TT says no chance" skip must use the PLY-ADJUSTED score and gate
+    //   on the bound type. A LOWER bound < probcut_beta means "score is AT
+    //   LEAST X" — not "no chance at probcut_beta", since the true score can
+    //   be much higher. Only UPPER/EXACT bounds are evidence of a ceiling.
     let probcut_margin = (tp(&PROBCUT_MARGIN)
         - (improving as i32) * tp(&PROBCUT_MARGIN_IMP))
         .max(1);
@@ -5413,9 +5306,9 @@ fn negamax(
     let mut n_captures_tried = 0usize;
 
     // Skip-quiets flag: once LMP fires, skip remaining quiets without
-    // re-running gates. Bisection found this produces
-    // +22% bench (vs expected bench-neutral perf-only) — mechanism not
-    // localised; SPRT'd anyway as a data point per Adam.
+    // re-running the gates. Note this is NOT bench-neutral despite reading
+    // like a pure short-circuit — it moves the bench ~22%, and the mechanism
+    // for that has never been localised.
     let mut skip_quiets = false;
 
     loop {
@@ -5472,7 +5365,7 @@ fn negamax(
             && FEAT_LMP.load(Ordering::Relaxed)
         {
             let lmp_limit = (tp10(&LMP_BASE_10X) + depth * depth) / (2 - improving as i32);
-            // P2.5: gives_direct_check carve moved inside the movecount test — only
+            // The gives_direct_check carve sits inside the movecount test — only
             // pay the check-detection call when the count prune would actually
             // fire (node-count identical).
             if move_count > lmp_limit && (depth >= 4 || !board.gives_direct_check(mv)) {
@@ -5511,9 +5404,9 @@ fn negamax(
             depth
         };
 
-        // Futility pruning (P2.2: moved ABOVE SEE-quiet so the cheap static prune
-        // fires first — SEE-quiet then only re-runs see_ge on survivors; 5/6
-        // references order it this way, analog LMP reorder #2283 was H1 +0.6).
+        // Futility pruning. Deliberately ABOVE SEE-quiet so the cheap static
+        // prune fires first and SEE-quiet only runs see_ge on the survivors;
+        // 5/6 reference engines order it this way.
         // Skip quiet moves when static eval + margin is below alpha. Uses shared
         // lmr_d for both gate and margin.
         if ply > 0 && static_eval > -INFINITY && !in_check
@@ -5563,11 +5456,11 @@ fn negamax(
             && tt_move != NO_MOVE
             && ply > 0
             && depth >= tp10(&SE_DEPTH_10X)
-            // No !in_check gate: zero-engine-consensus carve-out removed
-            // (audit T2.12). None of SF/Obsidian/Berserk/Stormphrax
-            // gate SE on check; a deep in-check node's TT move (often the
-            // single forced evasion — maximally singular) was never extended,
-            // and got no multicut/negative-ext either. Mechanically safe:
+            // Deliberately NO !in_check gate. None of SF/Obsidian/Berserk/
+            // Stormphrax gate SE on check, and gating it means a deep in-check
+            // node's TT move (often the single forced evasion — maximally
+            // singular) is never extended and gets no multicut or negative
+            // extension either. Mechanically safe:
             // the SE path reads no static_eval (-INFINITY in check); the
             // correction_value margin input is position-keyed.
             && info.excluded_move[ply_u] == NO_MOVE
@@ -5612,11 +5505,11 @@ fn negamax(
                     // EXCEPT decisive scores: singular_score is fail-soft from a
                     // reduced (depth-1)/2 search with the TT move EXCLUDED — a
                     // mate/TB score from it is unproven at this node's depth and
-                    // would be TT-stored at full depth as LOWER. SF
-                    // gates with !is_decisive and fall through; Obsidian/Berserk
-                    // return singularBeta. Per #761 (mate-clamp H0: suppressing
-                    // multicut in mate shapes loses Elo), keep FIRING and fix
-                    // only the returned value (audit T1.4).
+                    // would be TT-stored at full depth as LOWER. SF gates with
+                    // !is_decisive and falls through; Obsidian/Berserk return
+                    // singularBeta. Suppressing multicut entirely in mate
+                    // shapes tested WORSE here, so keep FIRING and fix only the
+                    // returned value.
                     info.stats.multicut += 1;
                     if is_decisive(singular_score) {
                         return singular_beta;
@@ -5684,29 +5577,16 @@ fn negamax(
             NO_PIECE_TYPE
         };
 
-        // History-based pruning REMOVED 2026-06-02.
-        //
-        // Three SPRT attempts H0'd consecutively despite progressive structural
-        // fixes:
-        //   #1562 original (main_hist + 4 cont-hist + pawn): H0 −9.4 Elo
-        //   #1691 SF pattern (cont[1]+cont[2]+pawn), SF defaults: H0 −7.5
-        //   #1697 SF pattern, Coda-tuned SPSA values (#1690): H0 −6.8
-        //
-        // The cumulative evidence is that hist-prune as a feature genuinely
-        // doesn't fit Coda's search/eval shape, irrespective of how it's
-        // shaped or tuned. SF/Obsidian benefit; Coda doesn't. Different from
-        // "we have a bug"; closer to "this feature isn't a fit." Net win to
-        // remove: less code + complexity, one fewer per-node check, no more
-        // ambiguity about whether the feature is doing anything useful.
-        //
-        // Companion removals: HIST_PRUNE_DEPTH_10X, HIST_PRUNE_MULT tunables;
-        // FEAT_HIST_PRUNE flag; ENABLE_/NO_HIST_PRUNE env vars; the diagnostic
-        // PruneStats fields (hist_prune_*, history_prunes, cont_hist_*).
+        // There is deliberately NO history-based pruning here. It is standard
+        // in SF/Obsidian, but three attempts — Coda's own form, SF's form with
+        // SF's constants, and SF's form with SPSA-tuned constants — each lost
+        // 7-9 Elo. The signal history carries in Coda is already spent in move
+        // ordering and in the LMR/futility depth adjustments; pruning on it
+        // again double-counts. Re-add only with a contextual (not raw-threshold)
+        // formulation.
 
-        // (Futility pruning moved above SEE-quiet — P2.2.)
-
-        // (Late Move Pruning moved earlier — now runs before SEE/futility,
-        // immediately after the skip_quiets check. SF Step-14 order.)
+        // (Futility pruning runs above SEE-quiet; Late Move Pruning runs
+        // earlier still, right after the skip_quiets check — SF Step-14 order.)
 
         // Bad noisy pruning: skip losing captures when eval is far below alpha.
         // Applied before MakeMove. Direct-check carve-out: don't prune moves
@@ -5753,14 +5633,11 @@ fn negamax(
         let gives_check = board.in_check();
 
         let extension = 0;
-        // N6 promotion-imminent (7th-rank pawn push) extension REMOVED
-        // 2026-06-07 (structural-audit experiment). Coda-unique — NONE of the
-        // 18 stronger engines in our RR extend 7th-rank pushes — ungated
-        // beyond pawn/non-capture. Coda's OWN earlier testing (experiments.md
-        // 2026-03-12) called these "pure noise — waste as much depth as they
-        // gain." Re-added as N6, silently DEAD ~3 weeks (side_to_move bug),
-        // "fixed" 2026-05-09 without an isolated SPRT — positive Elo never
-        // established. Same profile as the recapture ext (+5.9 to remove).
+        // `extension` is 0: there is no promotion-imminent (7th-rank pawn
+        // push) extension here, and none of the 18 stronger engines surveyed
+        // has one either. Coda carried one twice and it measured as noise both
+        // times — removing it was worth Elo, as was removing the analogous
+        // recapture extension.
 
         let mut new_depth = depth - 1 + extension + singular_extension;
 
@@ -5785,8 +5662,8 @@ fn negamax(
         // Track captures for capture history penalty on beta cutoff
         // Store piece/to/captured for history updates after search.
         // Non-capture promotions tracked with ct=0 (empty slot) — they train
-        // capture history now (audit 2026-07-22), so they must also be
-        // malus-eligible or the empty slot only ever inflates.
+        // capture history, so they must also be malus-eligible or the empty
+        // slot only ever inflates.
         if (is_cap || is_promo) && n_captures_tried < 32
             && moved_piece != NO_PIECE {
                 let ct = if flags == FLAG_EN_PASSANT {
@@ -5825,13 +5702,12 @@ fn negamax(
                     reduction -= LMR_SCALE;
                 }
 
-                // Reduce more at expected cut nodes. Coda historically applied a
-                // flat +1 at every non-PV node without distinguishing expected
-                // cut nodes (fail-high) from all-nodes; SF reduces ~+4 plies
-                // specifically at cutNode, +1 more with no TT move, all-nodes
-                // smaller. Split them: cut nodes get the tunable LMR_CUTNODE_BUMP
-                // (+1 if no TT move); all-nodes keep +1. (P1.1, rebase of the lost
-                // H1 #2065 / e616393.)
+                // Reduce more at expected cut nodes. A flat +1 at every non-PV
+                // node — not distinguishing expected cut nodes (fail-high) from
+                // all-nodes — leaves Elo on the table; SF reduces ~+4 plies
+                // specifically at cutNode, +1 more with no TT move, and less at
+                // all-nodes. So: cut nodes get the tunable LMR_CUTNODE_BUMP
+                // (+1 if no TT move), all-nodes keep +1.
                 if !is_pv {
                     reduction += if cut_node {
                         tp(&LMR_CUTNODE_BUMP_CENTI) + ((tt_move == NO_MOVE) as i32) * LMR_SCALE
@@ -5888,7 +5764,7 @@ fn negamax(
                     reduction -= LMR_SCALE;
                 }
 
-                // LMR correction battery (T1.1, audit 2026-07-06).
+                // LMR correction battery.
                 // (a) Winning beta: the window is already in the proven-win band,
                 //     move precision matters less — reduce more.
                 if is_win(beta) {
@@ -5908,7 +5784,7 @@ fn negamax(
                 //     quiet-LMR block is gated on !in_check).
                 reduction += tp(&LMR_EXPECT_MULT) * (alpha - static_eval).clamp(-65, 91) / 128;
 
-                // cutoff_count (T1.2): the child ply keeps failing high under
+                // cutoff_count: the child ply keeps failing high under
                 // this node — refutations come easy down there, so late moves
                 // need less depth to refute. SF consensus term.
                 if info.cutoff_count[ply_u + 1] > 2 {
@@ -5921,7 +5797,7 @@ fn negamax(
                 // Continuous history adjustment: good history reduces less, bad more
                 // Uses main history + ply-1 + ply-2 continuation history (consensus).
                 // Ply-2 weighted at half to avoid over-scaling the total.
-                // SF weights main history 2× vs continuation history. (LMR audit L7)
+                // SF weights main history 2× vs continuation history.
                 let mut hist_score = info.history.main_score(from, to, enemy_attacks) * 2;
                 if moved_piece != NO_PIECE {
                     let gp = go_piece(moved_piece);
@@ -5934,8 +5810,8 @@ fn negamax(
                     // Pawn history: pawn-structure-aware move quality (SF/Alexandria pattern).
                     // Uses the node-level ph_idx (parent pawn hash) — this code runs
                     // post-make_move, and board.pawn_hash here is the CHILD hash, which
-                    // for pawn moves reads an unrelated bucket (write/read mismatch,
-                    // fixed 2026-06-11).
+                    // for pawn moves reads an unrelated bucket (a write/read
+                    // mismatch).
                     hist_score += info.pawn_hist[ph_idx][gp][to as usize] as i32;
                 }
                 // CONTINUOUS: sub-ply history adjustment (a +8000 history at
@@ -5995,15 +5871,15 @@ fn negamax(
                 reduction = lmr_cap_reduction(d as i32, m as i32); // CENTI-PLY
 
                 if reduction >= LMR_SCALE {
-                    // Continuous capture history adjustment — replaced the
-                    // prior step function (±1 at |capt_hist|>2000) with
-                    // continuous `capt_hist / LMR_HIST_DIV_CAP` to mirror
-                    // quiet-LMR's `hist_score / LMR_HIST_DIV` and Obsidian's
-                    // `R -= hist/(isQuiet?Q_DIV:C_DIV)`. 2026-05-18 outlier
-                    // audit traced LMR_C_CAP<LMR_C_QUIET inversion to this
-                    // step-vs-continuous asymmetry — SPSA had to compress
-                    // C_CAP because there was no per-feature carve-out for
-                    // tactical capt_hist signal beyond the binary fire.
+                    // Continuous capture history adjustment: `capt_hist /
+                    // LMR_HIST_DIV_CAP`, mirroring quiet-LMR's `hist_score /
+                    // LMR_HIST_DIV` and Obsidian's
+                    // `R -= hist/(isQuiet?Q_DIV:C_DIV)`. Must NOT be a step
+                    // function (±1 at some |capt_hist| threshold): the
+                    // step-vs-continuous asymmetry against quiet LMR forces
+                    // SPSA to compress LMR_C_CAP below LMR_C_QUIET, because a
+                    // binary fire gives it no other way to express the tactical
+                    // capt_hist signal.
                     if moved_piece != NO_PIECE && captured_pt != NO_PIECE_TYPE {
                         let ct = if flags == FLAG_EN_PASSANT { captured_type(PAWN) } else { captured_type(captured_pt) };
                         let capt_hist_val = info.history.capture[go_piece(moved_piece)][to as usize][ct] as i32;
@@ -6028,7 +5904,7 @@ fn negamax(
                         }
                     }
 
-                    // cutoff_count (T1.2) — applied before the
+                    // cutoff_count — applied before the
                     // quiet/noisy split, so captures get it too. Same
                     // tunables as the quiet block.
                     if info.cutoff_count[ply_u + 1] > 2 {
@@ -6056,7 +5932,8 @@ fn negamax(
         // Root-depth-aware LMR relaxation: reduce LESS when the overall
         // search is deep. Zero at STC (root_depth <= thresh); grows with how
         // deep the search reaches, so late moves at LTC are searched closer
-        // to full depth. One formula, one tunable set (Adam directive).
+        // to full depth. Deliberately one formula and one tunable set, rather
+        // than separate STC/LTC shapes.
         if reduction >= LMR_SCALE {
             // CONTINUOUS: /100 * LMR_SCALE(=100) cancels exactly.
             reduction -= (info.root_depth - tp(&LMR_ROOT_THRESH)).max(0) * tp(&LMR_ROOT_COEF_10X) / 10;
@@ -6086,20 +5963,18 @@ fn negamax(
             // The reduction applies to the reduced search ONLY: zero the slot
             // before any re-search so children of the (near-)full-depth
             // re-searches don't read a stale prior_reduction and mis-fire
-            // hindsight reduce/extend (SF zeroes its reduction slot after the
-            // reduced search; Stormphrax identical; audit T1.2).
+            // hindsight reduce/extend (SF and Stormphrax both zero their
+            // reduction slot after the reduced search).
             info.reductions[ply_u] = 0;
 
             if lmr_score > alpha && !info.stop.load(Ordering::Relaxed) {
                 // LMR failed high: doDeeper/doShallower before re-search.
                 //
-                // Audit SPECULATIVE fix (v2 retry): `new_depth` (integer depth
-                // 5-20) was used as a cp margin — near-certain typo. #673 at
-                // 30cp H0'd −1.7 @ 17286g; retrying with 20cp, closer to the
-                // old "new_depth ≈ 10-15" effective threshold but with proper
-                // cp semantics. If this also H0s, the true value is smaller
-                // still (try 10cp) or the feature wants a depth-scaled margin.
-                num_fail_highs += 1; // Starzix T1 #1: LMR fail-high cascade.
+                // Both margins below are CENTIPAWNS. Coda once used
+                // `new_depth` (an integer depth, 5-20) directly as the
+                // do_shallower margin; it happened to land in a workable
+                // range, which masked the unit error for a long time.
+                num_fail_highs += 1; // LMR fail-high cascade (Starzix pattern).
                 let mut do_deeper_adj = 0;
                 if lmr_score > best_score + 60 + 10 * reduction {
                     do_deeper_adj = 1;
@@ -6109,21 +5984,21 @@ fn negamax(
 
                 // Mutate new_depth itself so the adjustment persists into the
                 // full-window PVS re-search below (SF/Obsidian/Alexandria/
-                // Stormphrax all mutate newDepth; the old
-                // inline form ran the PV re-search SHALLOWER than the
-                // zero-window search that justified it; audit T1.3).
+                // Stormphrax all mutate newDepth). Applying it inline instead
+                // runs the PV re-search SHALLOWER than the zero-window search
+                // that justified it.
                 new_depth += do_deeper_adj;
                 // Guard: only re-search when new_depth actually changed from lmr_depth.
                 // do_shallower with reduction==1 makes new_depth == lmr_depth — the
                 // re-search would duplicate the already-completed LMR search. Every
-                // reference engine guards with `if new_depth > lmr_depth`. (audit B2)
+                // reference engine guards with `if new_depth > lmr_depth`.
                 if new_depth > lmr_depth {
                     info.stats.ts_lmr_research += 1;
                     lmr_score = -negamax(board, info, -alpha - 1, -alpha, new_depth, ply + 1, !cut_node);
                 }
 
-                // EXPERIMENT: post-LMR-research cont-hist nudge (Berserk pattern,
-                // search.c:747-748). After the zero-window re-search, nudge cont-hist
+                // Post-LMR-research cont-hist nudge (Berserk pattern).
+                // After the zero-window re-search, nudge cont-hist
                 // based on whether re-search confirmed or refuted the LMR prediction:
                 //   score >= beta:  re-search confirmed move good → +bonus
                 //   score <= alpha: re-search confirmed move bad  → -malus
@@ -6140,7 +6015,7 @@ fn negamax(
                     };
                     if nudge_bonus != 0 {
                         let gp_mv = go_piece(moved_piece);
-                        // T6: base = current cont_hist + main_hist / 2 (concept from Stormphrax).
+                        // base = current cont_hist + main_hist / 2 (concept from Stormphrax).
                         let main_score_v = info.history.main_score(from, to, enemy_attacks);
                         let ch_offsets = [1usize, 2, 4, 6];
                         for &off in &ch_offsets {
@@ -6148,11 +6023,9 @@ fn negamax(
                                 let prior_piece = info.moved_piece_stack[ply_u - off] as usize;
                                 let prior_to = info.moved_to_stack[ply_u - off] as usize;
                                 if prior_piece > 0 && prior_piece < crate::movepicker::CONT_PLANES && prior_to < 64 {
-                                    // B1 (audit 2026-05-19): uniform bonus across offsets
-                                    // {1,2,4,6}. Coda was unique in [bonus, b/2, b/2, b/2]
-                                    // shape; Berserk/Alexandria/Stormphrax use
-                                    // uniform `bonus`. See docs/history_prune_cont_hist_
-                                    // review_2026-05-08.md Experiment B1.
+                                    // Uniform bonus across offsets {1,2,4,6},
+                                    // as Berserk/Alexandria/Stormphrax do —
+                                    // NOT a [bonus, b/2, b/2, b/2] taper.
                                     let ch_b = nudge_bonus;
                                     let cur_cont = info.history.cont_hist[prior_piece][prior_to][gp_mv][to as usize] as i32;
                                     let base = cur_cont + main_score_v / 2;
@@ -6189,9 +6062,10 @@ fn negamax(
             // non-PV node the first child's expected type is the negation of
             // this node's (all-node -> child is cut; cut-node -> first child is
             // all after the cutoff move) -> !cut_node. Matches SF (Step 18
-            // `!cutNode` for non-PV first move vs `search<PV>(... false)`). Previously hardcoded
-            // `false`, which mislabeled every non-PV first move as an all node
-            // and disabled NMP/IIR/TT-cutoff node-type guards on that spine.
+            // `!cutNode` for non-PV first move vs `search<PV>(... false)`).
+            // Hardcoding `false` here mislabels every non-PV first move as an
+            // all-node and disables the NMP/IIR/TT-cutoff node-type guards
+            // along that whole spine.
             let child_cut = if is_pv { false } else { !cut_node };
             score = -negamax(board, info, -beta, -alpha, new_depth, ply + 1, child_cut);
         }
@@ -6235,7 +6109,7 @@ fn negamax(
                     if move_count == 1 { info.stats.first_move_cutoffs += 1; }
                     info.stats.cuts_by_depth[ts_bucket] += 1;
                     if move_count == 1 { info.stats.first_cuts_by_depth[ts_bucket] += 1; }
-                    // fh1 source split (Phase-1 scoreboard, 2026-07-27):
+                    // First-move fail-high source split:
                     // class 0 = cutoff move is the TT move, 1 = noisy
                     // (capture/promo), 2 = quiet; separately condition on
                     // whether a TT move existed at this node at all.
@@ -6258,35 +6132,34 @@ fn negamax(
                     info.stats.cutoff_movecount_sq_sum += (move_count as u64) * (move_count as u64);
 
                     // Beta cutoff - update history for quiet moves.
-                    // !is_promo (audit 2026-07-22): non-capture promotions took
-                    // the quiet branch here, writing main/cont/pawn-history
-                    // bonuses for a move the picker orders in the CAPTURE stage
-                    // — pure pollution of cells genuine quiets read (quiets_tried
-                    // already excluded promos). They now take the capture branch
-                    // and train the capt-hist empty slot the read side uses (SF
-                    // capture_stage semantics).
+                    // The !is_promo gate matters: letting non-capture promotions
+                    // take the quiet branch writes main/cont/pawn-history
+                    // bonuses for a move the picker orders in the CAPTURE stage,
+                    // polluting cells that genuine quiets read (quiets_tried
+                    // already excludes promos). They belong in the capture
+                    // branch, training the capt-hist empty slot the read side
+                    // uses — SF capture_stage semantics.
                     if !is_cap && !is_promo {
-                        // Depth-boost on big fail-high. BONUS_BOOST_AT trigger
-                        // removed 2026-05-17 (ablation #1277 H0). Two remaining
-                        // triggers (Stormphrax: cutoff beat static eval;
-                        // improving) can stack for +2 depth.
+                        // Depth-boost on a big fail-high. Two triggers
+                        // (Stormphrax: cutoff beat static eval; improving) can
+                        // stack for +2 depth.
                         let bonus_depth = depth
                             + if !in_check && static_eval <= best_score { 1 } else { 0 }
                             + if improving { 1 } else { 0 };
-                        // numFailHighs multiplicative scaling (#1020, Starzix T1 #1) —
-                        // more cascades = stronger cutoff confidence.
+                        // numFailHighs multiplicative scaling (Starzix pattern)
+                        // — more cascades = stronger cutoff confidence.
                         let raw_bonus = history_bonus(bonus_depth);
                         let scale_factor = num_fail_highs.min(tp10(&NFH_CAP_10X));
                         // Fixed-point divisor (stored × 10).
                         let mut bonus = raw_bonus + raw_bonus * scale_factor * 10 / NFH_DIV_10X.load(Ordering::Relaxed).max(1);
-                        // SF searched-count scale (Jun-2026 SF patch; audit
-                        // W2): the more moves were refuted before
-                        // this one cut, the more informative the cutoff — scale
-                        // the bonus up by moves-searched/256 at non-PV nodes.
+                        // SF searched-count scale: the more moves were refuted
+                        // before this one cut, the more informative the cutoff
+                        // — scale the bonus up by moves-searched/256 at non-PV
+                        // nodes.
                         if !is_pv {
                             bonus += bonus * (move_count - 1).max(0) / 256;
                         }
-                        // SF 645b636d: at non-PV nodes, amplify the cutoff move's
+                        // Also from SF: at non-PV nodes, amplify the cutoff move's
                         // bonus by the number of moves searched before it cut off
                         // (more competition survived = stronger signal). Best-move
                         // bonus only — the malus is left unscaled.
@@ -6309,7 +6182,7 @@ fn negamax(
                         // Ply-1 at full bonus, plies 2/4/6 at half bonus (Obsidian pattern)
                         if moved_piece != NO_PIECE {
                             let gp_mv = go_piece(moved_piece);
-                            // T6: base = current cont_hist + main_hist / 2 (concept from Stormphrax).
+                            // base = current cont_hist + main_hist / 2 (concept from Stormphrax).
                             let main_score_v = info.history.main_score(from, to, enemy_attacks);
                             let ch_offsets = [1usize, 2, 4, 6];
                             for &off in ch_offsets.iter() {
@@ -6393,11 +6266,10 @@ fn negamax(
 
                     } else {
                         // Capture caused beta cutoff: bonus the cutoff capture.
-                        // BONUS_BOOST_AT depth-boost removed 2026-05-17
-                        // (ablation #1277 H0).
+                        // No depth boost here, unlike the quiet site above.
                         let cap_bonus_depth = depth;
-                        // numFailHighs multiplicative scaling (#1054 ext of #1020):
-                        // more cascades = stronger cutoff confidence.
+                        // numFailHighs multiplicative scaling, as at the quiet
+                        // site: more cascades = stronger cutoff confidence.
                         let raw_cap_bonus = capture_history_bonus(cap_bonus_depth);
                         let scale_factor = num_fail_highs.min(tp10(&NFH_CAP_10X));
                         // Fixed-point divisor (stored × 10).
@@ -6430,16 +6302,17 @@ fn negamax(
                     // (matching Stockfish/Obsidian — captures that fail should be
                     // penalized regardless of whether the best move was quiet or tactical)
                     {
-                        // numFailHighs multiplicative scaling — mirror the
-                        // capture-BONUS path (#1054) exactly so the failed
-                        // captures' penalty tracks the cutoff capture's bonus.
-                        // Previously the only beta-cutoff history update missing
-                        // NFH scaling, which slowly inflated capture-history
-                        // magnitude relative to the (scaled) bonus and quiets.
+                        // numFailHighs multiplicative scaling — mirrors the
+                        // capture-BONUS path exactly so the failed captures'
+                        // penalty tracks the cutoff capture's bonus. Omitting it
+                        // here (the easy mistake: this is the least obvious of
+                        // the beta-cutoff history updates) slowly inflates
+                        // capture-history magnitude relative to the scaled
+                        // bonuses and to quiets.
                         let raw_cap_malus = capture_history_malus(depth);
                         let scale_factor = num_fail_highs.min(tp10(&NFH_CAP_10X));
                         let cap_malus = raw_cap_malus + raw_cap_malus * scale_factor * 10 / NFH_DIV_10X.load(Ordering::Relaxed).max(1);
-                        // is_promo joins is_cap: a promo cutoff move is now the
+                        // is_promo joins is_cap: a promo cutoff move is the
                         // last captures_tried entry and must not malus itself.
                         let cap_count = if is_cap || is_promo { n_captures_tried.saturating_sub(1) } else { n_captures_tried };
                         for i in 0..cap_count {
@@ -6522,14 +6395,14 @@ fn negamax(
         }
     }
 
-    // Fail-low prior-countermove bonus (SF technique, simplified core;
-    // 2026-07-05 SF audit Tier 1 #2). When this node fails low with NO best
-    // move, the opponent's previous quiet move "worked" — credit it in the
-    // cont-hist context of our move before that, so the PARENT tries better
-    // siblings sooner. This is the majority node class in a big tree
-    // (all-nodes); Coda previously learned nothing from it (updates fired only
-    // on beta cutoffs + TT cutoffs). Indexing mirrors the TT-cutoff cont-hist
-    // malus site (moved_piece_stack, pre-move pieces — C8 audit #6 pattern).
+    // Fail-low prior-countermove bonus (SF technique, simplified core).
+    // When this node fails low with NO best move, the opponent's previous
+    // quiet move "worked" — credit it in the cont-hist context of our move
+    // before that, so the PARENT tries better siblings sooner. All-nodes are
+    // the majority class in a big tree, and without this the search learns
+    // nothing from them (history updates would fire only on beta cutoffs and
+    // TT cutoffs). Indexing mirrors the TT-cutoff cont-hist malus site
+    // (moved_piece_stack, pre-move pieces).
     // NOTE: SF's gate fires only when no move raised alpha
     // (they set their best-move only on alpha raises). Coda tracks a fail-soft
     // best_move below alpha too, so the equivalent condition here is the
@@ -6582,7 +6455,6 @@ fn negamax(
     // over-optimistic. SF updates on fail-low when the error
     // direction is consistent: bound==Upper && best_score < static_eval means
     // eval predicted higher than any move achieved — train correction downward.
-    // (audit S1)
     let corrhist_lower_ok = best_score > alpha_orig   // fail-high: lower bound
         && !(best_score >= beta && best_score <= static_eval); // direction-consistent
     let corrhist_upper_ok = best_score <= alpha_orig  // fail-low: upper bound
@@ -6591,18 +6463,18 @@ fn negamax(
         && !best_move_noisy
         && info.excluded_move[ply_u] == NO_MOVE
         && (corrhist_lower_ok || corrhist_upper_ok)
-        // T2.3: is_decisive (mate OR TB range)
+        // is_decisive covers the mate OR TB range
         && !is_decisive(best_score)
         && scaled_eval > -(MATE_IN_MAX_PLY)
         && !info.stop.load(Ordering::Relaxed)
     {
-        // Corrhist audit 2026-07-08 finding #1: train the update against the
-        // CORRECTED eval (`static_eval`, the residual after correction), like
-        // SF/Obsidian/Berserk — NOT the raw `scaled_eval`.
-        // Raw-training's gravity fixed point is the rail (magnitude-blind) and
-        // manufactured the fortress phantom eval; residual converges to the true
-        // correction and self-stabilises. Both in scaled-space so the err term
-        // isolates positional miscalibration, not halfmove decay.
+        // Train the update against the CORRECTED eval (`static_eval`, the
+        // residual after correction), like SF/Obsidian/Berserk — NOT the raw
+        // `scaled_eval`. Training on raw makes the gravity fixed point the
+        // rail itself (magnitude-blind), which manufactures phantom evals in
+        // fortress positions; the residual converges to the true correction
+        // and self-stabilises. Both are in scaled space, so the err term
+        // isolates positional miscalibration rather than halfmove decay.
         update_correction_history(info, board, best_score, static_eval, depth, ply_u);
     }
 
@@ -6681,14 +6553,14 @@ fn quiescence_with_depth(
     info.stats.qnodes += 1;
     info.stats.nodes_by_depth[0] += 1; // TREESTATS: qsearch = bucket 0
 
-    // Draw detection: repetition and 50-move rule. Contempt removed (#508).
+    // Draw detection: repetition and 50-move rule. No contempt term.
     let draw_score = 0;
     if board.halfmove >= 100 {
         return draw_score;
     }
     // FIDE Art 5.2: insufficient material to mate (any side). Mirrors
-    // negamax's guard (added for Lichess game I4qJhfQw drawn KB-vs-K
-    // class). QS recurses capture chains that can transition into drawn
+    // negamax's guard, which exists for the drawn KB-vs-K class seen in
+    // live play. QS recurses capture chains that can transition into drawn
     // KvK / KBvK / KBvKB-same-color without ever re-entering negamax's
     // check, so the parallel guard is needed here too.
     if board.is_insufficient_material() {
@@ -6724,9 +6596,8 @@ fn quiescence_with_depth(
     }
 
     // Cuckoo cycle detection in quiescence
-    // C8 audit LIKELY #10: gate QS cuckoo on ply > 0, mirroring the
-    // main-search check at line 1763. Cuckoo's root-boundary STM check
-    // is undefined at ply 0.
+    // Gate QS cuckoo on ply > 0, mirroring the main-search check.
+    // Cuckoo's root-boundary STM check is undefined at ply 0.
     if ply > 0 && alpha < 0 && FEAT_CUCKOO.load(Ordering::Relaxed) && crate::cuckoo::has_game_cycle(board, ply) {
         alpha = 0;
         if alpha >= beta {
@@ -6794,17 +6665,17 @@ fn quiescence_with_depth(
         } else {
             None
         };
-        // C8 audit LIKELY #19: evasion history reads now use enemy_attacks
-        // (symmetric with beta-cutoff writes). Compute here since QS doesn't
-        // otherwise need the bitboard.
+        // Evasion history reads use enemy_attacks, symmetric with the
+        // beta-cutoff writes. Computed here because QS doesn't otherwise need
+        // the bitboard.
         let qs_enemy_attacks = board.attacks_by_color(
             crate::types::flip_color(board.side_to_move)
         );
         // Clamp ply to the moved_piece_stack / moved_to_stack bounds.
         // Qsearch can recurse past MAX_PLY via tactical extensions and evasion
         // chains; without this clamp MovePicker::new_evasion indexes
-        // `moved_piece_stack[ply - off]` with ply > MAX_PLY and panics (observed
-        // on lichess ASuoXT9f — game thrown from a +21.84 winning position).
+        // `moved_piece_stack[ply - off]` with ply > MAX_PLY and panics — which
+        // has thrown a won game in live play.
         let qs_safe_ply = (ply as usize).min(MAX_PLY - 1);
         let mut evasion_picker = MovePicker::new_evasion(
             tt_move, qs_safe_ply, qs_checkers, qs_pinned, &info.history, qs_prev_move, qs_pawn_hist_ref,
@@ -6819,8 +6690,8 @@ fn quiescence_with_depth(
             let mv = evasion_picker.next(board);
             if mv == NO_MOVE { break; }
 
-            // Skip quiet evasions once we have a non-losing score (audit
-            // T2.10): SF searches quiet evasions only while still losing
+            // Skip quiet evasions once we have a non-losing score:
+            // SF searches quiet evasions only while still losing
             // (it skips non-captures inside its !is_loss guard);
             // Obsidian breaks after one quiet. Capture evasions always searched. The gate is
             // only satisfiable after at least one legal move scored, so
@@ -6888,8 +6759,7 @@ fn quiescence_with_depth(
         // Never EXACT: a QS score is an approximation (children are
         // captures-only subtrees), and EXACT entries satisfy unconditional
         // EXACT cutoffs and the stand-pat refinement at full confidence.
-        // SF/Obsidian all store only LOWER/UPPER in QS
-        // (2026-06-11 audit T1.5).
+        // SF/Obsidian all store only LOWER/UPPER in QS.
         let store_score = score_to_tt(best_score, ply);
         let flag = if best_score >= beta {
             TT_FLAG_LOWER
@@ -6916,12 +6786,11 @@ fn quiescence_with_depth(
         info.eval(board)
     };
     // Apply correction history to the QS stand-pat, mirroring negamax's
-    // static-eval path (halfmove-scale THEN corrected_eval, line ~3361).
-    // Consensus QS audit (2026-06-23): the reference engines (SF,
-    // Berserk, Obsidian, PlentyChess, Alexandria) correct the QS stand-pat;
-    // Coda was the sole outlier using the raw eval. The stand-pat feeds the
-    // returned cutoff score, the best_score floor, AND the delta-prune base,
-    // so the uncorrected error compounds. TT still stores the RAW value
+    // static-eval path (halfmove-scale THEN corrected_eval).
+    // Every reference engine surveyed (SF, Berserk, Obsidian, PlentyChess,
+    // Alexandria) corrects the QS stand-pat. It feeds the returned cutoff
+    // score, the best_score floor, AND the delta-prune base, so an
+    // uncorrected error compounds. TT still stores the RAW value
     // (raw_stand_pat) — correct-on-read discipline is unchanged.
     let scaled_stand_pat = apply_halfmove_scale(raw_stand_pat, board.halfmove);
     let stand_pat = if FEAT_CORRECTION.load(Ordering::Relaxed) {
@@ -6933,8 +6802,8 @@ fn quiescence_with_depth(
 
     // TT bound refinement of stand-pat (consensus: every top engine does this)
     // Use TT score as a better estimate when the bound direction agrees.
-    // Apply the SAME halfmove guard as the direct cutoff path at line
-    // ~4468: without this, an inflated near-50mr TT lower bound replaces
+    // Apply the SAME halfmove guard as the direct cutoff path in negamax:
+    // without this, an inflated near-50mr TT lower bound replaces
     // stand_pat and triggers the `best_score >= beta` return below —
     // bypassing the gate that exists for exactly this case.
     if tt_hit && (board.halfmove as i32) < tp(&TT_CUTOFF_HALFMOVE_MAX) {
@@ -6954,11 +6823,11 @@ fn quiescence_with_depth(
     }
 
     if best_score >= beta {
-        // Cache eval + LOWER bound on the stand-pat fail-high (QS audit
-        // 2026-06-23). This is the most common QS exit, and Coda was returning
-        // here WITHOUT any TT store — so the raw eval wasn't cached (revisits
-        // re-run NNUE) and no bound was left for a cheap future cutoff. All 6
-        // reference engines store here (SF/Alexandria/Plenty gate on TT-miss).
+        // Cache eval + LOWER bound on the stand-pat fail-high. This is the
+        // most common QS exit; returning here without a TT store leaves the
+        // raw eval uncached (revisits re-run NNUE) and no bound for a cheap
+        // future cutoff. All 6 reference engines store here
+        // (SF/Alexandria/Plenty gate on TT-miss).
         // Store on TT miss only, depth -1, LOWER bound, no move, raw eval —
         // stand-pat is a valid lower bound on the QS node value. score_to_tt
         // stores the halfmove-independent value (raw_stand_pat); the score is
@@ -6970,8 +6839,8 @@ fn quiescence_with_depth(
             info.tt.store(board.hash, -1, score_to_tt(best_score, ply),
                 TT_FLAG_LOWER, NO_MOVE, raw_stand_pat, false);
         }
-        // QS beta blending (P1.12d: blend regardless of node type — 6/6
-        // references don't gate on non-PV; Coda gated `beta - alpha == 1`).
+        // QS beta blending, applied regardless of node type — none of the 6
+        // reference engines gates this on non-PV.
         if !is_decisive(best_score) {
             return (best_score + beta) / 2;
         }
@@ -7008,13 +6877,13 @@ fn quiescence_with_depth(
             continue;
         }
 
-        // Move-count budget (audit T2.10): count only SEARCHED moves — the
-        // old form incremented before delta/SEE pruning, so pruned moves
-        // consumed budget and SPSA pushed the cap to near-off (24; comment
-        // cited "Obsidian: 3"). Consensus gates: only while best_score
-        // isn't a loss (SF is_loss(futilityBase) / Obsidian TB_LOSS gate)
-        // and promotions exempt (SF). `continue` not `break` so later
-        // promotions still get through (SF form).
+        // Move-count budget: count only SEARCHED moves. Incrementing before
+        // delta/SEE pruning lets pruned moves consume budget, and SPSA then
+        // pushes the cap so high the feature is effectively off. Consensus
+        // gates: only while best_score isn't a loss (SF's
+        // is_loss(futilityBase) / Obsidian's TB_LOSS gate), promotions exempt
+        // (SF). `continue`, not `break`, so later promotions still get
+        // through — also the SF form.
         if qs_move_count >= qs_max_caps
             && !is_loss(best_score)
             && !is_promotion(mv)
@@ -7033,7 +6902,7 @@ fn quiescence_with_depth(
             if cap_pt != NO_PIECE_TYPE && (cap_pt as usize) < 6 {
                 let delta_val = stand_pat + see_value(cap_pt) * tp(&SEE_MATERIAL_SCALE) / 100 + tp(&QS_DELTA_MARGIN);
                 if delta_val <= alpha {
-                    // Fail-soft (P1.12a): delta_val is an upper bound on what this
+                    // Fail-soft: delta_val is an upper bound on what this
                     // capture could achieve; raise best_score to it so the returned
                     // UPPER bound reflects it (all 5 value-prune references do this).
                     // delta_val <= alpha, so best_score stays <= alpha — no cutoff.
@@ -7097,7 +6966,7 @@ fn quiescence_with_depth(
     }
 
     // Store in TT (skip if stopped — partial QS results corrupt TT).
-    // Never EXACT — see the note at the evasion-path store above (audit T1.5).
+    // Never EXACT — see the note at the evasion-path store above.
     let store_score = score_to_tt(best_score, ply);
     let flag = if best_score >= beta {
         TT_FLAG_LOWER
@@ -7111,7 +6980,7 @@ fn quiescence_with_depth(
         info.tt.store(board.hash, -1, store_score, flag, best_move, raw_stand_pat, false);
     }
 
-    // QS beta blending (P1.12d: blend regardless of node type).
+    // QS beta blending, regardless of node type (see the stand-pat exit).
     if best_score >= beta && !is_decisive(best_score) {
         return (best_score + beta) / 2;
     }
@@ -7121,14 +6990,12 @@ fn quiescence_with_depth(
 
 /// Standard bench position list — 48 positions, imported from Stockfish's
 /// `Defaults` array (chess960 + setoption control lines dropped, two endgame
-/// FENs padded to 6 fields, SF Pohl knight-saturation test dropped — see
-/// 2026-05-07: 50% of fresh SB200 random seeds and 1-of-5 SB800 nets had
-/// elevated tree size on it, distorting bench aggregates and OB scale_nps).
+/// FENs padded to 6 fields, SF Pohl knight-saturation test dropped — many
+/// nets show wildly elevated tree size on it, which distorts bench aggregates
+/// and the OB scale_nps; it lives in BENCH_PATHOLOGY_POSITIONS instead).
 /// Used by `coda bench` and `coda eval-bench` so the prune-stats /
 /// move-ordering / NPS aggregates have N=48 sample size, matching the field
-/// convention (Halogen 49, Stormphrax 50,
-/// Alexandria 51, Stockfish 51) rather than the historical 8 we used to
-/// ship with.
+/// convention (Halogen 49, Stormphrax 50, Alexandria 51, Stockfish 51).
 /// The position set is based on Stockfish's benchmark positions (GPLv3, a
 /// licence compatible with Coda's), so bench and NPS compare cleanly against
 /// Stockfish.
@@ -7196,10 +7063,9 @@ pub const BENCH_POSITIONS: &[&str] = &[
 /// over engine-specific corner cases.
 pub const BENCH_PATHOLOGY_POSITIONS: &[&str] = &[
     // SF Pohl knight-saturation test. 14 minor pieces, 2 kings, no
-    // pawns. Eval-driven non-convergence: 50% of fresh SB200 random
-    // seeds and 1-of-5 SB800 nets had elevated tree size; some
-    // exceeded 100M nodes at depth 8. Removed from main bench list
-    // 2026-05-07; kept here as a tripwire.
+    // pawns. Eval-driven non-convergence: a large fraction of freshly
+    // trained nets show elevated tree size here, some exceeding 100M nodes
+    // at depth 8. Not in the main bench list; kept here as a tripwire.
     "k7/2n1n3/1nbNbn2/2NbRBn1/1nbRQR2/2NBRBN1/3N1N2/7K w - - 0 1",
 ];
 
@@ -7647,14 +7513,14 @@ mod tests {
         assert_eq!(apply_halfmove_scale(-(MATE_SCORE - 5), 99), -(MATE_SCORE - 5));
     }
 
-    /// Regression guard for docs/corrhist_fortress_drift_2026-07-06.md.
-    /// Correction history used to self-reinforce into a phantom ±0.45 in
+    /// Regression guard against corrhist fortress drift.
+    /// Correction history can self-reinforce into a phantom ±0.45 in
     /// low-material locked/fortress positions (opposite-coloured bishops,
     /// blocked pawns) that Stockfish/Obsidian all read as 0 — the
-    /// raw NNUE was fine (~0), it was corrhist railing in the low-signal
-    /// regime. The piece-count damping in `corrected_eval` fixes it. These
-    /// four positions (two from the games that surfaced the bug) must stay
-    /// near 0; a regression would blow them back out to ±0.45.
+    /// raw NNUE is fine (~0); it is corrhist railing in the low-signal
+    /// regime. Training the update against the CORRECTED eval (the residual)
+    /// rather than the raw one is what keeps it convergent. These four
+    /// positions must stay near 0; a regression blows them back out to ±0.45.
     ///
     /// Needs an NNUE net (the drift is a corrhist-on-NNUE effect), so it skips
     /// gracefully when no net is present — honours `CODA_TEST_NET`, else
@@ -7715,9 +7581,7 @@ mod tests {
     /// next search iteration (subsequent SE would skip, or move loops would
     /// skip a random move).
     ///
-    /// Audit 2026-04-17: confirmed the set/clear pair at search.rs:2103-2105
-    /// has no early-return path between them. This test guards the invariant
-    /// against future regressions.
+    /// There must be no early-return path between the set and the clear.
     #[test]
     fn test_excluded_move_cleared_after_search() {
 
@@ -7892,8 +7756,7 @@ mod tests {
             other_corrected, raw);
     }
 
-    /// P1 instant-reply gate — DOUBLE-PONDERHIT CASCADE GUARD (Adam's
-    /// non-negotiable requirement, 2026-07-05 ponder fix). If the opponent
+    /// Instant-reply gate — DOUBLE-PONDERHIT CASCADE GUARD. If the opponent
     /// instant-replied out of their own ponderhit, our go-ponder→ponderhit
     /// window can be ~1ms. A ponderhit arriving <10ms after `go ponder`
     /// must NEVER instant-emit, REGARDLESS of what the depth / fail-low
@@ -8007,13 +7870,12 @@ mod tests {
         assert_eq!(saved, -1, "shipping default must be the -1 sentinel");
     }
 
-    /// Regression guard for the PV-print legality check (fix/pv-print-legality
-    /// -guard, 2026-05-31). The pv_table can carry a STALE sibling-line move —
-    /// e.g. a king move from a square the king occupied in a different branch.
-    /// The bug: a printed PV repeated `g2f3` while the king was on h2,
-    /// emitting cutechess "Illegal PV move" warnings (a latent lichess
-    /// forfeit class). The fix stops
-    /// the printed PV at the first move that fails is_pseudo_legal + is_legal
+    /// Regression guard for the PV-print legality check. The pv_table can carry
+    /// a STALE sibling-line move — e.g. a king move from a square the king
+    /// occupied in a different branch. Printing it verbatim emits an "Illegal
+    /// PV move" warning from the match runner, which is a latent forfeit class.
+    /// The guard stops the printed PV at the first move that fails
+    /// is_pseudo_legal + is_legal
     /// on the running pv_board. This test asserts that exact predicate: a move
     /// legal in a sibling position is rejected against the current one.
     #[test]

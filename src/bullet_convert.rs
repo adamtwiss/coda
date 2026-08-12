@@ -5,8 +5,7 @@
 //!   v7: (InputSize × H)×2 → L1 → [L2 →] output (hidden layers)
 //!   v8 (dual L1) / v9-v10 (threats): same v7 entry point — convert_v7
 //!   derives the actual written version from dual_l1/num_threats. v9/v10
-//!   (FT + threats → hidden → output) is current production — see
-//!   CLAUDE.md/docs/net_catalog.md.
+//!   (FT + threats → hidden → output) is current production.
 //!
 //! King bucket count and layout are encoded into the .nnue header. Default
 //! 16 buckets is backwards compatible (no extended header needed). Non-16
@@ -297,7 +296,7 @@ pub fn convert_v7(
     }
 
     // Threat weights: read from combined FT block (i16 at QA=255), clamp to i8
-    // In Atlas's Bullet approach, the FT has (PSQ_inputs + threat_inputs) combined.
+    // In the trainer, the FT has (PSQ_inputs + threat_inputs) combined.
     // PSQ weights are the first psq_input_size rows (already read above).
     // Threat weights are the next num_threats rows, stored as i16 at QA=255.
     // We clamp directly to i8 [-128, 127] preserving QA=255 scale.
@@ -312,11 +311,11 @@ pub fn convert_v7(
         for i in 0..num_threats * h {
             let val_i16 = read_i16_le(&data, offset);
             offset += 2;
-            // C8 audit LIKELY #49: use full i8 range [-128, 127] instead of
-            // symmetric [-127, 127]. The old bound wasted one negative
-            // value and slightly raised the clip rate. Also: if clip rate
-            // > 1%, warn loudly — clipping indicates training/inference
-            // scale mismatch and silent Elo loss.
+            // Use the full i8 range [-128, 127], not a symmetric
+            // [-127, 127] — the symmetric bound wastes one negative value
+            // and raises the clip rate. If the clip rate exceeds 1% we warn
+            // loudly: clipping indicates a training/inference scale mismatch
+            // and silent Elo loss.
             if val_i16 < i8::MIN as i16 || val_i16 > i8::MAX as i16 { clipped += 1; }
             threat_weights[i] = (val_i16 as i32).clamp(i8::MIN as i32, i8::MAX as i32) as i8;
         }

@@ -88,11 +88,9 @@ pub fn nnue_to_bullet_checkpoint(
     let out_name_b = if l2_size > 0 { "l3b" } else { "l2b" };
 
     // Helper: write the full weight-list, either real values (weights.bin)
-    // or zeros (momentum.bin / velocity.bin). C7 (2026-04-22 audit) fix:
-    // previously the output layer was silently dropped when l2_size == 0
-    // in BOTH weights.bin AND momentum/velocity.bin, and momentum/velocity
-    // dropped it even when l2_size > 0 asymmetrically vs weights.bin.
-    // Centralise the list so the two buffers can never diverge.
+    // or zeros (momentum.bin / velocity.bin). The list is centralised so the
+    // two buffers can never diverge: writing them separately is how the
+    // output layer ends up silently dropped from one but not the other.
     fn write_all_entries(
         buf: &mut Vec<u8>,
         l0w: &[f32], l0b: &[f32],

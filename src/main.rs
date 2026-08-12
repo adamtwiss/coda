@@ -95,8 +95,8 @@ struct Cli {
     book: Option<String>,
 
     /// DIAGNOSTIC ONLY — load nets even when they mismatch Coda's inference
-    /// configuration. Default is refuse-to-load so mismatches can't silently degrade
-    /// SPRT / OB / Lichess games. Use only when deliberately probing a
+    /// configuration. Default is refuse-to-load so mismatches can't silently
+    /// degrade automated match runs. Use only when deliberately probing a
     /// mismatched net. Also available as UCI option `LoadAnyway`.
     #[arg(long = "load-anyway", global = true)]
     load_anyway: bool,
@@ -113,15 +113,15 @@ enum Commands {
         #[arg(long = "threads", short = 't', default_value_t = 1)]
         threads: usize,
         /// Override tunable defaults for this bench invocation only.
-        /// Format: NAME=VALUE (repeatable). Diagnostic use for stage-1
-        /// loose-knob perturbation audits.
+        /// Format: NAME=VALUE (repeatable). Diagnostic use for parameter
+        /// perturbation studies.
         #[arg(long = "set", value_name = "NAME=VALUE")]
         set: Vec<String>,
     },
     /// Pathology bench: run known-pathological positions, flag any
     /// whose tree exceeds `--threshold` nodes. Slow / optional —
     /// surfaces tail-distribution blow-ups (eval-driven search
-    /// non-convergence, extension cascades) that SPRT cannot detect.
+    /// non-convergence, extension cascades) that averaged benchmarks hide.
     /// Exit code = number of positions over threshold.
     BenchPathology {
         /// Search depth
@@ -224,7 +224,7 @@ enum Commands {
     },
     /// Report average chain (game-fragment) length of a binpack — singletons
     /// (avg ~1, e.g. import-tsv outlier sets) vs proper game chains (avg ~20-40).
-    /// Bullet's interleave loader (since 2026-06-30) weights files by sampled
+    /// Bullet's interleave loader weights files by sampled
     /// position density, not raw bytes, so low-chain files are no longer
     /// over-weighted — but density still varies run-to-run with file
     /// composition, so use this to sanity-check expected exposure before/after
@@ -288,10 +288,10 @@ enum Commands {
     },
     /// Download NNUE net from net.txt URL
     FetchNet,
-    /// C8 audit fuzzer: diff Coda's current enumerate_threats (physical-
-    /// frame semi-exclusion) against a bf-frame reference matching Bullet
-    /// training, to surface same-type-pair mismatches introduced when real
-    /// STM is Black.
+    /// Threat-frame fuzzer: diff Coda's enumerate_threats (physical-frame
+    /// semi-exclusion) against a bf-frame reference matching the trainer, to
+    /// surface same-type-pair mismatches introduced when the real STM is
+    /// Black.
     FuzzThreats {
         /// Number of random positions to generate
         #[arg(long, default_value_t = 10000)]
@@ -464,8 +464,7 @@ enum Commands {
     /// Batch static-eval a FEN list: one FEN per line (extra tab-separated
     /// columns after the FEN are ignored), emits `fen<TAB>eval_stm_cp` keyed
     /// by FEN. Exists so corpus tooling never scrapes UCI `eval` output by
-    /// line order (known misalignment trap, see
-    /// docs/overrate_eval_investigation_2026-06-30.md).
+    /// line order — a known misalignment trap.
     EvalFens {
         /// Input file: one FEN per line, or TSV with FEN in column 0
         #[arg(long, short = 'i')]
@@ -640,8 +639,7 @@ fn main() {
     // of panicking inside `println!`. Without this, fastchess/OB
     // workers see a `failed printing to stdout: Broken pipe` panic,
     // the game is recorded as "abandoned" at PlyCount=0, and the
-    // SPSA tune (or SPRT) accumulates dozens-to-hundreds of phantom
-    // results. Diagnosed via tune #1417 (2026-05-22).
+    // run accumulates dozens to hundreds of phantom results.
     #[cfg(unix)]
     unsafe {
         libc::signal(libc::SIGPIPE, libc::SIG_DFL);
@@ -1562,12 +1560,10 @@ fn run_fetch_net() {
         return;
     }
     println!("Downloading {} ...", url);
-    // C8 audit LIKELY #48: add `-f` (--fail) so curl exits non-zero on
-    // HTTP 4xx/5xx instead of capturing the error body as the output
-    // file. Previously a 404/500 response was silently saved as the
-    // "net" and curl returned success; the subsequent load would fail
-    // cryptically or — worse — truncate a partial download into what
-    // looked like a valid file. Also validate magic bytes after download.
+    // `-f` (--fail) is load-bearing: without it curl exits zero on HTTP
+    // 4xx/5xx and saves the error body as the "net", so the subsequent load
+    // fails cryptically or, worse, treats a partial download as a valid
+    // file. Magic bytes are validated after the download too.
     let output = std::process::Command::new("curl")
         .args(["-fsL", &url, "-o", fname])
         .status();
@@ -1577,9 +1573,9 @@ fn run_fetch_net() {
             // Magic-byte positive check: Coda .nnue files start with the
             // 4-byte magic 'EUNN' (= 0x4E4E5545 little-endian). Reject
             // anything that doesn't match — covers HTML error pages and
-            // partial / wrong downloads. Original audit fix used a
-            // negative ASCII-alpha check, but the magic is itself ASCII
-            // alpha so it falsely rejected every valid NNUE.
+            // partial / wrong downloads. Do NOT substitute a negative
+            // "looks like ASCII text" check: the magic is itself ASCII
+            // alpha, so that rejects every valid NNUE.
             const NNUE_MAGIC: &[u8; 4] = b"EUNN";
             if let Ok(bytes) = std::fs::read(fname) {
                 if bytes.len() < 16 || &bytes[0..4] != NNUE_MAGIC {
@@ -1627,7 +1623,7 @@ fn run_check_net(net_path: &str) {
         // Full recompute for both perspectives
         let piece_count = board.occupied().count_ones();
         acc.force_recompute(&net, &board);
-        // C8 audit LIKELY #20: for v9 threat nets, use forward_with_threats
+        // For v9 threat nets, use forward_with_threats
         // so the displayed eval actually consumes the threat features.
         // `net.forward()` with a v9 net zeroes the threat half → displayed
         // eval is arbitrarily wrong. Build a one-shot threat stack for the
@@ -2916,8 +2912,7 @@ fn run_eval_dist(input: &str, n: usize, nnue_path: &Option<String>, csv: &Option
 
         let score = if let (Some(net), Some(acc)) = (&info.nnue_net, &mut info.nnue_acc) {
             // Build a real ThreatStack for v9 nets — without this,
-            // the threat half of the eval is silently zeroed
-            // (audit C2026-04-25-3).
+            // the threat half of the eval is silently zeroed.
             let mut ts = crate::threat_accum::ThreatStack::new(net.hidden_size);
             ts.active = net.has_threats;
             if ts.active {

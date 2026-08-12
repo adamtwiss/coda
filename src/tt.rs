@@ -101,10 +101,9 @@ impl TTBucket {
         // On x86 store-release is the same instruction as a relaxed store;
         // on aarch64 it inserts a `stlr`. Without this, an aarch64 reader
         // could observe a torn slot (e.g. post-clear `data` with pre-clear
-        // `keys`) — the XOR-verification then accepts garbage. Audit
-        // 2026-04-25 flagged this as defensive on the assumption clear()
-        // is single-threaded; landing the cheap Release upgrade closes
-        // the gap if background-clear ever lands.
+        // `keys`) — the XOR-verification then accepts garbage. clear() is
+        // single-threaded today, so this is defensive; it costs nothing and
+        // closes the gap if a background clear ever lands.
         for i in 0..BUCKET_SIZE {
             self.data[i].store(0, Ordering::Release);
             self.keys[i].store(0, Ordering::Release);
@@ -137,11 +136,10 @@ impl TTBucket {
 /// future allocator regressions break the build rather than silently
 /// undoing any huge-page win.
 ///
-/// The previous implementation used `Vec::with_capacity` → glibc malloc
-/// → 16-byte-aligned pages, so `madvise(MADV_HUGEPAGE)` was a no-op and
-/// Coda fell back to 4 KB pages on every Linux host. Verified on the
-/// production lichess box: `AnonHugePages: 0` for live coda with a
-/// 1 GB TT before this fix.
+/// The alignment is load-bearing: a plain `Vec::with_capacity` goes through
+/// glibc malloc and yields 16-byte alignment, which makes
+/// `madvise(MADV_HUGEPAGE)` a silent no-op and drops the whole table back to
+/// 4 KB pages.
 #[cfg(target_os = "linux")]
 struct AlignedBuckets {
     ptr: std::ptr::NonNull<TTBucket>,
@@ -470,7 +468,6 @@ impl TT {
     }
 
     /// Store an entry in the TT. Lock-free via atomic stores.
-    /// Store an entry: (key, depth, score, flag, move, staticEval, isPV)
     pub fn store(&self, hash: u64, depth: i32, score: i32, flag: u8, best_move: Move, static_eval: i32, is_pv: bool) {
         let idx = self.bucket_index(hash);
         let bucket = &self.buckets[idx];
@@ -509,15 +506,12 @@ impl TT {
             // Also preserve the existing TT move when no new move is available
             // (all-node stores with NO_MOVE must not erase a move from a deeper
             // prior iteration — all 5 reference engines implement this).
-            // (audit T2 + T3)
             if recovered_upper == key_upper {
                 let flag_is_exact = flag == TT_FLAG_EXACT;
                 // Same-key overwrite gate. Margin 4 (`slot_depth - 4`) matches
-                // all four primary peers (SF/Berserk `depth+4`); Coda's
-                // prior margin 3 preserved deep same-key entries one ply harder
-                // than any reference. External-search audit 2026-07-04, probe 1.
+                // the primary peers (SF/Berserk use `depth + 4`).
                 if depth > slot_depth - 4 || gen != slot_gen || flag_is_exact {
-                    // Preserve the existing best move when we have none (T2)
+                    // Preserve the existing best move when we have none
                     let effective_move = if best_move == NO_MOVE {
                         unpack_move(slot_data)
                     } else {
@@ -531,12 +525,11 @@ impl TT {
                 return;
             }
 
-            // Track worst slot for replacement: depth - 8*age. This
-            // depth-minus-8xage form is the same as Obsidian's replacement
-            // score (getDepth() - 8*getAgeDistance()) and SF's
-            // GENERATION_DELTA=8 — a convergent power-of-two coefficient.
-            // Stale entries depreciate twice as fast as the previous `*4`,
-            // freeing slots for fresh shallow entries when TT pressure is high.
+            // Track worst slot for replacement: depth - 8*age. The same form
+            // as Obsidian's replacement score (getDepth() - 8*getAgeDistance())
+            // and SF's GENERATION_DELTA=8 — a convergent power-of-two
+            // coefficient. The 8 makes stale entries depreciate fast enough to
+            // free slots for fresh shallow ones when TT pressure is high.
             let age = gen.wrapping_sub(slot_gen) as i32;
             let slot_score = slot_depth - age * 8;
             if slot_score < replace_score {
@@ -551,10 +544,9 @@ impl TT {
     }
 
     /// Prefetch the bucket for a hash (hint to CPU cache).
-    /// NOTE: only x86_64 issues a prefetch today; aarch64 has no TT prefetch
-    /// yet (a `PRFM` path is a separate, measurable change — see the NEON
-    /// catch-up doc). Locals are scoped into the x86 block so ARM builds
-    /// stay warning-clean.
+    /// Only x86_64 issues a prefetch today; aarch64 has no TT prefetch yet
+    /// (a `PRFM` path would be a separate, measurable change). Locals are
+    /// scoped into the x86 block so ARM builds stay warning-clean.
     #[inline]
     pub fn prefetch(&self, hash: u64) {
         #[cfg(target_arch = "x86_64")]
@@ -574,10 +566,9 @@ impl TT {
     /// are still resident but won't be re-probed cleanly, so excluding them
     /// gives an honest "useful TT pressure" signal for UCI display.
     ///
-    /// Pre-2026-05-15 this counted ANY non-empty slot, which caused
-    /// hashfull to saturate at ~99% after a few moves of warm-TT play even
-    /// when only ~3% of slots held current-gen entries (cross-engine
-    /// comparison on Lichess 12+5 highlighted the gap).
+    /// Counting any non-empty slot instead would saturate at ~99% after a few
+    /// moves of warm-TT play, even when only ~3% of slots hold current-gen
+    /// entries.
     pub fn hashfull(&self) -> u32 {
         let sample = (self.mask + 1).min(1000);
         let current_gen = self.generation.load(Ordering::Relaxed);
@@ -598,20 +589,16 @@ impl TT {
 
 /// Adjust mate and TB scores for TT storage (add ply).
 ///
-/// C5 (2026-04-22 audit): interior TB probes return `TB_WIN - ply`,
-/// which is 100cp below the original `MATE_SCORE - 100` threshold. That
-/// meant TB scores passed through TT store/load unadjusted, so a TB
-/// score stored at ply=10 and retrieved at ply=20 was 10cp too
-/// optimistic. Threshold widened to cover the full
-/// `[TB_WIN - MAX_PLY, MATE_SCORE]` range. Normal evals never reach this range.
+/// The band must cover TB scores as well as mates: interior TB probes return
+/// `TB_WIN - ply`, which sits below a naive `MATE_SCORE - 100` threshold, so
+/// such a threshold lets TB scores through store/load unadjusted — a score
+/// stored at ply 10 and retrieved at ply 20 comes back 10cp too optimistic.
 ///
-/// 2026-05-20 audit: MAX_PLY bumped from 64 → 128 (`project_max_ply_depth_cap_bug.md`)
-/// without updating this threshold. The boundary at `TB_WIN - 128` is then
-/// inclusive of the deepest TB score (`TB_WIN - MAX_PLY = 28672`) but the
-/// `>` is strict — at ply=128 exactly, the score falls through without
-/// ply-adjustment, breaking round-trip. Widened to `TB_WIN - 200` to give
-/// 72cp headroom over MAX_PLY=128 (and any future bumps up to ~200).
-/// Normal evals stay well below 28600.
+/// `TB_WIN - 200` covers `[TB_WIN - MAX_PLY, MATE_SCORE]` with headroom. The
+/// margin must exceed MAX_PLY (currently 160), because a threshold exactly at
+/// `TB_WIN - MAX_PLY` combined with the strict `>` would let the deepest TB
+/// score fall through unadjusted and break the round-trip. Normal evals stay
+/// well below this band.
 #[inline]
 pub fn score_to_tt(score: i32, ply: i32) -> i32 {
     if score > TB_WIN - 200 {
@@ -648,8 +635,7 @@ pub fn is_mate_score(score: i32) -> bool {
 /// True for any decisive score: mate OR tablebase range. The widespread
 /// `|s| < MATE_IN_MAX_PLY` (= 28840) mate guards admit TB scores (TB_WIN =
 /// 28800, stored as TB_WIN - ply, sits below the mate band) — use this where
-/// TB scores must also be excluded (SF/Stormphrax is_decisive;
-/// 2026-06-11 audit T2.3).
+/// TB scores must also be excluded (SF/Stormphrax `is_decisive`).
 #[inline]
 pub fn is_decisive(score: i32) -> bool {
     score.abs() >= TB_WIN - 200
@@ -733,9 +719,9 @@ mod tests {
     use super::*;
 
     /// The mate-recognition boundary must (a) catch the deepest possible mate
-    /// (`MATE_SCORE - MAX_PLY`, mate-in-~64), and (b) never admit a TB score.
-    /// Regressing to a hardcoded `MATE_SCORE - 100` reintroduces the
-    /// misclassification of mates at ply 100..=160.
+    /// (`MATE_SCORE - MAX_PLY`, i.e. mate-in-80 at MAX_PLY=160), and (b) never
+    /// admit a TB score. Regressing to a hardcoded `MATE_SCORE - 100`
+    /// reintroduces the misclassification of mates at ply 100..=160.
     #[test]
     fn test_mate_in_max_ply_boundary() {
         let max_ply = crate::search::MAX_PLY as i32;
@@ -754,11 +740,10 @@ mod tests {
         assert!(!is_mate_score(4095));
     }
 
-    /// The huge-page fix relies on the TT's base pointer being 2 MB
-    /// aligned — otherwise `madvise(MADV_HUGEPAGE)` silently falls back
-    /// to 4 KB pages (the bug this commit is addressing). Regressing
-    /// the allocator would silently undo the NPS win, so pin the
-    /// invariant in a test.
+    /// Huge pages rely on the TT's base pointer being 2 MB aligned —
+    /// otherwise `madvise(MADV_HUGEPAGE)` silently falls back to 4 KB pages.
+    /// An allocator change would undo that with no visible symptom, so the
+    /// invariant is pinned here.
     #[test]
     #[cfg(target_os = "linux")]
     fn test_tt_allocation_is_2mb_aligned() {
@@ -915,17 +900,17 @@ mod tests {
         assert_eq!(e.score, 90);
     }
 
-    /// Depth-gated replacement on same-key: new store with shallower
-    /// depth (depth <= slot_depth - 3) and same generation MUST NOT
-    /// overwrite. Protects the deep result from being replaced by a
-    /// shallow one during search.
+    /// Depth-gated replacement on same-key: a new store with shallower depth
+    /// (`depth <= slot_depth - 4`) and the same generation MUST NOT overwrite.
+    /// Protects the deep result from being replaced by a shallow one during
+    /// search.
     #[test]
     fn tt_same_key_shallow_does_not_overwrite() {
         let tt = TT::new(4);
         let h = mk_hash(7);
         // Write deep
         tt.store(h, 20, 100, TT_FLAG_EXACT, 0x200, 0, false);
-        // Same-gen shallow attempt: depth 16 < 20-3 = 17, should NOT overwrite.
+        // Same-gen shallow attempt: 16 is not > 20-4 = 16, should NOT overwrite.
         tt.store(h, 16, 500, TT_FLAG_LOWER, 0x300, 0, false);
 
         let e = tt.probe(h);
@@ -933,10 +918,10 @@ mod tests {
         assert_eq!(e.depth, 20, "deep write must survive shallow same-gen overwrite");
         assert_eq!(e.score, 100);
 
-        // Same-gen near-same-depth (20 > 17): overwrites.
+        // Same-gen near-same-depth: overwrites.
         tt.store(h, 19, 999, TT_FLAG_UPPER, 0x400, 0, false);
         let e2 = tt.probe(h);
-        // Depth 19 > 20-3 = 17, so overwrite allowed.
+        // Depth 19 > 20-4 = 16, so overwrite allowed.
         assert_eq!(e2.depth, 19);
         assert_eq!(e2.score, 999);
     }
@@ -1020,37 +1005,27 @@ mod targeted_tests {
 /// adjudication and CCRL-style "opening too lopsided" rejection both key off the
 /// printed number.
 ///
-/// **Default 39 = divide reported cp by ~2.56.** The prod-net value was 43,
-/// measured 2026-08-04 by four independent routes that agreed:
+/// **NET-SPECIFIC — re-derive whenever the production net changes.** The value
+/// encodes one net's cp against the field's, so a net swap silently
+/// invalidates it. The current 39 was derived for net `60F72A31`.
 ///
-/// | method | Coda(prod) / field |
-/// |---|---|
-/// | `SEE_MATERIAL_SCALE` (internal, Elo-tuned, no external reference) | 2.11 |
-/// | CCRL 126th Amateur D1, 31 games vs SF at real LTC depth | 2.27 |
-/// | same, median across 15 opponents | 2.27 |
-/// | LC0-label arithmetic (Coda 0.675 x label vs SF 0.258 x label) | 2.62 |
+/// To re-derive: pin ScoreScale=100 so the reading is INTERNAL cp, and do not
+/// mix `eval-fens` (static) output with searched scores — mixing them has
+/// produced ratios off by more than 2x.
 ///
-/// The BT4 production net (60F72A31) reads **1.114x** the prod net's scale —
-/// consistent across all 8 peers (1.098-1.134) and corroborated by held-out
-/// labels (1.158) and static evals (1.161) — so 43 / 1.114 = 39.
+/// Two things that look like fixes and are not:
 ///
-/// Measure with `eval_scale_probe.py`, which pins ScoreScale=100 so it reads
-/// INTERNAL cp. Do NOT mix `eval-fens` (static) with searched scores.
+/// * **Chasing it in training.** The cause is a units convention. SF trains on
+///   the same LC0 data with essentially the same WRM in-scaling (295.65 vs our
+///   300) and simply divides by `NormalizeToPawnValue` before printing.
+/// * **Compressing the scale internally.** Measured and rejected: it costs eval
+///   resolution (distinct eval values -21% across an in_scaling 300 -> 190
+///   sweep) and barely touches the material-dependent shape. SF keeps full
+///   internal resolution and divides only when printing; so do we.
 ///
-/// Root cause is a units convention, NOT a training defect: SF trains on the
-/// same LC0 data with essentially the same WRM in-scaling (295.65 vs our 300)
-/// and simply divides by `NormalizeToPawnValue` before printing. We did not.
-/// Confirmed by prediction: SF should measure 0.256 x label; it measures 0.258.
-///
-/// This is DISPLAY-ONLY by design. Compressing the scale INTERNALLY was measured
-/// and rejected — it costs eval resolution (distinct eval values 1588 -> 1256
-/// across an in_scaling 300 -> 190 sweep, -21%) and barely touches the
-/// material-dependent shape (per-band spread 1.52x -> 1.44x). SF keeps full
-/// internal resolution and divides only when printing; so do we.
-///
-/// NOTE: `eval-fens` / `eval-dist` emit INTERNAL cp and are deliberately
-/// unaffected by this. Tooling that compares Coda's eval to another engine
-/// (net_report's overscore) must normalise separately.
+/// `eval-fens` / `eval-dist` emit INTERNAL cp and are deliberately unaffected.
+/// Any tooling comparing Coda's eval against another engine must normalise
+/// separately.
 pub static REPORT_SCALE_PCT: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(39);
 
 /// Format a search score as a UCI `score ...` field, applying the display scale.

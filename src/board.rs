@@ -471,7 +471,7 @@ impl Board {
         // A FEN may declare rights for a rook that doesn't exist (corrupt
         // input, Chess960-style mixed FENs). SF does the same AND
         // at parse time so downstream movegen + is_pseudo_legal can assume
-        // rights imply a rook on the corner. 2026-05-31 audit finding F.
+        // rights imply a rook on the corner.
         let wk_on_e1 = self.pieces[KING as usize] & self.colors[WHITE as usize] & (1u64 << 4) != 0;
         let bk_on_e8 = self.pieces[KING as usize] & self.colors[BLACK as usize] & (1u64 << 60) != 0;
         let wr_on_h1 = self.pieces[ROOK as usize] & self.colors[WHITE as usize] & (1u64 << 7) != 0;
@@ -485,7 +485,7 @@ impl Board {
 
         // En passant. Bounds-check f and r to avoid wrapping into a
         // huge ep_square that later overflows `1u64 << ep_square`
-        // (board.rs / movegen.rs). 2026-05-31 audit finding E.
+        // (board.rs / movegen.rs).
         self.ep_square = NO_SQUARE;
         if parts.len() > 3 && parts[3] != "-" {
             let bytes = parts[3].as_bytes();
@@ -825,9 +825,8 @@ impl Board {
             let captured_sq = if us == WHITE { to.wrapping_sub(8) } else { to.wrapping_add(8) };
             // Malformed EP (e.g. TT collision delivers EP with `to` on rank
             // 0/1 so captured_sq wraps): contract of is_legal is "true iff
-            // legal", so report FALSE rather than the prior "allow through"
-            // lie. make_move still rejects defensively if this ever slips by.
-            // 2026-05-31 audit (H2).
+            // legal", so report FALSE rather than allowing it through.
+            // make_move still rejects defensively if this ever slips by.
             if captured_sq >= 64 { return false; }
             if checkers != 0 {
                 // Double check: only king moves resolve (EP is never a king move)
@@ -1058,12 +1057,12 @@ impl Board {
         // is empty here, the bitboards/mailbox diverged in an earlier
         // make/unmake pair — never expected in correct code.
         //
-        // 2026-05-31 audit (H1): prior version ran promotion-undo's
-        // remove+put XOR FIRST, potentially setting phantom QUEEN+PAWN
-        // bits at `to` when the queen wasn't actually there. Then
-        // "recovered" castling/ep/hash from undo but left pieces[],
-        // colors[], mailbox[] inconsistent — turned detected corruption
-        // into SILENT corruption (hash looked clean, bitboards didn't).
+        // Order matters: running promotion-undo's remove+put XOR FIRST can
+        // set phantom QUEEN+PAWN bits at `to` when the queen wasn't
+        // actually there, then "recover" castling/ep/hash from undo while
+        // leaving pieces[], colors[] and mailbox[] inconsistent — turning
+        // detected corruption into SILENT corruption, where the hash looks
+        // clean but the bitboards don't.
         // debug_assert in dev/test surfaces the bug; release bails
         // without making state worse.
         if self.piece_type_at(to) == NO_PIECE_TYPE {
@@ -1497,8 +1496,9 @@ mod tests {
     /// used at "add new ep_key" for any move sequence, the incremental
     /// hash diverges from compute_hash and TT lookup breaks.
     ///
-    /// Not a behavioural test — purely a hash-invariant guard for the
-    /// 2026-04-17 Zobrist EP fix. Analogous to threat_accum::fuzz_random_games.
+    /// Not a behavioural test — purely a hash-invariant guard, with
+    /// particular attention to en passant. Analogous to
+    /// threat_accum::fuzz_random_games.
     #[test]
     fn fuzz_hash_incremental_matches_compute() {
         use crate::movegen::generate_legal_moves;

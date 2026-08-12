@@ -178,8 +178,8 @@ impl<T: Default + Copy> AlignedVec<T> {
             // deterministic 2 MiB pages, immune to the broken-THP kernels
             // where the madvise path below silently yields zero huge pages
             // (Ubuntu HWE 6.8: AnonHugePages measured 0 kB for the 65 MiB
-            // threat table on both Atlas and the lichess host; same failure
-            // tt.rs documents for the TT). mmap reserves from the pool up
+            // threat table on multiple hosts; the same failure tt.rs
+            // documents for the TT). mmap reserves from the pool up
             // front, so it fails cleanly (→ fall through) when the pool is
             // absent or exhausted. CODA_NO_HUGETLB skips the tier — the
             // same-binary A/B toggle for the paired measurement protocol.
@@ -334,8 +334,8 @@ pub const NNUE_PW_BUF: usize = 1024;
 /// touches only a handful at scattered indices, so each row's first touch is
 /// a cold miss the hardware streamer cannot predict. Later chunks of the same
 /// row ARE predictable (sequential within the row), so only the head is
-/// pulled here. Same pattern as the threat-apply entry prefetch
-/// (perf/threat-apply-prefetch, OB #3037 +1.67 Elo H1).
+/// pulled here. Same pattern as the threat-apply entry prefetch, which
+/// measured +1.67 Elo.
 #[cfg(target_arch = "x86_64")]
 #[inline(always)]
 fn prefetch_acc_rows(add_rows: &[&[i16]], sub_rows: &[&[i16]], chunk_bytes: usize) {
@@ -401,13 +401,11 @@ const PW_SCALE: i32 = (QA * QA) >> FT_SHIFT; // max packed value after shift (12
 const NNUE_MAGIC: u32 = 0x4E4E5545; // "NNUE" in LE
 
 // King bucket tables: computed per-net from the layout field (see
-// compute_king_buckets below) and stored on NNUENet. Prior to 2026-04-20
-// these were `static mut KING_BUCKET: [usize; 64]` / `static mut KING_MIRROR`
-// written by `init_king_buckets_layout` on every net load. That data race
-// (helpers reading while load wrote) was the root cause of the v9 T=4 SMP
-// regression bisected to commit 1356150 — eliminated by making them
-// per-`NNUENet` fields populated at load time and never mutated after.
-// See `fix/smp-king-bucket-race`.
+// compute_king_buckets below) and stored on NNUENet. Do NOT make these
+// process-global `static mut` tables written on every net load: helpers
+// reading while a load writes is a data race, and it was the root cause of a
+// large T=4 SMP regression. They are per-`NNUENet` fields, populated at load
+// time and never mutated after.
 
 /// Consensus king bucket layout: fine-near, coarse-far — a common 16-bucket
 /// pattern across many engines for a mirrored HalfKA net. "Consensus" reflects
@@ -538,7 +536,7 @@ unsafe fn simd_acc_fused_avx2(
     // 12 AVX-2 registers × 16 i16 = 192 elements per chunk. Direct i16 add
     // has no i8→i16 expansion temps, so 12 YMM accumulators + ~3 for
     // address/loop temps sit comfortably in AVX-2's 16-YMM register file.
-    // Same architectural pattern as the AVX-512 REGS=24 (#926 +1.5 Elo H1)
+    // Same architectural pattern as the AVX-512 REGS=24 path (worth ~1.5 Elo)
     // but scaled to AVX-2's smaller register file.
     const REGS: usize = 12;
     const CHUNK: usize = REGS * 16;
@@ -552,9 +550,9 @@ unsafe fn simd_acc_fused_avx2(
     prefetch_acc_rows(add_rows, sub_rows, REGS * 16 * 2);
 
     // Shared body parameterised on the register count so every pass below
-    // runs with a COMPILE-TIME nregs and fully unrolls. Atlas perf
-    // annotate (2026-05-06) showed a unified runtime-nregs loop emitting
-    // a switch covering nregs 2-12 — ~9% of total eval cycles. Tiling per
+    // runs with a COMPILE-TIME nregs and fully unrolls. A unified
+    // runtime-nregs loop instead emits a switch covering nregs 2-12, which
+    // profiled at ~9% of total eval cycles. Tiling per
     // hidden size: h=768 → 4×CHUNK, no tail; h=1024 (current prod) →
     // 5×CHUNK + ONE const 4-register (64-element) pass. The runtime-nregs
     // tail only fires for h not a multiple of 64.
@@ -744,9 +742,9 @@ unsafe fn finny_batch_apply_avx2(
     adds: &[usize],
     subs: &[usize],
 ) {
-    // 12 AVX-2 registers × 16 i16 = 192 elements per chunk. Most of the
-    // OB fleet is AVX-2-only (no AVX-512), so this path covers the bulk
-    // of fleet workers — the AVX-512 sibling covers Zeus/thor. Direct
+    // 12 AVX-2 registers × 16 i16 = 192 elements per chunk. AVX-2 without
+    // AVX-512 is the common baseline, so this is the path most hardware
+    // takes; the AVX-512 sibling covers the rest. Direct
     // i16 add (no expansion temps) keeps 12 YMM accumulators + ~3 temps
     // within AVX-2's 16-YMM register file even when the delta loop
     // persists them across many add/sub iterations.
@@ -1672,11 +1670,9 @@ unsafe fn l2_fmadd_avx512_x32(
     _mm512_storeu_ps(h2.add(16), h_hi);
 }
 
-/// AVX-2 sibling of `l2_fmadd_avx512_x32` for the AVX-2 fleet (Atlas + most
-/// OB workers + lichess host). Same semantics, 8 f32 lanes per YMM →
-/// 4 accumulators for l2 == 32. Atlas perf annotate (2026-05-06) showed
-/// the L2 stage at ~7% of incremental eval cycles in the scalar fallback;
-/// this hoists it to SIMD on the AVX-2 path.
+/// AVX-2 sibling of `l2_fmadd_avx512_x32`. Same semantics, 8 f32 lanes per
+/// YMM → 4 accumulators for l2 == 32. The scalar fallback profiled at ~7% of
+/// incremental eval cycles; this hoists the L2 stage to SIMD on AVX-2.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2,fma")]
 unsafe fn l2_fmadd_avx2_x32(
@@ -1713,9 +1709,8 @@ unsafe fn l2_fmadd_avx2_x32(
 }
 
 /// AVX-2 f32 SCReLU activation for l2==32 (clamp [0,1] then square).
-/// Replaces the scalar `for k { h2[k].clamp(); h2[k] *= h2[k] }` loop —
-/// Atlas perf annotate (2026-05-06) showed scalar vminss + vmulss for
-/// this loop at ~2% of incremental eval cycles on AVX-2.
+/// Replaces the scalar `for k { h2[k].clamp(); h2[k] *= h2[k] }` loop, whose
+/// vminss + vmulss profiled at ~2% of incremental eval cycles on AVX-2.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
 unsafe fn screlu_f32_avx2_x32(h2: &mut [f32]) {
@@ -2061,11 +2056,11 @@ unsafe fn neon_screlu_pack(acc: &[i16], out: *mut u8, h: usize) {
         let sq1 = vmulq_s16(c1, c1);
         // >> 8 (unsigned shift) → [0, 254] — must match scalar tail below
         // and x86 `simd_screlu_pack` (SCReLU scale chain: v² / 256, not 512).
-        // C4 (2026-04-22 audit): commit 44baa95 mistakenly changed this to
-        // >>9 alongside the intentional neon_pairwise_pack change, halving
-        // SCReLU activations on aarch64 builds. Only affects v7 non-pairwise
-        // SCReLU nets on aarch64 — aarch64 has no SCReLU-vs-scalar regression
-        // test (unlike neon_pairwise_pack_fused).
+        // This must stay >>8. Changing it to >>9 alongside the (different)
+        // neon_pairwise_pack shift halves SCReLU activations on aarch64
+        // builds, and nothing catches it: this path is v7 non-pairwise SCReLU
+        // on aarch64, which has no SCReLU-vs-scalar regression test of its own
+        // (unlike neon_pairwise_pack_fused).
         let d0 = vreinterpretq_s16_u16(vshrq_n_u16::<8>(vreinterpretq_u16_s16(sq0)));
         let d1 = vreinterpretq_s16_u16(vshrq_n_u16::<8>(vreinterpretq_u16_s16(sq1)));
         // Narrow i16 → u8 with unsigned saturation (values are [0, 254])
@@ -2479,8 +2474,8 @@ fn detect_i8mm() -> bool {
 
 /// Global "load any net even on training/inference config mismatch" override.
 /// Set via the `--load-anyway` CLI flag or UCI option `LoadAnyway`. Refuses
-/// mismatches by default (noisy — crashes the engine startup) so mismatches
-/// can't silently degrade SPRT/OB/Lichess games. Diagnostic-only escape
+/// mismatches by default (noisy — crashes the engine startup) so they
+/// can't silently degrade automated match runs. Diagnostic-only escape
 /// hatch for intentionally loading a mismatched net.
 pub static LOAD_ANYWAY: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
@@ -2916,7 +2911,7 @@ impl NNUENet {
         // Read input weights (PSQ block sized by kb_count × 768).
         // Hugepage-backed (2 MiB pages): weight rows are indexed effectively
         // at random per node; on 4 KiB pages the two big matrices cost real
-        // dTLB/STLB pressure on small-cache hosts (avx2_gap_audit_2026-07-03).
+        // dTLB/STLB pressure on small-cache hosts.
         let psq_input_size = num_king_buckets * PSQ_INPUTS_PER_BUCKET;
         let mut input_weights: AlignedVec<i16> = AlignedVec::hugepage_zeros(psq_input_size * hidden_size);
         read_i16_slice(reader, &mut input_weights)?;
@@ -3304,7 +3299,7 @@ impl NNUENet {
     /// `target_feature`) so it adopts the caller's codegen context — AVX2 when
     /// inlined into `_inner_avx2`, scalar via the fallback branch here.
     ///
-    /// Why this shape (2026-06-27): a bare `#[target_feature(enable = "avx2")]`
+    /// Why this shape: a bare `#[target_feature(enable = "avx2")]`
     /// on the body makes LLVM autovectorize even its *scalar fallback* loops to
     /// AVX2, which SIGILLs on pre-AVX2 CPUs (e.g. Sandy Bridge / Xeon E5 v1)
     /// the instant the function is entered — even though the runtime
@@ -3666,15 +3661,16 @@ impl NNUENet {
                 // Replaces the row-major path that scanned the full input per
                 // output neuron (16× cache-line touches per input chunk).
                 //
-                // Dense variant (no zero-check). The old "~89% density"
-                // rationale was stale: re-measured 2026-06-14, the pairwise
-                // input is ~58% nonzero (L1=16) / ~60% (L1=32). But dense still
+                // Dense variant (no zero-check). The "~89% density"
+                // rationale often quoted for sparse L1 does not hold here:
+                // measured, the pairwise
+                // input is ~58% nonzero (L1=16) / ~60% (L1=32). And dense still
                 // wins — a proper SF-style branch-free find_nnz+list kernel was
                 // benched 1.8-2.4x SLOWER than dense at EVERY density. L1 is too
                 // small (16-32 neurons): find_nnz detection cost dominates and
                 // the matmul savings (~40% of a tiny per-chunk op) can't cover
                 // it. Dense straight-line SIMD over input-chunk-major weights is
-                // correct here. See docs/coda_vs_sf_speed_2026-06-14.md.
+                // correct here.
                 unsafe {
                     crate::sparse_l1::dense_l1_avx2(
                         stm_pw, ntm_pw, pw, &self.l1_weights_sparse,
@@ -4479,7 +4475,7 @@ impl NNUENet {
 
         // Get threat accumulators (may be empty for non-threat nets).
         //
-        // C8 audit LIKELY #17: this is the LEGACY threat pipeline using
+        // NOTE: this is the LEGACY threat pipeline using
         // accumulator.threat_white/black fields. Production v9 uses
         // `forward_with_threats` + the ThreatStack at SearchInfo::threat_stack
         // instead, so these fields are never populated on the hot path. If
@@ -4790,9 +4786,9 @@ const ACC_STACK_PLIES: usize = 256;
 /// every AccEntry — 2.67× over-provisioned per array vs production
 /// `hidden_size = 768`, bloating each AccEntry to ~16 KB and making the
 /// per-ply walk drag in unused tail cache lines. Per-callsite L1-miss
-/// decomposition (2026-05-03) showed Coda's accumulator-update path had
-/// 95× more L1 misses than the contiguous layout; this restructure targets that
-/// directly. Each perspective's data lives in its own slot of one
+/// decomposition showed that layout costing 95× more L1 misses in the
+/// accumulator-update path than the contiguous one. Each perspective's data
+/// now lives in its own slot of one
 /// contiguous Box, sized exactly to `hidden_size` — reading `white`
 /// no longer drags `black`, `threat_white`, `threat_black` cache lines
 /// into L1.
@@ -4914,7 +4910,7 @@ pub struct NNUEAccumulator {
     // branch it takes. Read via the `stats_*` accessors for the bench
     // "evals/node" summary. Zero overhead outside the increment itself.
     pub stats_full_rebuilds: u64,
-    /// Rebuild cause splits (added 2026-05-06 for Atlas perf investigation).
+    /// Rebuild cause splits.
     /// kind=0  → king bucket / mirror crossing on the moving side (forced).
     /// root    → top==0 (only fires once per search tree).
     /// chain   → parent ply not computed (lazy-accumulator chain break).
@@ -5647,7 +5643,7 @@ impl NNUEAccumulator {
             entry.acc[..h].copy_from_slice(&net.input_biases[..h]);
             // MaybeUninit skips the 256-byte zero-init memset. piece_indices[..n_pieces]
             // is fully written below; consumers only read that prefix. Same pattern as
-            // forward_with_l1 and apply_threat_deltas (#921, #927, #931).
+            // forward_with_l1 and apply_threat_deltas.
             let mut piece_indices_storage = std::mem::MaybeUninit::<[usize; 32]>::uninit();
             let piece_indices_ptr = scratch_ptr!(piece_indices_storage, usize);
             let mut n_pieces = 0usize;
@@ -5761,9 +5757,9 @@ unsafe fn finny_batch_apply_avx512(
 ) {
     // 24 AVX-512 registers × 32 i16 = 768 elements per chunk — covers the
     // v9 hidden_size=768 in a SINGLE outer iteration. Each weight row is
-    // read once per refresh instead of 3× under the previous REGS=8 /
-    // CHUNK=256 tile. Same register-tiling pattern as `simd_acc_fused_avx512`
-    // (PSQ apply, REGS=8→24 +1.5 Elo H1 SPRT #926).
+    // read once per refresh instead of 3× under a REGS=8 / CHUNK=256 tile.
+    // Same register-tiling pattern as `simd_acc_fused_avx512` (PSQ apply),
+    // where widening REGS from 8 to 24 was worth ~1.5 Elo.
     //
     // Direct i16 add (no i8→i16 expansion temps) keeps register pressure
     // contained: even though the inner delta loop persists the 24 ZMM
@@ -5993,8 +5989,8 @@ mod tests {
         // Candidate nets: CODA_TEST_NET override, else every net*.nnue in
         // the repo root (sorted, newest-style hash names included). Try each
         // until one LOADS — stale/unsupported-layout files in the root must
-        // not silently disarm the tripwire (a first-match version skipped on
-        // Atlas because read_dir happened to yield a retired kb10 net first).
+        // not silently disarm the tripwire (taking only the first match can
+        // skip the check entirely if read_dir yields a retired net first).
         let candidates: Vec<String> = if let Ok(p) = std::env::var("CODA_TEST_NET") {
             vec![p]
         } else {
@@ -6167,9 +6163,9 @@ mod tests {
 
                 // Invariant 2 (BOUNDED): full eval may differ slightly — the
                 // physical-frame same-type-pair skip in threat features is
-                // deliberately not mirror-symmetric (see enumerate_threats and
-                // docs/threat_eval_asymmetry_2026-06-17.md; training matches
-                // inference, so the net is calibrated to it). Gross deviation
+                // deliberately not mirror-symmetric (see enumerate_threats;
+                // training matches inference, so the net is calibrated to
+                // it). Gross deviation
                 // = real bug (flipped feature family, bucket asymmetry).
                 let pc = board.occupied().count_ones();
                 let e1 = net.forward(&a1, board.side_to_move, pc);
@@ -6182,7 +6178,7 @@ mod tests {
                     // EXACT explanation requirement: any eval asymmetry must
                     // be fully accounted for by the designed same-type
                     // mutual-attack pair skip (physical-square-order tie
-                    // break, docs/threat_eval_asymmetry_2026-06-17.md). The
+                    // break). The
                     // enumerated-feature diff for both perspective pairings
                     // must be a subset of the position's mutual-pair feature
                     // indices, with matching counts. Anything else = bug.
@@ -7398,7 +7394,7 @@ mod tests {
         assert!(!km[0]);
     }
 
-    /// Regression test for the 2026-04-20 SMP race fix. Concurrently
+    /// Regression test for the king-bucket SMP race. Concurrently
     /// compute king-bucket tables on many threads for different layouts
     /// and verify no tearing / incorrect value. If KING_BUCKET were still
     /// a `static mut` written per layout, this would race; with per-net
@@ -7919,13 +7915,12 @@ mod tests {
         // evals them slightly differently. The non-threat v5 net is EXACTLY 0
         // on every fixture (proving the HalfKA base + king buckets are
         // symmetric); the residual is entirely the threat semi-exclusion.
-        // Training matches inference EXACTLY here (Bullet post-C8-fix
-        // `phys_flip`; `fuzz-threats --postfix` = 0/40000, both STMs,
-        // 2026-06-17), so it is a feature-design tradeoff, not a divergence.
-        // Residuals are NET-dependent: ~10-20cp (v9 s200), 54cp (E4B66CE4),
-        // 113cp (549C20A5 prod). A genuine flip bug instead breaks MOST
-        // fixtures by hundreds of cp (often sign-flipped), which 150cp still
-        // catches loudly. See docs/threat_eval_asymmetry_2026-06-17.md.
+        // Training matches inference EXACTLY here (the trainer's `phys_flip`;
+        // `fuzz-threats --postfix` = 0/40000, both STMs), so it is a
+        // feature-design tradeoff, not a divergence.
+        // Residuals are NET-dependent — anywhere from ~10cp to over 100cp.
+        // A genuine flip bug instead breaks MOST fixtures by hundreds of cp
+        // (often sign-flipped), which a 150cp bar still catches loudly.
         // Non-threat nets keep the tight 50cp bar.
         let tolerance_cp: i32 = if net.has_threats { 150 } else { 50 };
         let h = net.hidden_size;
@@ -7976,18 +7971,15 @@ mod tests {
     /// Tier-1 discovery test: relative piece values.
     ///
     /// Measures each trade-off INSIDE a single position instead of by
-    /// subtracting two separately-evaluated ones. Rewritten 2026-08-09
-    /// after the original form went red on prod net 60F72A31.
+    /// subtracting two separately-evaluated ones.
     ///
-    /// The original compared startpos-minus-queen against
+    /// Do NOT go back to comparing startpos-minus-queen against
     /// startpos-minus-rook. Both are near-certain wins, so both evals sit
     /// in win-probability saturation and their DIFFERENCE is saturation
-    /// noise rather than a material signal — the 2026-07-04 loosening
-    /// (SLACK=100) was already conceding exactly that. BT4-trained nets
-    /// compress the band harder still (Q..N spans 386cp on 60F72A31 vs
-    /// 685cp on E6C62000), so no fixed slack can rescue the form: on
-    /// 60F72A31 rook-removal (+1587) outranks queen-removal (+1201), with
-    /// knight (+1372) and bishop (+1298) in between.
+    /// noise rather than a material signal; no fixed slack rescues it.
+    /// Nets trained on modern relabelled data compress that band further
+    /// still (Q..N can span under 400cp), and on such a net rook-removal
+    /// can outrank queen-removal outright.
     ///
     /// The asymmetric form has no such problem. White gives up the LESSER
     /// piece and black the GREATER, so the comparison is encoded in one

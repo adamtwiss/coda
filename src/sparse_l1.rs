@@ -6,13 +6,12 @@
 //! "~89% sparsity in pairwise outputs, processes only ~11% of the work"
 //! and shipped zero-skip sparse kernels (`sparse_l1_avx2`,
 //! `sparse_l1_avx512_vnni`, `find_nnz_chunks4`) to exploit it — that
-//! density figure was stale. Re-measured 2026-06-14: the pairwise input is
+//! density figure was stale. Re-measured: the pairwise input is
 //! actually ~58% nonzero (L1=16) / ~60% (L1=32), and a proper
 //! branch-free find_nnz+list sparse kernel benched **1.8–2.4× SLOWER**
 //! than dense at every density tested. L1 is too small (16-32 neurons) for
-//! the zero-skip to pay for its own detection cost. See
-//! `docs/coda_vs_sf_speed_2026-06-14.md` and `nnue.rs`'s `DenseAvx2` arm
-//! comment for the full writeup. The sparse kernels in this file are kept
+//! the zero-skip to pay for its own detection cost. See `nnue.rs`'s
+//! `DenseAvx2` arm comment for more. The sparse kernels in this file are kept
 //! only because their tests (`sparse_l1_scalar` as the reference oracle)
 //! still exercise them — they have no production call site.
 //!
@@ -326,9 +325,9 @@ pub unsafe fn dense_l1_avx2_l1_32(
 /// pairwise activation's upper bound): `127 × Σ|w| ≤ 32767` over the 4
 /// co-lane weights, i.e. `Σ|w| ≤ 258`. Runs once at net load; O(weights).
 ///
-/// Prod net E6C62000 measures worst lane sum = 163 (2026-07-03) — safe
-/// with margin. A future net that violates the bound falls back to the
-/// unfused kernel automatically via kernel selection.
+/// Production nets have measured worst lane sums around 163 — safe with
+/// margin. A net that violates the bound falls back to the unfused kernel
+/// automatically via kernel selection.
 pub fn x2_fusion_safe(sparse_weights: &[i8], num_neurons: usize) -> bool {
     let chunk_stride = num_neurons * 4;
     if chunk_stride == 0 || !sparse_weights.len().is_multiple_of(chunk_stride) {
@@ -360,7 +359,7 @@ pub fn x2_fusion_safe(sparse_weights: &[i8], num_neurons: usize) -> bool {
 /// two input chunks per iteration, summing their VPMADDUBSW products with
 /// one VPADDW *before* a single shared VPMADDWD — halving the madd count
 /// (4/6 reference engines: Berserk
-/// `m256_add_dpbusd_epi32_x2`, PlentyChess, Alexandria; audit item B4).
+/// `m256_add_dpbusd_epi32_x2`, PlentyChess, Alexandria).
 ///
 /// # Saturation precondition (why this kernel is gated)
 /// VPMADDUBSW saturates its i16 lane at ±32767, and the fusing VPADDW
@@ -1709,10 +1708,9 @@ mod tests {
     }
 
     /// Fuzz: `dense_l1_avx2` matches the scalar reference. This is the
-    /// production L1 kernel for every AVX2-only host (most of the OB
-    /// fleet + the codabot VPS) — until 2026-06 it had no correctness
-    /// test at all (only the debug-build runtime probe in
-    /// `forward_with_l1_pairwise_inner` and the ns/call benchmark).
+    /// production L1 kernel for every AVX2-only host, which is most of them,
+    /// so it needs a real correctness test rather than just the debug-build
+    /// runtime probe in `forward_with_l1_pairwise_inner`.
     ///
     /// Sweeps pw over both net generations (384 = FT768, 512 = FT1024
     /// prod) plus boundary widths, and num_neurons over 16 (prod) and 8

@@ -18,8 +18,8 @@ use crate::types::*;
 ///   1. Moves leading to a position where the OPPONENT has insufficient
 ///      material to mate (we cannot lose — strictly safer than any
 ///      drawn fortress that requires defense). This is the
-///      qualitative-Lichess fix: KB-vs-K beats KB-vs-KR even though
-///      both are TB-drawn.
+///      qualitative preference a bare TB probe won't express: KB-vs-K
+///      beats KB-vs-KR even though both are TB-drawn.
 ///   2. Among non-IM-resulting moves: prefer the move that captures
 ///      the most material (less material left for the opponent to
 ///      play dangerous tricks with).
@@ -31,16 +31,15 @@ fn pick_drawn_tb_move(board: &Board, fallback_uci: &str, tb: Option<&crate::tb::
     use crate::movegen::generate_legal_moves;
     let legal = generate_legal_moves(board);
 
-    // DRAW-PRESERVATION FILTER (2026-05-30 — fixes local-reproduced lichess
-    // throw class). shakmaty's `best_move` at a drawn root returns a
-    // DTZ-"optimal" move, but DTZ semantics around drawn-with-pawns positions
+    // DRAW-PRESERVATION FILTER. shakmaty's `best_move` at a drawn root returns
+    // a DTZ-"optimal" move, but DTZ semantics around drawn-with-pawns positions
     // can hand back a move that does NOT actually hold the draw under best
     // opponent play (e.g. KBPvKB `8/7k/1P1B4/2K5/8/8/8/5b2 b`: shakmaty
-    // returned Be2, which LOSES — opponent's child WDL is a win; Bg2/Ba6 hold,
-    // child WDL = draw). The previous code trusted that fallback whenever no
-    // capture/insufficient-material move existed, throwing the draw to a loss.
+    // returns Be2, which LOSES — the opponent's child WDL is a win; Bg2/Ba6
+    // hold, child WDL = draw). Trusting that fallback whenever no
+    // capture/insufficient-material move exists throws drawn games away.
     //
-    // Fix: re-probe each legal move's CHILD WDL and only consider moves whose
+    // So: re-probe each legal move's CHILD WDL and only consider moves whose
     // child is NOT a win for the opponent (child_wdl <= 0 from child STM POV).
     // Mirrors `pick_winning_tb_move`'s child-verification. Among the safe
     // moves, keep the existing (insufficient-material, captured-value) tiebreak.
@@ -106,10 +105,10 @@ fn pick_drawn_tb_move(board: &Board, fallback_uci: &str, tb: Option<&crate::tb::
 /// to actually convert under practical play. `probe_root_pv` returns a
 /// DTZ-optimal move but among DTZ-equivalent winners shakmaty picks the
 /// first one it enumerates — which can be a long pawn push when a capture
-/// would simplify the position immediately. lichess wej9jERO m65 (KPPvKR,
-/// w to move, 2026-05-27): shakmaty returned `c5c6` (pawn push, position
-/// stays 5-piece KPPvKR) over `f2g1` (Kxg1 → 4-piece KPPvK, trivial win).
-/// Both are TB_WIN per WDL but `f2g1` is the practical choice.
+/// would simplify the position immediately. Seen in live play at a KPPvKR
+/// root: shakmaty returned `c5c6` (pawn push, position stays 5-piece KPPvKR)
+/// over `f2g1` (Kxg1 → 4-piece KPPvK, trivial win). Both are TB_WIN per WDL
+/// but `f2g1` is the practical choice.
 ///
 /// Tiebreak among `wdl >= TB_WIN-100` moves: re-probe each legal move's
 /// child position with WDL, keep only those that remain definite wins
@@ -129,10 +128,10 @@ fn pick_winning_tb_move(board: &Board, fallback_uci: &str, tb: &crate::tb::Syzyg
     // override it for a winning CAPTURE (captured_value > 0) that simplifies /
     // resets the 50mr. Starting at -1 let the first no-capture win-preserving
     // move (captured_value 0 > -1) replace the DTZ move with an arbitrary
-    // non-progressing one — catastrophic in KQvK etc. where NO move captures:
-    // every queen move "preserves the win" by WDL, so Coda picked an arbitrary
-    // square and could oscillate forever -> 50-move/3-fold draw of a trivial
-    // mate (lichess V49tJcfl: coda_bot drew KQvK vs ratsu-bot, 2026-05-30).
+    // non-progressing one — catastrophic in KQvK and similar, where NO move
+    // captures: every queen move "preserves the win" by WDL, so an arbitrary
+    // square gets picked and the engine can oscillate forever, drawing a
+    // trivial mate by 50-move or 3-fold. This has happened in live play.
     let mut best_captured_value: i32 = 0;
     let mut best_uci = fallback_uci.to_string();
 
@@ -182,7 +181,7 @@ fn pick_winning_tb_move(board: &Board, fallback_uci: &str, tb: &crate::tb::Syzyg
 static PONDER_HINT_MANUFACTURED: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 
-/// P4 — TT-probe ponder-hint fallback (2026-07-05 ponder diagnosis §2).
+/// TT-probe ponder-hint fallback.
 /// When a search ends without a usable pv[1] (short PV, illegal-hint drop,
 /// inconsistent PV after an SMP vote), the GUI cannot ponder at all that
 /// turn — measured at 4.6% of Coda's moves vs 0.5% for engines that
@@ -192,9 +191,9 @@ static PONDER_HINT_MANUFACTURED: std::sync::atomic::AtomicU64 =
 /// `after_best` is the position AFTER our bestmove. Probes the TT there and
 /// returns its move ONLY if it survives the same validation the pv[1] path
 /// applies: the cheap is_pseudo_legal screen first, then FULL legality by
-/// matching against the generated legal move list (TT collisions inject
-/// illegal moves — the PV_PONDER_BUG history makes these guards
-/// load-bearing). Returns the legal list's own encoding (canonical flags),
+/// matching against the generated legal move list. TT collisions do inject
+/// illegal moves, so both guards are load-bearing.
+/// Returns the legal list's own encoding (canonical flags),
 /// or NO_MOVE when no validated hint exists.
 pub(crate) fn tt_ponder_hint(tt: &crate::tt::TT, after_best: &Board) -> Move {
     let entry = tt.probe(after_best.hash);
@@ -237,7 +236,7 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>) {
     let external_stop: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
     // Share the external-stop source with SearchInfo so search-side wait
     // loops (stockpile-floor sleep) can poll it — info.stop can't serve
-    // there because the search sets it internally (TM audit 2026-06-13 A2).
+    // there because the search sets it internally.
     info.external_stop = external_stop.clone();
     // Set when the running ponder is being abandoned because a NEW position+go
     // arrived (opponent didn't play the predicted ponder move). The search
@@ -245,9 +244,9 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>) {
     // pv_table is from the predicted-but-not-real position, so the move
     // doesn't apply to whatever the new go is for. Without this suppress,
     // the stale ponder bestmove gets read by the GUI as the response to the
-    // new go and forfeits on lichess (game 2agDftuq, 2026-04-29: predicted
-    // e3d3, opp played e3e4, ponder PV `g3f3 d3c4` was legal at the d3
-    // position but illegal at e4 → king-into-check → resign).
+    // new go, which forfeits the game. Seen in live play: we predicted e3d3,
+    // the opponent played e3e4, and the ponder PV `g3f3 d3c4` was legal at
+    // the d3 position but illegal at e4 → king into check → resign.
     let suppress_bestmove: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
     let mut ponder_limits: Option<SearchLimits> = None; // pending limits for ponderhit
     let mut ponder_stm: u8 = crate::types::WHITE; // side to move at ponder start
@@ -330,7 +329,7 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>) {
                     println!("option name LoadAnyway type check default false");
                     println!("option name TMDebug type check default false");
                     // default -1 = "unset" sentinel → full charge (100). See
-                    // search::PONDERHIT_CREDIT_PCT (full-charge model 2026-07-05).
+                    // search::PONDERHIT_CREDIT_PCT (full-charge model).
                     println!("option name PonderhitCreditPct type spin default -1 min -1 max 100");
                 }
                 // Tunable search parameters (for SPSA) — only advertised in tuning
@@ -462,9 +461,9 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>) {
                             // shakmaty's `best_move` picks arbitrarily among
                             // drawing moves — we override to prefer
                             // IM-terminal recaptures over drawn fortresses.
-                            // See feedback_egtb_drawn_tiebreak_unfixable_via_sprt.md.
-                            // Lichess game I4qJhfQw m103 and VE9mvCIG m~67 both
-                            // exhibited Coda skipping the IM-terminal recapture.
+                            // This is a live-play quality issue that SPRT
+                            // cannot see: TB-drawn is TB-drawn to the scoring,
+                            // but the two are not equally safe to defend.
                             let tb_pv_original_first = tb_pv.first().cloned();
                             if wdl == 0 && !tb_pv.is_empty() {
                                 tb_pv[0] = pick_drawn_tb_move(&board, &tb_pv[0], Some(&**tb));
@@ -472,8 +471,8 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>) {
                             // Winning-root tiebreak: among DTZ-equivalent
                             // winners, prefer the move that captures the
                             // highest-value enemy piece (also reduces piece
-                            // count and resets 50mr). lichess wej9jERO m65
-                            // case — shakmaty picked c5c6 over Kxg1.
+                            // count and resets 50mr) — see the KPPvKR case in
+                            // pick_winning_tb_move's doc comment.
                             // wdl == 20000 only — skip cursed wins (wdl == 1).
                             if wdl >= 19000 && !tb_pv.is_empty() {
                                 tb_pv[0] = pick_winning_tb_move(&board, &tb_pv[0], tb);
@@ -484,15 +483,14 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>) {
                             // move. After a substitution that tail belongs to a
                             // line we are no longer playing and is generally
                             // ILLEGAL in the position actually reached. Only
-                            // tb_pv[0] was validated below, so the stale tail was
-                            // being joined and printed verbatim — cutechess
-                            // "Illegal PV move" (observed 2026-07-25 in the first
-                            // TB-enabled local RR; always at index >= 1, never 0,
-                            // which is the signature of exactly this). Same class
-                            // as the lichess forfeit risk guarded elsewhere.
+                            // tb_pv[0] is validated below, so joining and
+                            // printing the stale tail verbatim produces
+                            // "Illegal PV move" — always at index >= 1, never
+                            // 0, which is the signature of exactly this bug.
                             // probe_root_pv itself is fine and unit-tested
-                            // (tb.rs probe_root_pv_only_legal_moves) — the
-                            // corruption is introduced here, after that boundary.
+                            // (tb.rs probe_root_pv_only_legal_moves); the
+                            // corruption is introduced here, after that
+                            // boundary.
                             //
                             // If a tiebreak REPLACED the first move, everything
                             // after it is the reply chain to the move we just
@@ -726,7 +724,7 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>) {
                         let go_received = std::time::Instant::now();
                         let mut best_move = search_smp(&mut search_board, &mut si, &limits, threads);
                         let search_elapsed = go_received.elapsed();
-                        // A4-residual (TM audit 2026-06-13): `go infinite`
+                        // `go infinite`
                         // (non-ponder) must NOT emit bestmove until the GUI
                         // sends `stop` (UCI spec) — search() can return on
                         // its own at depth-64 (MAX_PLY/2) exhaustion, e.g. in
@@ -773,23 +771,21 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>) {
                             } else {
                                 limits.binc
                             };
-                            // Gate-removal (2026-05-31): use the ponder-aware
-                            // soft deadline (= partial-credit post_min) at ALL
-                            // TCs, not just inc>=500. The old inc>=500 gate
-                            // existed only to keep this code out of STC SPRT —
-                            // but ponder code can't be SPRT'd anyway (no ponder
-                            // in OB/fastchess, #513). With PonderhitCreditPct,
-                            // credit=0 reproduces the old STC full-budget
-                            // behavior, so this is a strict generalization.
+                            // Use the ponder-aware soft deadline (=
+                            // partial-credit post_min) at ALL TCs. There is no
+                            // point gating this on inc: ponder code can't be
+                            // SPRT'd anyway (OB/fastchess don't ponder), and
+                            // PonderhitCreditPct=0 reproduces the ungated
+                            // full-budget behaviour if it's ever wanted.
                             let _ = our_inc;
-                            // A1: hard (ponderhit_time) is the deadline trio's
+                            // hard (ponderhit_time) is the deadline trio's
                             // publish flag — load it FIRST with Acquire; soft
                             // is only read (Relaxed) after observing hard != 0,
                             // which the Release/Acquire pairing guarantees is
-                            // coherent with the published soft. Pre-fix (soft
-                            // read first, all Relaxed) an ARM reader could see
-                            // hard set with a STALE soft == 0 and target the
-                            // HARD deadline — overspending the full 46% window
+                            // coherent with the published soft. Reading soft
+                            // first, all Relaxed, lets an ARM reader see hard
+                            // set with a STALE soft == 0 and target the HARD
+                            // deadline — overspending the full 46% window
                             // exactly when ponder finished early. hard == 0
                             // here means no ponderhit was published (wait-loop
                             // exit paths guarantee ext_stop in that case, and
@@ -809,7 +805,7 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>) {
                             };
                             if target_deadline > now_elapsed + 5 {
                                 let remaining = target_deadline - now_elapsed;
-                                // A2 (TM audit 2026-06-13): clearing si.stop for
+                                // Clearing si.stop for
                                 // the fresh search can ERASE a GUI `stop`/`quit`
                                 // that landed after the wait-loop exit — the
                                 // fresh search would then run its full movetime
@@ -871,7 +867,7 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>) {
                         // Belt-and-braces: validate pv_table[0][1] is legal in the
                         // position after best_move. The upstream cause (stable-PV
                         // snapshot in search.rs) prevents the partial-iteration
-                        // inconsistency that lichess oeZ7KRUt (2026-04-26) hit, but
+                        // inconsistency that once forfeited a live game, but
                         // any future regression that desyncs pv_table from
                         // best_move would still be caught here — losing the
                         // ponder hint instead of forfeiting the game.
@@ -1031,8 +1027,8 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>) {
                                     }
                                 }
                             }
-                            // C8 audit LIKELY #31: match the `go` path —
-                            // override even for drawn TB positions (wdl==0).
+                            // Match the `go` path: override even for drawn
+                            // TB positions (wdl==0).
                             // NNUE search can play a 50mr-losing move in
                             // a drawn TB endgame; the TB draw move is
                             // safer.
@@ -1102,11 +1098,11 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>) {
 
                         // Very low time (< 2s with no inc): instant stop.
                         if hard <= overhead && our_inc == 0 && our_time < 2000 {
-                            // C2 (persistent-state audit 2026-07-10): mark the
-                            // hit before stopping so the search's cross-move
-                            // publish gate sees this as a played game move —
-                            // ponderhit_time is the search's only hit signal
-                            // and this path previously left it 0. Stored
+                            // Mark the hit before stopping so the search's
+                            // cross-move publish gate sees this as a played
+                            // game move — ponderhit_time is the search's only
+                            // hit signal, and leaving it 0 here silently drops
+                            // this move from the score trend. Stored
                             // before the stop flags; a racing search that
                             // still reads 0 just skips the publish, which is
                             // benign (keeps the previous real move's score).
@@ -1116,13 +1112,13 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>) {
                         } else if crate::search::should_instant_reply(
                             elapsed, soft, ponder_depth, failing_low, ponder_stab)
                         {
-                            // P1 stopOnPonderhit (2026-07-05 ponder diagnosis;
-                            // SF stopOnPonderhit technique): the pondered
+                            // stopOnPonderhit (SF technique): the pondered
                             // time already covers this move's soft budget and
                             // the ponder search is deep + settled — emit the
                             // pondered bestmove with ~zero additional own
-                            // clock. This is where the +25% pre-funding (P3)
-                            // and the full-charge model (P2) get refunded.
+                            // clock. This is where the +25% optimum
+                            // pre-funding and the full-charge model get
+                            // refunded.
                             // The gate is double-ponderhit-cascade-proof:
                             // elapsed >= soft fails inherently on a ~1ms
                             // go-ponder→ponderhit window (soft is >= tens of
@@ -1134,27 +1130,26 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>) {
                                     "PONDERHIT_INSTANT elapsed={}ms soft={}ms depth={}",
                                     elapsed, soft, ponder_depth);
                             }
-                            // C2: mark the hit for the cross-move publish
-                            // gate (see the very-low-time branch above).
+                            // Mark the hit for the cross-move publish gate
+                            // (see the very-low-time branch above).
                             ponderhit_flag.store(elapsed.max(1), Ordering::Release);
                             external_stop.store(true, Ordering::SeqCst);
                             stop_flag.store(true, Ordering::SeqCst);
                         } else {
-                            // P2 full-charge post-hit budget (2026-07-05,
-                            // replaces Option C partial credit): the search
-                            // continues in the from-go-ponder time frame —
-                            // remaining think = intended_soft − elapsed, i.e.
-                            // budgets fixed at `go ponder` and the pondered
-                            // time charged in FULL (SF timeman model; dynamic
+                            // Full-charge post-hit budget: the search continues
+                            // in the from-go-ponder time frame — remaining
+                            // think = intended_soft − elapsed, i.e. budgets
+                            // fixed at `go ponder` and the pondered time
+                            // charged in FULL (SF's timeman model; dynamic
                             // factors still apply at iteration boundaries).
-                            // Option C's 50% credit saturated to the 50ms
-                            // floor at STC and the realized spend became
-                            // iteration-quantized bleed (median 169ms vs SF
-                            // 71ms). The historical failure of full charge
-                            // alone (Phase 14 v4: shallow instant emits) is
-                            // now handled by the P1 depth-gated instant
-                            // reply + P3 pre-funding — the pieces work as a
-                            // set. ponderhit_credit_pct() is 100 unless
+                            // Partial credit (e.g. 50%) is worse: it saturates
+                            // to the MIN_POST_PONDERHIT_MS floor at STC and the
+                            // realized spend degenerates into iteration-
+                            // quantized bleed. Full charge on its own used to
+                            // cause shallow instant emits; that is handled by
+                            // the depth-gated instant reply above plus the
+                            // optimum pre-funding — the pieces work as a set.
+                            // ponderhit_credit_pct() is 100 unless
                             // PonderhitCreditPct was explicitly set (local
                             // A/B only).
                             let _ = floor;
@@ -1164,15 +1159,15 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>) {
                                     / 100;
                                 let mut post_min = soft.saturating_sub(credited)
                                     .max(crate::search::MIN_POST_PONDERHIT_MS);
-                                // FL-EXT at-hit half (2026-07-05): arriving
-                                // at the hit failing low → grant the FULL
-                                // fresh soft (was soft/2) and extend the
-                                // post-hit hard frame by one fail-low factor
-                                // step (×1.34). SF spends EXTRA time exactly
-                                // when the pondered conclusion destabilized;
-                                // its post-hit tail is >1s on 3.3% of moves
-                                // while ours was 0.0% — clipped exactly by
-                                // this cap. ponderhit_abs (below) remains the
+                                // Fail-low extension, at-hit half: arriving at
+                                // the hit failing low grants the FULL fresh
+                                // soft and extends the post-hit hard frame by
+                                // one fail-low factor step (×1.34). SF spends
+                                // EXTRA time exactly when the pondered
+                                // conclusion destabilized — its post-hit tail
+                                // exceeds 1s on ~3.3% of moves; without this
+                                // that tail is clipped to zero.
+                                // ponderhit_abs (below) remains the
                                 // uncrossable forfeit wall (checked FIRST in
                                 // should_stop, so hard_eff may exceed it
                                 // harmlessly).
@@ -1206,16 +1201,16 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>) {
                                     + our_time.saturating_sub(reserve).max(1);
                                 (elapsed + hard_eff.max(10), elapsed + post_min, post_min, abs)
                             };
-                            // A1 publish protocol (TM audit 2026-06-13, ARM
-                            // standard): the deadline group is read by the
+                            // Publish protocol (required by the ARM memory
+                            // model): the deadline group is read by the
                             // search thread assuming mutual consistency, so
                             // it must be PUBLISHED atomically-enough: store
                             // floor, soft and abs FIRST (Relaxed is fine —
                             // they are inert until hard is seen), then hard
                             // (ponderhit_flag) LAST with Release. Every
                             // reader loads hard with Acquire first and only
-                            // then reads soft/floor/abs. Pre-fix (all
-                            // Relaxed, hard stored first) an ARM reader could
+                            // then reads soft/floor/abs. With all-Relaxed and
+                            // hard stored first, an ARM reader could
                             // see soft > 0 with stale floor == 0 (stockpile
                             // floor erased → instant-emit class) or hard set
                             // with stale soft == 0 (post-completion wait
@@ -1228,14 +1223,14 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>) {
                             ponderhit_flag.store(deadline, Ordering::Release);
                         }
                     } else if pl.movetime > 0 {
-                        // C8 audit LIKELY #33: `go ponder movetime X` (no
-                        // wtime/btime). Previously our_time==0 triggered an
-                        // instant stop, discarding all the ponder work. Use
-                        // movetime as the deadline instead — matches what the
-                        // caller asked for.
+                        // `go ponder movetime X` (no wtime/btime). Here
+                        // our_time is 0, which would otherwise trigger an
+                        // instant stop and discard all the ponder work. Use
+                        // movetime as the deadline instead — it is what the
+                        // caller actually asked for.
                         let elapsed = start.elapsed().as_millis() as u64;
                         let deadline = elapsed + pl.movetime.max(10);
-                        // A1: hard published with Release (soft/floor stay 0
+                        // hard is published with Release (soft/floor stay 0
                         // from the pre-spawn clear — readers key off hard and
                         // treat soft==0 as "no dynamic TM", which is correct
                         // for the movetime path).
@@ -1368,17 +1363,16 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>) {
                     }
                 }
                 let score = if let (Some(net), Some(acc)) = (&info.nnue_net, &mut info.nnue_acc) {
-                    // Staleness fix (2026-07-11): the accumulator holds
-                    // whatever position the last search left it at; applying
-                    // it to a different `position` gave silently-wrong evals
-                    // (measured: -2.47 clean vs -0.16 after a foreign
-                    // search, same FEN). Rebuild from the current board.
+                    // The accumulator holds whatever position the last search
+                    // left it at; applying it to a different `position` gives
+                    // silently-wrong evals (measured: -2.47 clean vs -0.16
+                    // after a foreign search, same FEN). Rebuild from the
+                    // current board.
                     acc.force_recompute(net, &board);
                     // Build a real ThreatStack for v9 nets — without this,
                     // forward_with_threats falls through and the threat
-                    // half of the eval is silently zeroed (audit
-                    // C2026-04-25-3). Refresh against the current board
-                    // before evaluating.
+                    // half of the eval is silently zeroed. Refresh against
+                    // the current board before evaluating.
                     let mut ts = crate::threat_accum::ThreatStack::new(net.hidden_size);
                     ts.active = net.has_threats;
                     if ts.active {
@@ -1486,11 +1480,11 @@ fn parse_position(tokens: &[&str], board: &mut Board) {
     }
 }
 
-/// Parse a clock/movetime token that was PRESENT in the `go` command
-/// (TM audit 2026-06-13 A3). GUIs send negative values at the flag edge
-/// (`go wtime -23`) and explicit zeros (`go movetime 0`); the previous
-/// `parse::<u64>().unwrap_or(0)` turned both into 0 == "token absent" ==
-/// no clock info == UNBOUNDED search == time forfeit. Parse as i64 and
+/// Parse a clock/movetime token that was PRESENT in the `go` command.
+/// GUIs send negative values at the flag edge (`go wtime -23`) and explicit
+/// zeros (`go movetime 0`). A plain `parse::<u64>().unwrap_or(0)` turns both
+/// into 0 == "token absent" == no clock info == UNBOUNDED search == time
+/// forfeit. So parse as i64 and
 /// clamp any present-but-<=0 (or unparseable) value to a 1ms clock —
 /// fail CLOSED to an instant move, never open to an untimed search.
 /// Absence semantics are preserved because this is only called when the
@@ -1707,13 +1701,12 @@ fn parse_option(tokens: &[&str], info: &mut SearchInfo, num_threads: &mut usize,
             }
         }
         "Ponder" => {
-            // P3 (2026-07-05 ponder diagnosis): the Ponder option now
-            // gates the +25% optimum pre-funding in compute_tm_budgets
-            // (SF timeman semantics — applied on every move while on,
-            // refunded by the P1 instant replies). Previously a no-op
-            // acknowledgement (the engine reads per-move ponder state
-            // from `go ponder`; that part is unchanged). Default false →
-            // bit-identical no-ponder behavior.
+            // This option gates the +25% optimum pre-funding in
+            // compute_tm_budgets (SF timeman semantics — applied on every
+            // move while on, refunded by the instant replies). It is NOT
+            // just an acknowledgement: the engine reads per-move ponder
+            // state from `go ponder`, but the budget shape depends on
+            // this. Default false is bit-identical no-ponder behaviour.
             let on = value.eq_ignore_ascii_case("true");
             crate::search::PONDER_ENABLED.store(on, std::sync::atomic::Ordering::Relaxed);
             println!("info string Ponder = {}", on);
@@ -1723,8 +1716,7 @@ fn parse_option(tokens: &[&str], info: &mut SearchInfo, num_threads: &mut usize,
             // mismatch. MUST be set
             // BEFORE the NNUEFile setoption that triggers load. Default
             // false (refuse to load on mismatch — protects against silent
-            // corruption in SPRT / OB / Lichess where log noise is
-            // invisible).
+            // corruption in automated runs where log noise goes unread).
             let on = value.eq_ignore_ascii_case("true");
             crate::nnue::LOAD_ANYWAY.store(on, std::sync::atomic::Ordering::Relaxed);
             println!("info string LoadAnyway = {}", on);
@@ -1732,20 +1724,19 @@ fn parse_option(tokens: &[&str], info: &mut SearchInfo, num_threads: &mut usize,
         "TMDebug" => {
             // Diagnostic: emit per-move TM state via `info string tm-debug`
             // before bestmove. Useful for investigating which TM signals
-            // fire when and how big the multipliers grow. Off by default
-            // since OB/SPRT runs should not have noisy output.
+            // fire when and how big the multipliers grow. Off by default —
+            // automated match runs should not have noisy output.
             let on = value.eq_ignore_ascii_case("true");
             crate::search::TM_DEBUG.store(on, std::sync::atomic::Ordering::Relaxed);
             println!("info string TMDebug = {}", on);
         }
         "PonderhitCreditPct" => {
-            // Post-ponderhit budget credit % — INERT by default since the
-            // 2026-07-05 full-charge model (default is the -1 sentinel =
-            // charge 100% of pondered time). Explicitly setting 0..=100
-            // re-enables fractional crediting for local A/B comparability
-            // (50 reproduces Option C, 0 the pre-P13 full-fresh-budget).
-            // NOT a SPSA tunable — OB/fastchess has no ponder, so it can
-            // only be swept in a local ponder gauntlet. See
+            // Post-ponderhit budget credit % — INERT by default under the
+            // full-charge model (the -1 sentinel = charge 100% of pondered
+            // time). Explicitly setting 0..=100 re-enables fractional
+            // crediting, for local A/B comparisons against other budget
+            // models. NOT a SPSA tunable — OB/fastchess has no ponder, so it
+            // can only be swept in a local ponder gauntlet. See
             // search::PONDERHIT_CREDIT_PCT.
             if let Ok(v) = value.parse::<i32>() {
                 // -1 (or any negative) restores the "unset" sentinel.
@@ -1953,7 +1944,7 @@ mod tests {
         assert!(found, "manufactured hint {} must be legal", move_to_uci(hint));
     }
 
-    /// Reproduces the Lichess game I4qJhfQw move 103 scenario: White's
+    /// Reproduces a scenario seen in live play: White's
     /// king is in check from a black rook on a1. Kxa1 captures the rook
     /// and leaves KB-vs-K (FIDE insufficient material → instant draw).
     /// Kb2 / Kc2 escape without recapturing → KB-vs-KR (drawable but
@@ -2002,7 +1993,7 @@ mod tests {
     /// Function should return SOME legal move (we don't promise it's
     /// the fallback — shakmaty's fallback is itself arbitrary among
     /// tied drawn moves, so swapping among ties is no worse).
-    /// REGRESSION (2026-05-30): drawn TB root must not play a move that
+    /// REGRESSION GUARD: a drawn TB root must not play a move that
     /// LOSES. KBPvKB `8/7k/1P1B4/2K5/8/8/8/5b2 b`: shakmaty's DTZ pick Be2
     /// loses (opponent child WDL = win); Bg2/Ba6 hold. With the draw-
     /// preservation filter, pick_drawn_tb_move must avoid Be2/Bh3.
@@ -2039,8 +2030,8 @@ mod tests {
             "picked move {} is not a legal move", picked);
     }
 
-    /// Locate Syzygy tablebases for tests (lichess: /tablebases; dev hosts:
-    /// ~/chess/tablebases). Returns None to skip when unavailable.
+    /// Locate Syzygy tablebases for tests. Returns None to skip when
+    /// unavailable.
     fn test_tb() -> Option<crate::tb::SyzygyTB> {
         let home = std::env::var("HOME").unwrap_or_default();
         for p in [
@@ -2059,8 +2050,8 @@ mod tests {
     /// pick_drawn_tb_move) move-by-move from `fen` with a TB-optimal defender,
     /// asserting a winning side actually MATES (no shuffle / 50-move / 3-fold draw).
     /// This is the regression guard for the KQvK/KRvK "can't convert a trivial
-    /// TB win" bug (lichess V49tJcfl, 2026-05-30) — pick_winning_tb_move was
-    /// overriding shakmaty's DTZ-optimal move with an arbitrary non-progressing one.
+    /// TB win" class, where pick_winning_tb_move overrides shakmaty's
+    /// DTZ-optimal move with an arbitrary non-progressing one.
     fn assert_tb_root_mates(tb: &crate::tb::SyzygyTB, fen: &str, max_plies: usize, label: &str) {
         use std::collections::HashMap;
         let mut board = Board::from_fen(fen);
@@ -2094,7 +2085,7 @@ mod tests {
         panic!("{}: did not mate within {} plies — TB win not converging", label, max_plies);
     }
 
-    /// REGRESSION (2026-05-30, lichess V49tJcfl): basic TB mates must CONVERT,
+    /// REGRESSION GUARD: basic TB mates must CONVERT,
     /// not shuffle to a draw. pick_winning_tb_move must keep shakmaty's
     /// DTZ-optimal (progressing) move rather than an arbitrary win-preserving one.
     #[test]

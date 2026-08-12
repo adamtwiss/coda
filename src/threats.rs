@@ -97,7 +97,7 @@ pub mod apply_stats {
         GEN_CONSUMED.fetch_add(1, Ordering::Relaxed);
     }
 
-    // Refresh-cause split (walkback/Finny scoping, 2026-07-31):
+    // Refresh-cause split (walkback/Finny scoping):
     // 0 = king mirror crossing, 1 = no accurate ancestor, 2 = delta overflow.
     static REFRESH_CAUSE: [AtomicU64; 3] = [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)];
     #[inline(always)]
@@ -704,8 +704,8 @@ fn piece_attacks_empty(cp: usize, sq: u32) -> Bitboard {
 ///
 /// `#[inline]` so call sites with constrained piece_type (e.g. slider-only
 /// loops) can specialize away the 6-way switch dispatch under LTO. The
-/// dispatch (jump-table address calc) was 10.69% inside this function on
-/// Atlas search-bench, ~0.3% of total NPS.
+/// dispatch (jump-table address calc) measured 10.69% inside this function,
+/// ~0.3% of total NPS.
 #[inline]
 pub fn piece_attacks_occ(piece_type: u8, color: Color, sq: u32, occ: Bitboard) -> Bitboard {
     match piece_type {
@@ -901,25 +901,23 @@ pub fn enumerate_threats<F: FnMut(usize)>(
     }
 }
 
-/// HISTORICAL reference — the **pre-C8-fix** Bullet enumeration (bf-frame
-/// same-type-pair skip). DOES NOT describe current training.
+/// HISTORICAL reference — an OLD trainer-side enumeration that evaluated the
+/// same-type-pair skip in the wrong frame. DOES NOT describe current training,
+/// and is retained only to characterise that bug.
 ///
-/// Before the 2026-04-22 C8 fix, Bullet evaluated the same-type-pair skip
-/// (`sq < to`) in its internal bf-frame (rank-flipped when real STM is
-/// black), which disagreed with Coda inference (physical-frame) for
-/// black-STM positions. Bullet was SINCE changed to do the skip on physical
-/// squares (`phys_flip`), matching Coda exactly — see
-/// `bullet/.../chess_threats.rs` and `enumerate_threats_bullet_postfix_ref`
-/// below, which `fuzz-threats --postfix` verifies at **0 mismatches**
-/// (40000 evals, both STMs, 2026-06-17). So there is NO live train/inference
-/// divergence; this function is retained only to characterise the OLD bug.
+/// It applied the same-type-pair skip (`sq < to`) in the trainer's internal
+/// bf-frame (rank-flipped when the real STM is black), which disagrees with
+/// Coda's physical-frame inference for black-STM positions. The trainer now
+/// does the skip on physical squares (`phys_flip`), matching Coda exactly —
+/// see `enumerate_threats_bullet_postfix_ref` below, which
+/// `fuzz-threats --postfix` verifies at **0 mismatches** over 40000 evals in
+/// both STMs. There is no live train/inference divergence.
 ///
-/// Note: the physical-frame skip both engines now use is STM-invariant (so
+/// Note: the physical-frame skip both sides now use is STM-invariant (so
 /// Coda's incremental threat deltas stay clean) but is NOT mirror-symmetric
 /// — a deliberate tradeoff. It is the source of a small, consistent
-/// color-eval asymmetry on same-type-pair (bishop/rook) threats; see
-/// `docs/threat_eval_asymmetry_2026-06-17.md`. That is a feature-design
-/// property, not a divergence.
+/// color-eval asymmetry on same-type-pair (bishop/rook) threats. That is a
+/// feature-design property, not a divergence.
 ///
 /// Only direct-attack features are handled here (no x-ray).
 pub fn enumerate_threats_bullet_ref<F: FnMut(usize)>(
@@ -1326,9 +1324,9 @@ fn push_threats_for_piece(
             // With x-ray ON that direct feature is PRESERVED as an x-ray to the
             // same index (Y "unchanged", handled by the block above). With x-ray
             // OFF there is no x-ray to preserve it, so the Y-level direct feature
-            // must be removed/added here. The old x-ray-only gating skipped this,
-            // leaving the incremental accumulator over-counting Y for --xray 0
-            // nets — good static eval (full recompute) but broken search play.
+            // must be removed/added here. Gating this block on x-ray leaves the
+            // incremental accumulator over-counting Y for --xray 0 nets — good
+            // static eval (full recompute) but broken search play.
             // Regression: fuzz_random_walk_xray_off.
             let y_candidates = crate::bitboard::ray_extension(slider_sq, square) & occ;
             if y_candidates != 0 {
@@ -1417,10 +1415,9 @@ fn push_threats_for_piece(
     let mut s2b_sq_emits = 0u64;
     #[cfg(feature = "profile-threats")]
     let mut s2b_no_w = 0u64;
-    // Repair 2026-07-31: this local's feeding code went with the splat/x-ray
-    // cleanup but record_s2b_reasons still takes it; keep it declared (always
-    // 0) so the profile-threats feature compiles. Stale-diagnostic tidy-up is
-    // a separate change.
+    // This local's feeding code went with the splat/x-ray cleanup, but
+    // record_s2b_reasons still takes it; keep it declared (always 0) so the
+    // profile-threats feature compiles.
     #[cfg(feature = "profile-threats")]
     let s2b_w_emits = 0u64;
 
@@ -1797,8 +1794,8 @@ unsafe fn apply_threat_indices(
     // separate copy_from_slice pass that used to precede apply_deltas_avx2.
     //
     // Dispatch order: AVX-512 (zmm, 32 i16 per reg) > AVX-2 (ymm, 16 i16
-    // per reg) > scalar. The AVX-512 path was added 2026-04-30 after a perf
-    // decomposition showed this function at 17.98% of cycles with no AVX-512 path.
+    // per reg) > scalar. The AVX-512 path matters — without it this function
+    // measured 17.98% of cycles.
     #[cfg(target_arch = "x86_64")]
     {
         let tier = x86_simd_tier();
@@ -1860,9 +1857,8 @@ unsafe fn apply_deltas_avx2(
     let w_ptr = threat_weights.as_ptr();
 
     // 8 AVX2 registers × 16 i16 = 128 elements per chunk. REGS=12 (the
-    // simd_acc_fused_avx2 / SF AVX2 budget — audit item 4,
-    // avx2_gap_audit_2026-07-03) was tried 2026-07-03 and measured +5.6%
-    // SLOWER on Zen 1 (EPYC 7351P / titan, perf stat -r 3, IPC
+    // simd_acc_fused_avx2 / SF AVX2 budget) was tried and measured +5.6%
+    // SLOWER on Zen 1 (perf stat -r 3, IPC
     // 1.26 -> 1.18): Zen 1 cracks every 256-bit op into 2x128-bit uops,
     // and 12 live YMM accumulators plus the two cvtepi8_epi16 widening
     // temps per step oversubscribe the physical register file — the same
@@ -1966,10 +1962,9 @@ unsafe fn apply_deltas_avx2(
 /// per chunk vs AVX2's 128. For hidden_size=768 that's 3 chunks instead of
 /// 6 — half the outer-loop iterations.
 ///
-/// Why this exists (2026-04-30): perf decomposition flagged
-/// `apply_threat_deltas` at 17.98% of cycles with no AVX-512 path.
-/// Faster engines have a dedicated AVX-512 threat path and spend only ~1.8%
-/// of cycles on the analogous update; this adds Coda's AVX-512 path.
+/// Why this exists: without it `apply_threat_deltas` measured 17.98% of
+/// cycles. Faster engines have a dedicated AVX-512 threat path and spend only
+/// ~1.8% of cycles on the analogous update.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f", enable = "avx512bw")]
 unsafe fn apply_deltas_avx512(
@@ -2092,9 +2087,8 @@ pub fn add_weight_rows(
     if indices.is_empty() { return; }
 
     // Dispatch order: AVX-512 (zmm, 32 i16/reg) > AVX-2 > scalar.
-    // Sibling change to apply_threat_deltas's AVX-512 dispatch landed
-    // 2026-04-30 — same perf rationale (zmm register width on
-    // AVX-512+VNNI hosts).
+    // Sibling of apply_threat_deltas's AVX-512 dispatch — same perf
+    // rationale (zmm register width on AVX-512+VNNI hosts).
     #[cfg(target_arch = "x86_64")]
     {
         let tier = x86_simd_tier();

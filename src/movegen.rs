@@ -16,8 +16,8 @@ pub const MAX_MOVES: usize = 256;
 /// so the constructor can skip the 512-byte zero-init that the compiler
 /// otherwise emits. With ~600k MoveList constructions per bench (movegen
 /// callsites + every MovePicker), the eliminated store traffic is ~300 MB.
-/// Same memset-skip pattern as `forward_with_l1_pairwise_inner` (#927) and
-/// `apply_threat_deltas` (#921); push() writes slot N before incrementing
+/// Same memset-skip pattern as `forward_with_l1_pairwise_inner` and
+/// `apply_threat_deltas`; push() writes slot N before incrementing
 /// len, so as_slice() only ever exposes initialized slots.
 pub struct MoveList {
     moves: [std::mem::MaybeUninit<Move>; MAX_MOVES],

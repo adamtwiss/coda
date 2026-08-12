@@ -1,7 +1,6 @@
 //! NNUE SIMD primitive abstractions, gated by `cfg(target_feature)`.
 //!
-//! Step A of the L1-matmul restructure (see
-//! `docs/nps_structural_findings_2026-05-01.md`). This module provides
+//! This module provides
 //! ISA-specialised primitives at the granularity of single SIMD ops
 //! (splat, dpbusd, reduce, etc.) so that higher-level kernels can be
 //! written once against a uniform API and inlined at compile time.

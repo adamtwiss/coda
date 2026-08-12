@@ -802,7 +802,7 @@ fn material_worker(
             let color = if modified.colors[WHITE as usize] & (1u64 << sq) != 0 { WHITE } else { BLACK };
             modified.remove_piece(color, pt, sq);
 
-            // C8 audit LIKELY #47: `remove_piece` doesn't touch castling or
+            // `remove_piece` doesn't touch castling or
             // ep_square. Removing a corner rook (A1/H1/A8/H8) leaves the
             // castling bit set with no rook; removing a pawn that had just
             // double-pushed leaves the EP square valid but pointing at
