@@ -2651,6 +2651,7 @@ pub struct NNUENet {
     pub out_weights_f: Vec<f32>,  // [NNUE_OUTPUT_BUCKETS × out_l_size] — float output
     pub out_bias_f: Vec<f32>,     // [NNUE_OUTPUT_BUCKETS]
     pub dual_l1: bool,            // v8: dual L1 activation (CReLU+SCReLU on L1 output)
+    pub dual_l2: bool,            // v11: dual L2 activation (CReLU+SCReLU on L2 output)
     // v9 threat features
     pub threat_weights: AlignedVec<i8>,  // [num_threat_features × hidden_size] i8 weights, 64-B rows, hugepage-backed
     pub num_threat_features: usize,
@@ -2748,6 +2749,12 @@ impl NNUENet {
         let mut l1_scale = QA; // default int16 scale
         let mut bucketed_hidden = false; // bit 3: output buckets baked into L1/L2 dims
         let mut dual_l1 = false; // bit 4: dual L1 activation (CReLU+SCReLU, v8)
+        // v11 arch_flags bit 0: dual L2 activation. The v7 flags byte has all 8
+        // bits allocated (bit 5 is already overloaded on extended_kb), so v11
+        // adds a dedicated architecture byte rather than squatting on a
+        // reserved training_flags bit -- the skip-connection variant will want
+        // bit 1 of the same byte.
+        let mut dual_l2 = false;
         // bit 5 is context-dependent:
         //   - extended_kb=0: consensus_buckets (legacy 16-bucket encoding)
         //   - extended_kb=1: hl_crelu (hidden-layer CReLU, vs default SCReLU)
@@ -2788,7 +2795,7 @@ impl NNUENet {
                 }
                 hidden_size = (h_numer / h_denom) as usize;
             }
-            7..=10 => {
+            7..=11 => {
                 let flags = read_u8(reader)?;
                 use_screlu = flags & 1 != 0;
                 use_pairwise = flags & 2 != 0;
@@ -2879,6 +2886,20 @@ impl NNUENet {
                                 WITH x-ray threat features, which Coda no longer \
                                 enumerates. Retrain with --xray 0.".to_string());
                 }
+                // v11: architecture flags byte.
+                //   bit 0: dual L2 activation -- l2's output is [crelu; screlu]
+                //          concatenated, so the output affine reads 2*l2_size.
+                //   bits 1-7: reserved (bit 1 earmarked for the output skip
+                //          connection).
+                if version >= 11 {
+                    let arch_flags = read_u8(reader)?;
+                    dual_l2 = arch_flags & 1 != 0;
+                    if arch_flags & !1u8 != 0 {
+                        return Err(format!(
+                            "net declares unsupported arch_flags bits 0x{:02X}; this build \
+                             only understands bit 0 (dual L2)", arch_flags & !1u8));
+                    }
+                }
                 hidden_size = ft_size;
             }
             _ => return Err(format!("unsupported NNUE version: {}", version)),
@@ -2907,9 +2928,12 @@ impl NNUENet {
                 "NNUE l1_size {} exceeds supported maximum {}", l1_size, NNUE_L1_BUF
             ));
         }
-        if l2_size > NNUE_L2_BUF {
+        // dual_l2 doubles the activated width that lands in the L2 buffer.
+        let l2_activated = if dual_l2 { 2 * l2_size } else { l2_size };
+        if l2_activated > NNUE_L2_BUF {
             return Err(format!(
-                "NNUE l2_size {} exceeds supported maximum {}", l2_size, NNUE_L2_BUF
+                "NNUE l2_size {} (activated width {}) exceeds supported maximum {}",
+                l2_size, l2_activated, NNUE_L2_BUF
             ));
         }
 
@@ -2976,7 +3000,7 @@ impl NNUENet {
         // Read output weights: for bucketed nets, output is [BUCKETS][per-bucket L2]
         // For unbucketed: [BUCKETS][l2_size or l1_size or 2*hidden_size]
         let out_width = if l2_size > 0 {
-            l2_size  // per-bucket L2 size (not bucketed)
+            if dual_l2 { 2 * l2_size } else { l2_size }  // per-bucket L2 size (not bucketed)
         } else if l1_size > 0 {
             l1_size  // per-bucket L1 size
         } else if use_pairwise {
@@ -3182,6 +3206,7 @@ impl NNUENet {
             out_weights_f,
             out_bias_f,
             dual_l1,
+            dual_l2,
             threat_weights,
             num_threat_features,
             has_threats,
@@ -3894,7 +3919,10 @@ impl NNUENet {
                 }
             }
             let h2 = scratch_slice!(mut h2_ptr, l2);
-            let crelu = self.crelu_hidden.load(std::sync::atomic::Ordering::Relaxed);
+            // dual_l2 emits [crelu(x); screlu(x)], so the first half MUST be
+            // crelu regardless of the hidden-activation setting.
+            let crelu = self.dual_l2
+                || self.crelu_hidden.load(std::sync::atomic::Ordering::Relaxed);
             #[cfg(target_arch = "x86_64")]
             if self.has_avx2 && l2 == 32 {
                 unsafe {
@@ -3923,7 +3951,9 @@ impl NNUENet {
             } else {
                 for k in 0..l2 { h2[k] = h2[k].clamp(0.0, 1.0); h2[k] *= h2[k]; }
             }
-            let out_w = &self.out_weights_f[bucket * l2_pb..bucket * l2_pb + l2_pb];
+            // dual_l2 doubles the per-bucket output row: [crelu half | screlu half].
+            let ow = if self.dual_l2 { 2 * l2_pb } else { l2_pb };
+            let out_w = &self.out_weights_f[bucket * ow..bucket * ow + ow];
             let bias = self.out_bias_f[bucket];
             // Output dot — AVX-512 version for the L2=32 case, matches the
             // L2 matmul's dimensionality so it stays on the hot path.
@@ -3951,6 +3981,15 @@ impl NNUENet {
                 for k in 0..l2 { acc += h2[k] * out_w[k]; }
                 acc
             };
+            // dual_l2: the screlu half. screlu(x) == crelu(x)^2 and h2 already
+            // holds crelu(x), so the second half is derived rather than stored --
+            // this leaves every SIMD fast path above untouched and costs l2 (32)
+            // scalar FMAs against the L1 matmul's 32768.
+            let out_f = if self.dual_l2 {
+                let mut extra = 0.0f32;
+                for k in 0..l2 { extra += h2[k] * h2[k] * out_w[l2 + k]; }
+                out_f + extra
+            } else { out_f };
             return (out_f * EVAL_SCALE as f32) as i32;
         }
 
@@ -4155,9 +4194,12 @@ impl NNUENet {
                 } else {
                     for k in 0..l2 { h2[k] = h2[k].clamp(0.0, 1.0); h2[k] *= h2[k]; } // SCReLU
                 }
-                let out_w = &self.out_weights_f[bucket * l2..bucket * l2 + l2];
+                let ow = if self.dual_l2 { 2 * l2 } else { l2 };
+                let out_w = &self.out_weights_f[bucket * ow..bucket * ow + ow];
                 let mut out_f = self.out_bias_f[bucket];
                 for k in 0..l2 { out_f += h2[k] * out_w[k]; }
+                // dual_l2 screlu half (screlu == crelu^2, h2 holds crelu)
+                if self.dual_l2 { for k in 0..l2 { out_f += h2[k] * h2[k] * out_w[l2 + k]; } }
                 return (out_f * EVAL_SCALE as f32) as i32;
             }
             let out_w = &self.out_weights_f[bucket * l1..bucket * l1 + l1];
@@ -4255,9 +4297,12 @@ impl NNUENet {
                 } else {
                     for k in 0..l2 { h2[k] = h2[k].clamp(0.0, 1.0); h2[k] *= h2[k]; }
                 }
-                let out_w = &self.out_weights_f[bucket * l2..bucket * l2 + l2];
+                let ow = if self.dual_l2 { 2 * l2 } else { l2 };
+                let out_w = &self.out_weights_f[bucket * ow..bucket * ow + ow];
                 let mut out_f = self.out_bias_f[bucket];
                 for k in 0..l2 { out_f += h2[k] * out_w[k]; }
+                // dual_l2 screlu half (screlu == crelu^2, h2 holds crelu)
+                if self.dual_l2 { for k in 0..l2 { out_f += h2[k] * h2[k] * out_w[l2 + k]; } }
                 return (out_f * EVAL_SCALE as f32) as i32;
             }
             let out_w = &self.out_weights_f[bucket * l1..bucket * l1 + l1];
@@ -4388,10 +4433,15 @@ impl NNUENet {
                 }
             }
             // Output dot in float
-            let out_w = &self.out_weights_f[bucket * l2..bucket * l2 + l2];
+            let ow = if self.dual_l2 { 2 * l2 } else { l2 };
+            let out_w = &self.out_weights_f[bucket * ow..bucket * ow + ow];
             let mut out_f = self.out_bias_f[bucket];
             for k in 0..l2 {
                 out_f += h2[k] * out_w[k];
+            }
+            // dual_l2 screlu half (screlu == crelu^2, h2 holds crelu)
+            if self.dual_l2 {
+                for k in 0..l2 { out_f += h2[k] * h2[k] * out_w[l2 + k]; }
             }
             return (out_f * EVAL_SCALE as f32) as i32;
         }

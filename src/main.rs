@@ -551,6 +551,10 @@ enum Commands {
         /// Dual L1 activation (CReLU+SCReLU concat, v8 format)
         #[arg(long)]
         dual: bool,
+        /// Dual L2 activation (CReLU+SCReLU concat on L2's output, v11 format).
+        /// Implies --dual; the output affine reads 2*l2_size.
+        #[arg(long)]
+        dual_l2: bool,
         /// [LEGACY] Use consensus king bucket layout (fine-near, coarse-far).
         /// Equivalent to --kb-layout consensus. Ignored if --kb-layout is set explicitly.
         #[arg(long)]
@@ -1370,7 +1374,7 @@ fn main() {
             run_binpack_material(&input, max);
         }
 
-        Some(Commands::ConvertBullet { input, output, screlu, pairwise, hidden, hidden2, int8l1, bucketed_hidden, ft_size, int16_hidden, dual, consensus_buckets, kb_layout, kb_count, threats, output_buckets, hl_crelu }) => {
+        Some(Commands::ConvertBullet { input, output, screlu, pairwise, hidden, hidden2, int8l1, bucketed_hidden, ft_size, int16_hidden, dual, dual_l2, consensus_buckets, kb_layout, kb_count, threats, output_buckets, hl_crelu }) => {
             // Resolve king bucket layout and count. Explicit --kb-layout wins;
             // --consensus-buckets is the legacy path for 16-bucket consensus.
             let layout = if !kb_layout.is_empty() {
@@ -1386,7 +1390,7 @@ fn main() {
             let count = if kb_count > 0 { kb_count } else { layout.default_count() };
 
             let result = if hidden > 0 {
-                bullet_convert::convert_v7(&input, &output, screlu, pairwise, hidden, hidden2, int8l1, bucketed_hidden, ft_size, int16_hidden, dual, layout, count, threats, hl_crelu)
+                bullet_convert::convert_v7(&input, &output, screlu, pairwise, hidden, hidden2, int8l1, bucketed_hidden, ft_size, int16_hidden, dual, dual_l2, layout, count, threats, hl_crelu)
             } else {
                 bullet_convert::convert_v5(&input, &output, screlu, pairwise, output_buckets, layout, count)
             };

@@ -233,6 +233,7 @@ pub fn convert_v7(
     ft_size_override: usize,
     int16_hidden: bool,
     dual_l1: bool,
+    dual_l2: bool,
     kb_layout: KbLayout,
     kb_count: usize,
     num_threats: usize,
@@ -253,7 +254,18 @@ pub fn convert_v7(
     let l1b_bytes = bl1 * hbytes;
     let l2_in = if dual_l1 { l1_size * 2 } else { l1_size }; // dual doubles L2 input
     let l2_bytes = if l2_size > 0 { l2_in * bl2 * hbytes + bl2 * hbytes } else { 0 };
-    let out_input = if l2_size > 0 { l2_size } else { l1_size };
+    // bullet's `dual2` activates BOTH layers, so dual_l2 without dual_l1 is a
+    // shape the trainer never emits -- reject rather than write a net whose
+    // header claims a layout no checkpoint matches.
+    if dual_l2 && !dual_l1 {
+        return Err("--dual-l2 requires --dual (bullet's `dual2` activates both \
+                    L1 and L2; L2-only is not a shape the trainer emits)".to_string());
+    }
+    // dual_l2 concatenates [crelu; screlu] on l2's output, so the output
+    // affine reads 2*l2_size.
+    let out_input = if l2_size > 0 {
+        if dual_l2 { l2_size * 2 } else { l2_size }
+    } else { l1_size };
     // Output: i16 weights at QB + i32 biases for i16 mode, f32 for f32 mode
     let out_bytes = if int16_hidden {
         out_input * NNUE_OUTPUT_BUCKETS * 2 + NNUE_OUTPUT_BUCKETS * 4 // i16 weights + i32 biases
@@ -457,7 +469,13 @@ pub fn convert_v7(
     // metadata like xray_trained. v9 nets are still loadable (legacy xray_trained=true
     // assumed). Old Coda binaries that don't understand v10 will error on load, which
     // is the intended fail-loud behavior for format mismatch.
-    let version = if num_threats > 0 { 10u32 } else if dual_l1 { 8u32 } else { 7u32 };
+    // v11 adds an arch_flags byte (dual L2). The v7 flags byte is fully
+    // allocated, so a dedicated architecture byte is cleaner than overloading
+    // a reserved training_flags bit -- the skip-connection variant wants bit 1
+    // of the same byte.
+    let version = if dual_l2 { 11u32 }
+        else if num_threats > 0 { 10u32 }
+        else if dual_l1 { 8u32 } else { 7u32 };
     let mut buf = Vec::new();
     write_u32_le(&mut buf, NNUE_MAGIC);
     write_u32_le(&mut buf, version);
@@ -516,6 +534,16 @@ pub fn convert_v7(
         buf.push(training_flags);
     }
 
+    // v11 arch_flags byte.
+    //   bit 0: dual L2 activation -- l2's output is [crelu; screlu], so the
+    //          output affine reads 2*l2_size.
+    //   bits 1-7: reserved (bit 1 earmarked for the output skip connection).
+    if version >= 11 {
+        let mut arch_flags: u8 = 0;
+        if dual_l2 { arch_flags |= 1; }
+        buf.push(arch_flags);
+    }
+
     // Write weights — hidden layers have bucketed dimensions
     for &w in &input_weights { write_i16_le(&mut buf, w); }
     for &b in &input_biases { write_i16_le(&mut buf, b); }
@@ -536,7 +564,7 @@ pub fn convert_v7(
         .and_then(|mut f| f.write_all(&buf))
         .map_err(|e| format!("write {}: {}", output_path, e))?;
 
-    let dual_str = if dual_l1 { " dual" } else { "" };
+    let dual_str = if dual_l2 { " dual2" } else if dual_l1 { " dual" } else { "" };
     let threat_str = if num_threats > 0 { format!(" threats={}", num_threats) } else { String::new() };
     println!("Saved {} ({} bytes, v{}{}{} FT={} L1={} L2={})", output_path, buf.len(), version, dual_str, threat_str, h, l1_size, l2_size);
     Ok(())
