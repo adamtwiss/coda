@@ -5359,6 +5359,7 @@ fn negamax(
         // Obsidian all set skipQuiets before SEE/futility.
         // Formula: (LMP_BASE + depth²) / (2 - improving); check carve at depth<4.
         if ply > 0 && !in_check && depth >= 1 && depth <= tp10(&LMP_DEPTH_10X)
+            && !is_pv  // PV-node exemption: accuracy matters more than speed here
             && !is_cap && !is_promo
             && !is_loss(best_score)
             && beta < MATE_IN_MAX_PLY  // forced-win guard: don't count-prune quiets while proving a win
