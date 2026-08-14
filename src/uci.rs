@@ -410,6 +410,26 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>) {
                     s.ts_asp_fail_low, s.ts_asp_fail_high, s.ts_lmr_research);
                 let total: u64 = s.nodes_by_depth.iter().sum();
                 eprintln!("TREESTATS totals nodes:{} qnodes:{}", total, s.qnodes);
+                // Ordering diagnostics (see the endgame first-move-cut gap).
+                let fk = s.first_cut_king; let ck = s.cut_king;
+                let fn_ = s.first_cut_nonking; let cn = s.cut_nonking;
+                eprintln!("TREESTATS cut_king cuts:{} first:{} rate:{:.4} | nonking cuts:{} first:{} rate:{:.4}",
+                    ck, fk, if ck > 0 { fk as f64 / ck as f64 } else { 0.0 },
+                    cn, fn_, if cn > 0 { fn_ as f64 / cn as f64 } else { 0.0 });
+                eprintln!("TREESTATS cut_source tt:{} noisy:{} quiet:{} | first tt:{} noisy:{} quiet:{}",
+                    s.cut_by_source[0], s.cut_by_source[1], s.cut_by_source[2],
+                    s.first_cut_by_source[0], s.first_cut_by_source[1], s.first_cut_by_source[2]);
+                eprintln!("TREESTATS quiet_rank mean:{:.2} rank1:{}",
+                    if s.cut_by_source[2] > 0 { s.cut_quiet_rank_sum as f64 / s.cut_by_source[2] as f64 } else { 0.0 },
+                    s.cut_quiet_rank1);
+                {
+                    use std::sync::atomic::Ordering as O;
+                    let b: Vec<u64> = crate::movepicker::HIST_BUCKET_USE.iter().map(|x| x.load(O::Relaxed)).collect();
+                    let tot: u64 = b.iter().sum();
+                    eprintln!("TREESTATS hist_bucket ff:{} ft:{} tf:{} tt:{} | pct_00:{:.1}",
+                        b[0], b[1], b[2], b[3],
+                        if tot > 0 { 100.0 * b[0] as f64 / tot as f64 } else { 0.0 });
+                }
                 // Eval accounting, for cross-engine evals/node comparison.
                 // total_evals = full rebuilds + incremental updates; skips and
                 // TT static-eval hits are call sites that did NOT run the net.

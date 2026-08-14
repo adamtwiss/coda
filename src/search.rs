@@ -872,6 +872,15 @@ pub struct PruneStats {
     pub first_move_cutoffs: u64,
     // fh1 source split: [tt_move, noisy, quiet]
     pub cut_by_source: [u64; 3],
+    /// Cutoffs where the cutting move is a KING move (endgame ordering probe).
+    pub cut_king: u64,
+    pub first_cut_king: u64,
+    pub cut_nonking: u64,
+    pub first_cut_nonking: u64,
+    /// Main-history threat-bucket usage: [from_threatened][to_threatened].
+    /// If the endgame collapses into bucket [0][0], the 4D split is paying
+    /// dilution for a distinction that carries no information there.
+    pub hist_bucket_use: [u64; 4],
     pub first_cut_by_source: [u64; 3],
     // fh1 conditioned on TT-move presence: [no_tt, has_tt]
     pub cut_by_ttpresence: [u64; 2],
@@ -5097,6 +5106,12 @@ fn negamax(
         && beta.abs() < MATE_IN_MAX_PLY  // Skip NMP for mate/TB scores
         && info.excluded_move[ply_u] == NO_MOVE  // Skip NMP during SE verification
         && cut_node  // cut-node gate: only attempt NMP at expected fail-high nodes (closes 30%->57% NMP cutoff-rate gap)
+        // A stored UPPER bound means a previous search of this node failed
+        // low — the least likely place for a null move to produce a cutoff, so
+        // the null search is usually a wasted subtree. The cut-node gate above
+        // uses the node's expected type; this uses what the TT actually
+        // recorded about it.
+        && !(tt_hit && tt_entry.flag == TT_FLAG_UPPER)
         && FEAT_NMP.load(Ordering::Relaxed)
     {
         info.stats.nmp_attempts += 1;
@@ -6249,6 +6264,16 @@ fn negamax(
                         if cls == 2 && quiets_count > 0 {
                             info.stats.cut_quiet_rank_sum += quiets_count as u64;
                             if quiets_count == 1 { info.stats.cut_quiet_rank1 += 1; }
+                        }
+                        // King-move ordering probe: in endgames the king is the
+                        // most-moved piece, so poor king-move ordering shows up
+                        // exactly where our first-move cut rate collapses.
+                        if board.piece_type_at(move_from(mv)) == crate::types::KING {
+                            info.stats.cut_king += 1;
+                            if move_count == 1 { info.stats.first_cut_king += 1; }
+                        } else {
+                            info.stats.cut_nonking += 1;
+                            if move_count == 1 { info.stats.first_cut_nonking += 1; }
                         }
                         let had_tt = (tt_move != NO_MOVE) as usize;
                         info.stats.cut_by_ttpresence[had_tt] += 1;

@@ -38,10 +38,24 @@ pub struct History {
     pub cont_hist: [[[[i16; 64]; 13]; 64]; CONT_PLANES],
 }
 
+/// DIAGNOSTIC: [from_threatened*2 + to_threatened] occupancy counters.
+pub static HIST_BUCKET_USE: [std::sync::atomic::AtomicU64; 4] = [
+    std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0),
+    std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0)];
+
 impl History {
     /// Get main history score for a move given enemy threat bitboard.
     #[inline(always)]
     pub fn main_score(&self, from: u8, to: u8, threats: Threats) -> i32 {
+        // DIAGNOSTIC: threat-bucket occupancy of the 4D main history. Relaxed
+        // atomics on the hot path distort NPS, but the DISTRIBUTION is what
+        // this measures. Endgames may collapse into [0][0], in which case the
+        // 4D split pays dilution for a distinction carrying no information.
+        {
+            let ft = ((threats >> from) & 1) as usize;
+            let tt = ((threats >> to) & 1) as usize;
+            HIST_BUCKET_USE[ft * 2 + tt].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
         if crate::search::FEAT_4D_HISTORY.load(std::sync::atomic::Ordering::Relaxed) {
             let ft = ((threats >> from) & 1) as usize;
             let tt = ((threats >> to) & 1) as usize;
