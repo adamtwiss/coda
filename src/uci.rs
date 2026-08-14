@@ -410,6 +410,29 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>) {
                     s.ts_asp_fail_low, s.ts_asp_fail_high, s.ts_lmr_research);
                 let total: u64 = s.nodes_by_depth.iter().sum();
                 eprintln!("TREESTATS totals nodes:{} qnodes:{}", total, s.qnodes);
+                // Eval accounting, for cross-engine evals/node comparison.
+                // total_evals = full rebuilds + incremental updates; skips and
+                // TT static-eval hits are call sites that did NOT run the net.
+                if let Some(acc) = info.nnue_acc.as_ref() {
+                    let full = acc.stats_full_rebuilds;
+                    let incr = acc.stats_incremental_updates;
+                    let skip = acc.stats_cached_skips;
+                    let tt = info.stats_tt_static_eval_hits;
+                    eprintln!("TREESTATS evals total:{} full:{} incr:{} skipped:{} tt_hits:{} per_node:{:.4}",
+                        full + incr, full, incr, skip, tt,
+                        if total > 0 { (full + incr) as f64 / total as f64 } else { 0.0 });
+                    // Why the full rebuilds happened. king-bucket dominates in
+                    // low-piece-count positions, where the king is active and
+                    // crosses bucket boundaries constantly.
+                    eprintln!("TREESTATS rebuild_cause king_bucket:{} root:{} chain_break:{}",
+                        acc.stats_rebuild_kind0, acc.stats_rebuild_root, acc.stats_rebuild_chain);
+                    let fh = acc.stats_finny_hits; let fm = acc.stats_finny_misses;
+                    eprintln!("TREESTATS refresh_rows total:{} per_refresh:{:.2}",
+                        acc.stats_refresh_rows,
+                        if acc.stats_full_rebuilds > 0 { acc.stats_refresh_rows as f64 / acc.stats_full_rebuilds as f64 } else { 0.0 });
+                    eprintln!("TREESTATS finny hits:{} misses:{} miss_rate:{:.4}",
+                        fh, fm, if fh + fm > 0 { fm as f64 / (fh + fm) as f64 } else { 0.0 });
+                }
             }
             "go" => {
                 // Wait for any pending search to finish first. If we're abandoning

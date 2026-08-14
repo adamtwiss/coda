@@ -4964,6 +4964,16 @@ pub struct NNUEAccumulator {
     // branch it takes. Read via the `stats_*` accessors for the bench
     // "evals/node" summary. Zero overhead outside the increment itself.
     pub stats_full_rebuilds: u64,
+    /// Finny table outcome on a refresh: a HIT diffs against the cached
+    /// per-bucket accumulator (cheap); a MISS recomputes from all active
+    /// features (expensive). stats_full_rebuilds counts BOTH, so it overstates
+    /// the expensive path on its own.
+    pub stats_finny_hits: u64,
+    pub stats_finny_misses: u64,
+    /// Feature rows applied by refreshes vs by incremental updates. Each row is
+    /// a 2 KB read from the feature matrix, so this is the real cost driver.
+    pub stats_refresh_rows: u64,
+    pub stats_incr_rows: u64,
     /// Rebuild cause splits (added 2026-05-06 for Atlas perf investigation).
     /// kind=0  → king bucket / mirror crossing on the moving side (forced).
     /// root    → top==0 (only fires once per search tree).
@@ -5006,6 +5016,10 @@ impl NNUEAccumulator {
             hidden_size,
             finny,
             stats_full_rebuilds: 0,
+            stats_finny_hits: 0,
+            stats_finny_misses: 0,
+            stats_refresh_rows: 0,
+            stats_incr_rows: 0,
             stats_rebuild_kind0: 0,
             stats_rebuild_root: 0,
             stats_rebuild_chain: 0,
@@ -5017,6 +5031,10 @@ impl NNUEAccumulator {
     /// Reset eval-path counters. Call before a measurement window.
     pub fn reset_stats(&mut self) {
         self.stats_full_rebuilds = 0;
+        self.stats_finny_hits = 0;
+        self.stats_finny_misses = 0;
+        self.stats_refresh_rows = 0;
+        self.stats_incr_rows = 0;
         self.stats_rebuild_kind0 = 0;
         self.stats_rebuild_root = 0;
         self.stats_rebuild_chain = 0;
@@ -5692,6 +5710,7 @@ impl NNUEAccumulator {
         let entry = &mut self.finny[perspective as usize * FINNY_STRIDE_PER_PERSPECTIVE + bucket * 2 + mirror_idx];
 
         if !entry.valid {
+            self.stats_finny_misses += 1;
             // No cache — full recompute with register blocking. Build into the
             // Finny entry directly to avoid a borrow conflict, then copy out.
             entry.acc[..h].copy_from_slice(&net.input_biases[..h]);
@@ -5715,6 +5734,7 @@ impl NNUEAccumulator {
                 }
             }
             let piece_indices = scratch_slice!(piece_indices_ptr, n_pieces);
+            self.stats_refresh_rows += n_pieces as u64;
             let empty: [usize; 0] = [];
             finny_batch_apply(net, &mut entry.acc[..h], &net.input_weights, h, piece_indices, &empty);
             entry.piece_bbs = (board.pieces, board.colors);
@@ -5726,6 +5746,7 @@ impl NNUEAccumulator {
             return;
         }
 
+        self.stats_finny_hits += 1;
         // Diff cached vs current — collect all changes, then batch apply
         // Register-blocking: load 8 regs once, apply ALL adds/subs, store once
 
@@ -5768,6 +5789,7 @@ impl NNUEAccumulator {
         }
         let add_rows = scratch_slice!(add_rows_ptr, n_adds);
         let sub_rows = scratch_slice!(sub_rows_ptr, n_subs);
+        self.stats_refresh_rows += (n_adds + n_subs) as u64;
 
         // Batch apply with register blocking
         if n_adds > 0 || n_subs > 0 {
