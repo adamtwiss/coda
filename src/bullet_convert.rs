@@ -436,6 +436,25 @@ pub fn convert_v7(
         println!("DIAGNOSTIC: swapped dual L1 concat halves in L2 weights");
     }
 
+    // DIAGNOSTIC (CODA_DUAL_SCRELU_SCALE=k): scale the SCReLU half of the dual
+    // L1 concat in the L2 weight matrix by k. screlu is quadratic in the
+    // activation, so if the two halves arrive at L2 on different scales than
+    // bullet trained them at, the resulting error GROWS with activation
+    // magnitude — compressing the opening (many active features) far more than
+    // the endgame. Sweeping k tests exactly that.
+    if dual_l1 && l2_size > 0 {
+        if let Ok(kv) = std::env::var("CODA_DUAL_SCRELU_SCALE") {
+            let k: f32 = kv.parse().expect("CODA_DUAL_SCRELU_SCALE must be a float");
+            for i in l1_size..(2 * l1_size) {
+                for j in 0..bl2 {
+                    let idx = i * bl2 + j;
+                    l2_weights[idx] = ((l2_weights[idx] as f32) * k).round() as i16;
+                }
+            }
+            println!("DIAGNOSTIC: scaled dual SCReLU-half L2 weights by {k}");
+        }
+    }
+
     // Output weights: [out_input][BUCKETS] → transpose to [BUCKETS][out_input]
     let mut out_w_raw = vec![[0i16; NNUE_OUTPUT_BUCKETS]; out_input];
     if int16_hidden {
