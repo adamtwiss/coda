@@ -420,6 +420,22 @@ pub fn convert_v7(
         }
     }
 
+    // DIAGNOSTIC (CODA_SWAP_DUAL_HALVES=1): swap the two halves of the dual L1
+    // concat in the L2 weight matrix. Bullet emits [crelu(x) ; screlu(x)], so
+    // rows 0..l1_size weight the CReLU half and l1_size..2*l1_size the SCReLU
+    // half. If the two are transposed relative to that, the net still evaluates
+    // and correlates, but distorts worst at large activations. This lets the
+    // hypothesis be tested without retraining. Layout is [l1_input][l2_unit],
+    // so a half-swap is a row swap of width bl2.
+    if dual_l1 && std::env::var("CODA_SWAP_DUAL_HALVES").is_ok() && l2_size > 0 {
+        for i in 0..l1_size {
+            for k in 0..bl2 {
+                l2_weights.swap(i * bl2 + k, (l1_size + i) * bl2 + k);
+            }
+        }
+        println!("DIAGNOSTIC: swapped dual L1 concat halves in L2 weights");
+    }
+
     // Output weights: [out_input][BUCKETS] → transpose to [BUCKETS][out_input]
     let mut out_w_raw = vec![[0i16; NNUE_OUTPUT_BUCKETS]; out_input];
     if int16_hidden {
