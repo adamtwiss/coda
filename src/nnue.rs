@@ -3189,7 +3189,16 @@ impl NNUENet {
             kb_layout,
             king_bucket: king_bucket_tbl,
             king_mirror: king_mirror_tbl,
-            use_sparse_l1: std::sync::atomic::AtomicBool::new(false), // disabled: dense int8 is faster at H=1024
+            // Disabled by default: dense int8 is faster at H=1024 — measured at
+            // the 58-75% densities production nets have exhibited, where the
+            // nnz bookkeeping (movemask + shuffle-compaction) costs more than
+            // the skipped vpmaddubsw ops save.
+            // CODA_SPARSE_L1=1 re-enables it, so the crossover can be re-measured
+            // against nets trained with an `--act-l1` penalty: those reach ~38%
+            // density, well below anything the original comparison covered.
+            use_sparse_l1: std::sync::atomic::AtomicBool::new(
+                std::env::var("CODA_SPARSE_L1").is_ok(),
+            ),
             // Auto-set from file header bit 5 when extended_kb=1.
             // Overridable at runtime via UCI option HiddenActivation.
             crelu_hidden: std::sync::atomic::AtomicBool::new(hl_crelu),
