@@ -24,6 +24,21 @@ pub fn refresh_always() -> bool {
     *V.get_or_init(|| std::env::var("CODA_THREAT_REFRESH_ALWAYS").is_ok())
 }
 
+/// Per-search threat-REFRESH mode: no per-move delta generation, accumulator
+/// re-enumerates instead of replaying. Set once at search setup from the root
+/// piece count (see `THREAT_REFRESH_PIECE_MAX`) and read by both sides of the
+/// contract — the generator (`board.generate_threat_deltas`) and the consumer
+/// (`ensure_computed`). They MUST agree: replaying from deltas that were never
+/// generated would silently produce a wrong accumulator, so this is decided
+/// once per search rather than per node.
+pub static REFRESH_MODE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// True when this search should refresh rather than replay.
+pub fn refresh_mode() -> bool {
+    refresh_always() || REFRESH_MODE.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Pre-allocated depth of the threat accumulator stack.
 ///
 /// Derived from the search's own ply cap rather than hardcoded: `search::MAX_PLY`
@@ -490,7 +505,7 @@ impl ThreatStack {
         // avg active features/position (~6.8) is close to avg delta rows per
         // replayed edge (~7.4), so refresh may cost about the same as a
         // single-edge replay while deleting all generation work.
-        if refresh_always() {
+        if refresh_mode() {
             for pov in [WHITE, BLACK] {
                 if !self.stack[self.index].accurate[pov as usize] {
                     self.refresh(net_weights, num_features, board, pov);

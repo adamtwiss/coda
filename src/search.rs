@@ -479,6 +479,27 @@ tunables!(
     // rescales a candidate onto that scale so a net-vs-net SPRT measures the
     // net rather than its units. 100 = off.
     (EVAL_SCALE_PCT, 100, 50, 200, 5.0, false),
+    // Piece count at or below which the search runs in threat-REFRESH mode:
+    // no per-move delta generation, and the accumulator re-enumerates from the
+    // board instead of replaying delta edges.
+    //
+    // Delta generation is EAGER (every make_move) while consumption is LAZY
+    // (only on eval), so every node pays generation but only the evaluating
+    // minority consumes it. Measured evals/node is 0.572 in the opening and
+    // 0.186 in the endgame, i.e. the endgame discards the work ~5 times out of
+    // 6 — which is why `push_threats_for_piece` costs MORE there (5.9% of
+    // runtime) than in the opening (4.1%) despite a third the eval rate.
+    //
+    // Refresh mode deletes that generation and pays a re-enumeration instead.
+    // Measured +7.8% nps at <=10 pieces (median +8.6%, positive in 17/20
+    // positions, against a same-config control at 8/20) but -21.6% at 17-24
+    // and -38.2% at 25-32, so it is worth it only where evals are rare.
+    //
+    // Keyed on ROOT piece count because the generate/consume contract must be
+    // decided before the first make_move, and both sides must agree — replaying
+    // from deltas that were never generated would silently corrupt the
+    // accumulator. 0 = off.
+    (THREAT_REFRESH_PIECE_MAX, 12, 0, 32, 2.0, false),
     // Fail-low prior-countermove cont-hist bonus, % of history_bonus(depth)
     // (SF fail-low history harvesting).
     (FAIL_LOW_PREV_BONUS_PCT, 59, 0, 150, 15.0, false),
@@ -2760,8 +2781,17 @@ pub(crate) fn search_helper(board: &mut Board, info: &mut SearchInfo, _limits: &
 
     // Mirror search()'s threat setup — helpers must evaluate consistently
     // with main or shared-TT entries disagree and search diverges at T>1.
+    // Decide threat REFRESH mode once per search, from the root piece count.
+    // Both sides of the contract read the same flag — the generator on the next
+    // line and the consumer in `ensure_computed`. Deciding per node would let
+    // them disagree and replay from deltas that were never generated.
+    {
+        let pmax = THREAT_REFRESH_PIECE_MAX.load(Ordering::Relaxed);
+        let pieces = board.occupied().count_ones() as i32;
+        crate::threat_accum::REFRESH_MODE.store(pmax > 0 && pieces <= pmax, Ordering::Relaxed);
+    }
     board.generate_threat_deltas = info.nnue_net.as_ref().is_some_and(|n| n.has_threats)
-        && !crate::threat_accum::refresh_always();
+        && !crate::threat_accum::refresh_mode();
     if info.threat_stack.active {
         info.threat_stack.reset();
         if let Some(ref net) = info.nnue_net {
@@ -2916,8 +2946,17 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     init_feature_flags();
 
     // Enable threat delta generation if we have a threat net
+    // Decide threat REFRESH mode once per search, from the root piece count.
+    // Both sides of the contract read the same flag — the generator on the next
+    // line and the consumer in `ensure_computed`. Deciding per node would let
+    // them disagree and replay from deltas that were never generated.
+    {
+        let pmax = THREAT_REFRESH_PIECE_MAX.load(Ordering::Relaxed);
+        let pieces = board.occupied().count_ones() as i32;
+        crate::threat_accum::REFRESH_MODE.store(pmax > 0 && pieces <= pmax, Ordering::Relaxed);
+    }
     board.generate_threat_deltas = info.nnue_net.as_ref().is_some_and(|n| n.has_threats)
-        && !crate::threat_accum::refresh_always();
+        && !crate::threat_accum::refresh_mode();
 
     // Initialize root position threat accumulator
     if info.threat_stack.active {
