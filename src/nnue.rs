@@ -2524,6 +2524,10 @@ pub enum L1Kernel {
     /// weights pass the load-time saturation gate
     /// (`sparse_l1::x2_fusion_safe`); unsafe nets fall to DenseAvx2L1_32.
     DenseAvx2L1_32X2,
+    /// AVX2 column-major dense, L1=16 with maddubs-pair fusion — the L1=16
+    /// counterpart of `DenseAvx2L1_32X2`. Same load-time saturation gate
+    /// (`sparse_l1::x2_fusion_safe`); unsafe nets fall back to `DenseAvx2`.
+    DenseAvx2L1_16X2,
     /// AVX2 column-major dense, L1=32 specialisation.
     DenseAvx2L1_32,
     /// AVX2 column-major dense, L1<=16 (the AVX2-fleet prod kernel).
@@ -2591,6 +2595,9 @@ fn select_l1_kernel(
         }
         if has_avx2 && col_ok && l1 == 32 && pw.is_multiple_of(4) {
             return L1Kernel::DenseAvx2L1_32;
+        }
+        if has_avx2 && col_ok && l1 == 16 && pw.is_multiple_of(8) && x2_safe {
+            return L1Kernel::DenseAvx2L1_16X2;
         }
         if has_avx2 && col_ok && l1 <= 16 {
             return L1Kernel::DenseAvx2;
@@ -3128,8 +3135,11 @@ impl NNUENet {
         // maddubs-pair fusion saturation gate — O(weights), once at load.
         let x2_safe = !l1_weights_sparse.is_empty()
             && crate::sparse_l1::x2_fusion_safe(&l1_weights_sparse, l1_size);
-        if has_avx2 && !has_avx_vnni && !has_avx512_vnni && l1_size == 32 {
+        if has_avx2 && !has_avx_vnni && !has_avx512_vnni && (l1_size == 32 || l1_size == 16) {
             // Only worth logging where the choice is live (plain-AVX2 hosts).
+            // Both widths have a fused kernel; before the L1=16 one existed this
+            // was gated on `l1_size == 32` and so went silent exactly when
+            // production moved to L1=16.
             println!("info string maddubs-pair fusion: {}",
                 if x2_safe { "safe — using fused AVX2 L1 kernel" }
                 else { "weights exceed saturation bound — unfused kernel" });
@@ -3634,6 +3644,18 @@ impl NNUENet {
                 // selected).
                 unsafe {
                     crate::sparse_l1::dense_l1_avx2_l1_32_x2(
+                        stm_pw, ntm_pw, pw, &self.l1_weights_sparse,
+                        &self.l1_biases[l1_off..], pw_scale, hidden32_ptr,
+                    );
+                }
+            }
+            #[cfg(target_arch = "x86_64")]
+            L1Kernel::DenseAvx2L1_16X2 => {
+                // L1=16 AVX2 with maddubs-pair fusion — the L1=16 counterpart
+                // of DenseAvx2L1_32X2. Exactness guaranteed by the load-time
+                // x2_fusion_safe gate (else this arm is never selected).
+                unsafe {
+                    crate::sparse_l1::dense_l1_avx2_l1_16_x2(
                         stm_pw, ntm_pw, pw, &self.l1_weights_sparse,
                         &self.l1_biases[l1_off..], pw_scale, hidden32_ptr,
                     );
