@@ -3135,14 +3135,25 @@ impl NNUENet {
         // maddubs-pair fusion saturation gate — O(weights), once at load.
         let x2_safe = !l1_weights_sparse.is_empty()
             && crate::sparse_l1::x2_fusion_safe(&l1_weights_sparse, l1_size);
-        if has_avx2 && !has_avx_vnni && !has_avx512_vnni && (l1_size == 32 || l1_size == 16) {
-            // Only worth logging where the choice is live (plain-AVX2 hosts).
-            // Both widths have a fused kernel; before the L1=16 one existed this
-            // was gated on `l1_size == 32` and so went silent exactly when
-            // production moved to L1=16.
-            println!("info string maddubs-pair fusion: {}",
-                if x2_safe { "safe — using fused AVX2 L1 kernel" }
-                else { "weights exceed saturation bound — unfused kernel" });
+        // Widths for which a fused AVX2 kernel exists. Before the L1=16 kernel
+        // this reporting was gated on `l1_size == 32`, so it went silent exactly
+        // when production moved to L1=16 — i.e. at the moment the answer changed.
+        let fused_width = l1_size == 32 || l1_size == 16;
+        let plain_avx2 = has_avx2 && !has_avx_vnni && !has_avx512_vnni;
+        if plain_avx2 && fused_width && x2_safe {
+            println!("info string maddubs-pair fusion: safe — using fused AVX2 L1 kernel");
+        }
+        // Announce the REJECTION on every host, not just plain-AVX2 ones. The
+        // gate is per-net and its failure is otherwise invisible: a net that
+        // fails it still loads cleanly and is simply ~4% slower on AVX2 — and
+        // AVX2-without-VNNI is what CCRL runs. Promoting such a net from a
+        // VNNI dev box would drop that tier off the fused path with no signal
+        // at all, which is the silent-wrongness class this codebase keeps
+        // getting bitten by.
+        if fused_width && !x2_safe {
+            println!("info string WARNING: maddubs-pair fusion gate FAILED at L1={} \
+                      (weights exceed the saturation bound). AVX2-without-VNNI hosts \
+                      — including CCRL — fall back to the unfused L1 kernel.", l1_size);
         }
         let l1_kernel = select_l1_kernel(
             use_pairwise,
