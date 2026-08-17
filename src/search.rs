@@ -869,11 +869,15 @@ pub struct PruneStats {
     pub dualnet_evals: [u64; 12],
     pub dualnet_abseval: [u64; 12],
     pub dualnet_neareq: [u64; 12],
-    // Candidate-B probe: fail-low nodes histogrammed by
+    // Fail-low node histogram, indexed
     // [depth band 0-2][margin band 0-3][quiet-count band 0-3]:
     // depth {<=4, 5-8, >=9}, margin {<50, 50-150, 150-300, >=300}cp,
     // quiets {0-2, 3-5, 6-9, 10+}. _nodes counts nodes, _quiets sums
-    // quiets tried, _late sums max(quiets-2, 0) (the prunable tail).
+    // quiets tried, _late sums max(quiets-2, 0) — the late-quiet tail a
+    // margin-aware LMP could target. Measured 2026-07-27 and again on the
+    // v10 net 2026-08-17: the tail at margin>=150 (the only safely prunable
+    // part) is ~1% of all move-searches, so that idea is closed. Kept
+    // because it is the standing measurement of fail-low node shape.
     pub b_probe_nodes: [[u64; 16]; 3],
     pub b_probe_quiets: [[u64; 16]; 3],
     pub b_probe_late: [[u64; 16]; 3],
@@ -4987,7 +4991,7 @@ fn negamax(
                 {
                     let d_idx = depth.clamp(0, 23) as usize;
                     info.stats.rfp_audit_attempts[d_idx] += 1;
-                    // Candidate-A validation: bucket this audited cutoff by the
+                    // Bucket this audited cutoff by the
                     // SPREAD of the five correction-source cp contributions
                     // (disagreement = low eval confidence). Computed only under
                     // RFP_AUDIT — zero production cost.
@@ -6458,7 +6462,7 @@ fn negamax(
             TT_FLAG_EXACT
         };
 
-        // Candidate-B probe (stats only): fail-low nodes by depth/margin/quiets.
+        // Fail-low node histogram (stats only): depth x margin x quiets.
         if flag == TT_FLAG_UPPER && move_count > 0 && best_score.abs() < MATE_IN_MAX_PLY {
             let d_band = if depth <= 4 { 0 } else if depth <= 8 { 1 } else { 2 };
             let margin = (alpha_orig - best_score).max(0);
@@ -6936,7 +6940,15 @@ fn quiescence_with_depth(
         alpha = best_score;
     }
 
-    // FEAT_QS_CAPTURES: when disabled, skip the capture loop entirely
+    // FEAT_QS_CAPTURES (NO_QS_CAPTURES=1): skip the capture loop entirely, so
+    // qsearch returns the raw stand-pat. This ablates QUIESCENCE ITSELF, not
+    // "some captures" — the search then evaluates positions in the middle of
+    // capture sequences, scores become noise, cutoffs stop working, and the
+    // tree GROWS (+27.7% nodes, +17.9% evals at bench 10). Useful only to
+    // confirm quiescence is load-bearing; it is NOT a measure of what
+    // searching captures costs, and its nodes/evals delta must not be read as
+    // a marginal cost. For that, sweep the QS_MAX_CAPTURES tunable instead —
+    // which is graded, and is where the 5->3 win came from.
     if !FEAT_QS_CAPTURES.load(Ordering::Relaxed) {
         return best_score;
     }
@@ -7406,7 +7418,7 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
         {
             let bn: u64 = s.b_probe_nodes.iter().flatten().sum();
             if bn > 0 && s.moves_searched > 0 {
-                eprintln!("--- Candidate-B probe: fail-low nodes (total moves searched {}) ---", s.moves_searched);
+                eprintln!("--- Fail-low nodes by depth/margin/quiets (total moves searched {}) ---", s.moves_searched);
                 let dnames = ["d<=4", "d5-8", "d>=9"];
                 let mnames = ["m<50", "m50-150", "m150-300", "m>=300"];
                 for d in 0..3 {
