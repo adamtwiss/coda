@@ -5710,6 +5710,19 @@ fn negamax(
         // times — removing it was worth Elo, as was removing the analogous
         // recapture extension.
 
+        // FEAT_EXTENSIONS ablation (NO_EXTENSIONS=1). The flag used to gate the
+        // recapture and 7th-rank promotion extensions; both were removed
+        // (10a4ed7, 56f07e0) and took the flag's only read sites with them,
+        // leaving it silently inert. Re-wired here to the extension mechanism
+        // that survives: suppress POSITIVE singular/double extensions only.
+        // Negative `singular_extension` values are reductions, and the
+        // multi-cut above is a pruning device — both stay on, so the flag
+        // isolates exactly what its name claims. The singular_ext/double_ext
+        // counters above still count DETECTIONS, not applications.
+        if singular_extension > 0 && !FEAT_EXTENSIONS.load(Ordering::Relaxed) {
+            singular_extension = 0;
+        }
+
         let mut new_depth = depth - 1 + extension + singular_extension;
 
         // Propagate double extension counter to child
