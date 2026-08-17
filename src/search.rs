@@ -478,7 +478,7 @@ tunables!(
     // search margin is calibrated to the production net's scale. This knob
     // rescales a candidate onto that scale so a net-vs-net SPRT measures the
     // net rather than its units. 100 = off.
-    (EVAL_SCALE_PCT, 100, 50, 200, 5.0, false),
+    (EVAL_SCALE_PCT, 100, 25, 200, 5.0, false),
     // Fail-low prior-countermove cont-hist bonus, % of history_bonus(depth)
     // (SF fail-low history harvesting).
     (FAIL_LOW_PREV_BONUS_PCT, 59, 0, 150, 15.0, false),
