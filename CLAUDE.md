@@ -105,7 +105,7 @@ Lazy SMP: helper threads search at offset depths sharing the TT (atomic) + stop 
 
 **Pruning / extension features** (all SPSA-tunable via the `tunables!` macro in
 `search.rs` — that macro is the authoritative feature list, defaults, and ranges):
-NMP, RFP, futility (history adjusts effective lmr_depth), LMR (separate
+NMP, RFP, futility (history adjusts the margin, not lmr_depth), LMR (separate
 quiet/capture tables, doDeeper/doShallower, tt_pv reduces less), LMP, SEE pruning
 (quiet d², capture linear), ProbCut, bad-noisy futility (BNFP — futility scalar +
 SEE<0 gate, not a SEE threshold), IIR, singular + double extensions, hindsight
@@ -196,6 +196,46 @@ can disagree with the file.
 - PV nodes skip all TT cutoffs and QS beta blending.
 - Feature-flag ablation via env vars (NO_XXX / ENABLE_XXX / DISABLE_ALL), parsed
   once at startup for systematic search-feature testing.
+
+## Originality and licensing — ideas yes, expression never
+
+Coda's GitHub repo, its source, and its OpenBench instance are all **public**,
+and the project attracts scrutiny for being agentically developed. Originality
+has to be not just real but visibly right. Reading other engines is encouraged;
+copying their expression is not, and this holds regardless of their licence —
+GPL, MIT or otherwise.
+
+**Ideas are fair game. Expression is not.** "History should influence the
+futility depth gate, not just the margin" is an idea. A specific formula, a
+constant, a line of code, or a `file.cpp:line` pointer is expression.
+
+Rules, all of which apply to source comments **and** commit messages, because
+both are public:
+
+1. **Never carry a foreign numeric constant into Coda** — not even as a starting
+   point, a placeholder, or something "SPSA will retune anyway". Derive every
+   constant from Coda's own quantities (existing tunables, `MAX_HISTORY`,
+   measured bench behaviour) and show the derivation next to it. A borrowed
+   constant is the clearest possible evidence of copying.
+2. **No foreign code, formulas, or `file.cpp:line` citations.** Idea-level
+   attribution is fine and already appears throughout the tree ("a common
+   cross-engine pattern", "Stockfish shape"). Expression-level is not.
+3. **Close the reference before writing.** Read to understand the idea, then
+   implement from the idea in Coda's own structures — never with another
+   engine's source on screen.
+4. **Prefer our own formulation** where one is equally good (a clamp, a floor, a
+   different decomposition). If an idea admits only one sensible form, say so in
+   the comment and make certain the constants are independently derived.
+5. **Justify from our own code where possible.** If Coda already does something
+   analogous elsewhere, cite *that* — it is both better provenance and a better
+   argument.
+6. **Cross-engine code reading and quoting belongs in the private research
+   repo.** It must not cross into this one.
+
+**If it happens anyway: delete and rebuild the branch, do not amend.** Amending
+leaves the original commit reachable. Delete the branch locally and on the
+remote, re-implement from the idea alone on a fresh branch, and note the
+incident in the research repo.
 
 ## Code hygiene
 Keep `cargo build --release` at **zero warnings** — fix or `#[allow(...)]`-suppress
