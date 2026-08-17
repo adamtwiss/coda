@@ -110,8 +110,12 @@ tunables!(
     // demand MORE static-eval confidence to RFP-cut as the OVERALL search
     // depth grows past RFP_ROOT_THRESH (diminishing-returns of depth — the
     // marginal ply is cheap at LTC so deep pruning trades blindness for
-    // worthless depth). Inactive at STC (root_depth < thresh) by construction
-    // -> STC-neutral; relaxes deep RFP at LTC. SPSA tunes both.
+    // worthless depth); relaxes deep RFP at LTC. SPSA tunes both.
+    //
+    // NOT STC-neutral — same correction as the LMR_ROOT_* block below. Gated on
+    // root_depth, not on TC. Warm-TT measurement at 250ms/move: root_depth > 18
+    // on 39% of moves overall — 0% in the opening but 92% through the late
+    // middlegame. Cold-TT probes understate this badly.
     (RFP_ROOT_THRESH, 18, 6, 30, 1.5, true),
     (RFP_ROOT_COEF, 17, 0, 150, 7.5, false),
     // Additional depth-local RFP relaxation: current main already scales RFP
@@ -280,8 +284,15 @@ tunables!(
     // Root-depth-aware LMR relaxation (single-set, self-adapts STC<->LTC):
     // reduce LESS as the OVERALL search depth grows past LMR_ROOT_THRESH
     // (diminishing returns — at LTC the reduced re-search is cheap vs the
-    // budget and a wrong reduction costs more). Inactive at STC by
-    // construction -> STC-neutral. SPSA tunes both.
+    // budget and a wrong reduction costs more). SPSA tunes both.
+    //
+    // NOT STC-neutral — the gate is root_depth, and nothing here sees the
+    // clock. Measured on a 200-ply game replayed with a WARM TT at 250ms/move
+    // (2026-08-17), root_depth > 15 on 61% of moves overall, and the effect is
+    // phase-concentrated: 7% in the opening, 58% in the middlegame, 100% from
+    // the late middlegame into the endgame. A cold-TT probe shows 0% and is
+    // what makes this term look dead — warm caches roughly double reached
+    // depth, so measure with the TT warm or the answer inverts.
     (LMR_ROOT_THRESH, 15, 6, 30, 1.5, false),
     (LMR_ROOT_COEF_10X, 46, 0, 800, 40.0, true),
     (BAD_NOISY_MARGIN, 87, 30, 150, 6.0, true),
@@ -5969,9 +5980,10 @@ fn negamax(
         }
 
         // Root-depth-aware LMR relaxation: reduce LESS when the overall
-        // search is deep. Zero at STC (root_depth <= thresh); grows with how
-        // deep the search reaches, so late moves at LTC are searched closer
-        // to full depth. Deliberately one formula and one tunable set, rather
+        // search is deep. Grows with how deep the search reaches, so late moves
+        // are searched closer to full depth. NOT zero at STC: measured warm-TT
+        // at 250ms/move this fires on 61% of moves (7% opening, 100% late
+        // middlegame). See the LMR_ROOT_THRESH block for the measurement. Deliberately one formula and one tunable set, rather
         // than separate STC/LTC shapes.
         if reduction >= LMR_SCALE {
             // CONTINUOUS: /100 * LMR_SCALE(=100) cancels exactly.
