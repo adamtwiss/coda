@@ -314,7 +314,7 @@ tunables!(
     // Cap on captures actually SEARCHED in qsearch (delta/SEE-pruned moves
     // are not charged against it). Counting pruned moves here would let SPSA
     // detune the cap to near-off, which is what an earlier counting bug did.
-    (QS_MAX_CAPTURES, 5, 2, 32, 2.0, false),
+    (QS_MAX_CAPTURES, 3, 2, 32, 2.0, false),
     (CORR_W_PAWN, 179, 100, 600, 25.0, true),
     (CORR_W_NP, 133, 0, 400, 17.5, true),
     // There is deliberately no minor-key or major-key correction source:
