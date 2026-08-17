@@ -281,6 +281,20 @@ tunables!(
     // and sets how many quiets survive at d=1.
     (LMP_BASE_10X, 45, 10, 150, 20.0, true),
     (LMP_DEPTH_10X, 89, 40, 200, 20.0, true),
+    // Margin-aware LMP. Coda's LMP limit keys on depth and improving only; the
+    // fail-low histogram (b_probe_*) shows late-quiet work concentrating at
+    // nodes that end up failing low, but its margin is only knowable AFTER the
+    // node completes. These give the count limit a PREDICTIVE margin
+    // dimension: when the static eval is already LMP_MARGIN_THRESH below alpha,
+    // scale the limit to LMP_MARGIN_PCT percent so late quiets are cut sooner.
+    //
+    // Prior measurement says expect little: the safely-prunable tail (post-hoc
+    // margin >= 150cp) is ~1% of all move-searches, measured 2026-07-27 and
+    // again on the v10 net 2026-08-17, and the idea was closed then without
+    // implementation. Tested anyway at Adam's request (2026-08-17) since the
+    // predictor here differs from the post-hoc selector that was measured.
+    (LMP_MARGIN_THRESH, 150, 50, 500, 35.0, true),
+    (LMP_MARGIN_PCT, 75, 40, 100, 6.0, true),
     // Root-depth-aware LMR relaxation (single-set, self-adapts STC<->LTC):
     // reduce LESS as the OVERALL search depth grows past LMR_ROOT_THRESH
     // (diminishing returns — at LTC the reduced re-search is cheap vs the
@@ -5414,7 +5428,14 @@ fn negamax(
             && beta < MATE_IN_MAX_PLY  // forced-win guard: don't count-prune quiets while proving a win
             && FEAT_LMP.load(Ordering::Relaxed)
         {
-            let lmp_limit = (tp10(&LMP_BASE_10X) + depth * depth) / (2 - improving as i32);
+            let mut lmp_limit = (tp10(&LMP_BASE_10X) + depth * depth) / (2 - improving as i32);
+            // Predictive margin dimension: a static eval already far below alpha
+            // is the best in-node signal that this will fail low, so spend fewer
+            // quiets on it. Guarded on static_eval being real (it is -INFINITY
+            // in check, though !in_check above already excludes that).
+            if static_eval > -INFINITY && alpha - static_eval >= tp(&LMP_MARGIN_THRESH) {
+                lmp_limit = (lmp_limit * tp(&LMP_MARGIN_PCT) / 100).max(1);
+            }
             // The gives_direct_check carve sits inside the movecount test — only
             // pay the check-detection call when the count prune would actually
             // fire (node-count identical).
