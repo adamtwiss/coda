@@ -125,7 +125,6 @@ tunables!(
     // cheaply pruning d12+ nodes.
     (RFP_DEEP_KNEE_10X, 58, 40, 170, 20.0, true),
     (RFP_DEEP_LINEAR, 57, 0, 200, 10.0, true),
-    (RFP_DEEP_QUAD_10X, 1, 0, 800, 50.0, true),
     // Razoring: drop straight to qsearch when static eval is far enough below
     // alpha that a full search is unlikely to recover it. Margin scales with
     // depth, gated to shallow depths only.
@@ -4966,8 +4965,7 @@ fn negamax(
             margin += (depth * (info.root_depth - tp(&RFP_ROOT_THRESH)).max(0) * tp(&RFP_ROOT_COEF)) / 100;
             let deep_extra = (depth - tp10(&RFP_DEEP_KNEE_10X)).max(0);
             if deep_extra > 0 {
-                margin += deep_extra * tp(&RFP_DEEP_LINEAR)
-                    + deep_extra * deep_extra * tp(&RFP_DEEP_QUAD_10X) / 10;
+                margin += deep_extra * tp(&RFP_DEEP_LINEAR);
             }
             // Widen margin when opponent pawns attack our pieces (Minic/Berserk pattern)
             if has_pawn_threats { margin += margin / 3; }
