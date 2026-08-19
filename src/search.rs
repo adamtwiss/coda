@@ -323,7 +323,6 @@ tunables!(
     (PROBCUT_ROOT_FADE_10X, 32, 10, 120, 10.0, true),
     (PROBCUT_ROOT_MARGIN, 69, 0, 120, 8.0, false),
     (HINDSIGHT_THRESH, 158, 50, 400, 17.5, true),
-    (UNSTABLE_THRESH, 307, 50, 500, 22.5, false),
     (QS_DELTA_MARGIN, 380, 100, 500, 20.0, true),
     // Cap on captures actually SEARCHED in qsearch (delta/SEE-pruned moves
     // are not charged against it). Counting pruned moves here would let SPSA
