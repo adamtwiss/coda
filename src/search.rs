@@ -2019,39 +2019,17 @@ fn correction_value(info: &SearchInfo, board: &Board, ply: usize) -> i32 {
 }
 
 /// Apply correction history to raw static eval.
+///
+/// Thin wrapper over `correction_value` so the five-source blend exists in ONE
+/// place. It previously duplicated that whole computation, which is the shape
+/// that hides a bug: add or reweight a source and one copy silently keeps the
+/// old blend.
 #[inline]
 fn corrected_eval(info: &SearchInfo, board: &Board, raw_eval: i32, ply: usize) -> i32 {
-    let stm = board.side_to_move as usize;
-
-    // Pawn correction
-    let pawn_idx = (board.pawn_hash as usize) & (CORR_HIST_SIZE - 1);
-    let pawn_corr = info.pawn_corr[stm][pawn_idx] as i64;
-
-    // Non-pawn corrections (per color)
-    let white_np_idx = (board.non_pawn_key[WHITE as usize] as usize) & (CORR_HIST_SIZE - 1);
-    let white_np_corr = info.np_corr[stm][WHITE as usize][white_np_idx] as i64;
-    let black_np_idx = (board.non_pawn_key[BLACK as usize] as usize) & (CORR_HIST_SIZE - 1);
-    let black_np_corr = info.np_corr[stm][BLACK as usize][black_np_idx] as i64;
-
-    // Continuation correction — paired 2-ply/4-ply (H1)
-    let cont_corr = cont_corr_value(info, ply);
-
-    // Transition correction (zobrist-delta of last move in context)
-    let trans_corr = if !board.undo_stack.is_empty() {
-        let last = &board.undo_stack[board.undo_stack.len() - 1];
-        if last.mv != NO_MOVE {
-            let trans_idx = ((board.hash ^ last.hash) as usize) & (CORR_HIST_SIZE - 1);
-            info.trans_corr[stm][trans_idx] as i64
-        } else { 0 }
-    } else { 0 };
-
-    // Weighted blend: pawn, whiteNP, blackNP, cont, transition
-    let total_corr = (pawn_corr * tp(&CORR_W_PAWN) as i64 + white_np_corr * tp(&CORR_W_NP) as i64 + black_np_corr * tp(&CORR_W_NP) as i64
-        + cont_corr * tp(&CORR_W_CONT) as i64 + trans_corr * tp(&CORR_W_TRANS) as i64) / tp(&CORR_HIST_DIV) as i64;
     // There is deliberately no material damping here: the residual update
     // baseline makes corrhist converge to the true (~0) correction in
     // low-signal positions, so a piece-count fortress guard is redundant.
-    let adjusted = raw_eval + (total_corr as i32) / tp(&CORR_HIST_GRAIN_T);
+    let adjusted = raw_eval + correction_value(info, board, ply);
     // Keep the corrected static eval strictly inside the non-mate band so it
     // can never be read back as a mate by the MATE_IN_MAX_PLY guards. (Real
     // evals live in ±4095, so this clamp is purely defensive.)
@@ -2070,13 +2048,21 @@ fn update_corr_entry(entry: &mut i32, scaled_err: i32, cap_div_10x: i32) {
 }
 
 /// Update all correction history tables.
-fn update_correction_history(info: &mut SearchInfo, board: &Board, search_score: i32, raw_eval: i32, depth: i32, ply: usize) {
+/// Train the correction tables on the search-vs-eval residual.
+///
+/// `corrected_baseline` is the CORRECTED, halfmove-scaled static eval — NOT the
+/// raw NNUE output. Training against the corrected residual (rather than raw) is
+/// deliberate and load-bearing: on raw, the gravity fixed point becomes the rail
+/// itself, which manufactures phantom evals in fortress positions. The sole
+/// caller passes `static_eval` for this reason; do not "correct" it to pass
+/// `raw_eval`.
+fn update_correction_history(info: &mut SearchInfo, board: &Board, search_score: i32, corrected_baseline: i32, depth: i32, ply: usize) {
     // Consensus shape: feed the FULL error scaled by depth, clamping only the
     // resulting bonus (at the gravity cap, in update_corr_entry). Pre-clamping
     // the error instead — e.g. to ±3cp — turns corrhist into a sign-only
     // integrator, with a max update of 21 against a cap near 341. No surveyed engine
     // clamps the input error: SF err*depth*12/128, Obsidian err*depth/8, all clamped at the output only.
-    let err = search_score - raw_eval;
+    let err = search_score - corrected_baseline;
     let weight = (depth + 1).min(tp(&CORR_UPDATE_WEIGHT_MAX));
     let scaled_err = err * weight * 10 / tp(&CORR_ERR_DIV_10X).max(10);
     // Pass raw stored value; consumer treats it as fixed-point (×10).
@@ -7805,6 +7791,11 @@ mod tests {
             "zero tables must give corrected == raw");
 
         // === Part 1: direct entry check after one update ===
+        // NOTE: passing `raw` as the corrected baseline is legitimate HERE only
+        // because the tables start zeroed, so corrected == raw at this point.
+        // In the search the caller passes the CORRECTED eval — see the doc
+        // comment on update_correction_history. Do not copy this call shape as
+        // evidence that a raw eval is what the function expects.
         update_correction_history(&mut info, &board, raw + 400, raw, 20, 0);
 
         let stm = board.side_to_move as usize;
@@ -7828,6 +7819,8 @@ mod tests {
         // is enough to push entries near steady-state given the small
         // err clamp (CORR_HIST_ERR_MAX_10X=10, effective 1).
         for _ in 0..50 {
+            // `raw` as baseline is valid here only while the tables are zeroed;
+            // see the note at the first call site in this module's tests.
             update_correction_history(&mut info, &board, raw + 400, raw, 20, 0);
         }
 
