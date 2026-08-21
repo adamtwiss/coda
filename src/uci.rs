@@ -318,11 +318,18 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>) {
                 println!("option name TBHash type spin default 16 min 0 max 1024");
                 println!("option name SyzygyProbeDepth type spin default 4 min 1 max 100");
                 println!("option name ScoreScale type spin default 39 min 25 max 200");
-                // Internal/dev options — advertised only in tuning builds
+                // Internal/dev options — available only in tuning builds
                 // (`make openbench` / `--features tune`) so they don't clutter GUI
-                // option lists in normal/release builds. The `setoption` handlers
-                // for these stay live in ALL builds, so a developer can still set
-                // them directly by name without a special binary.
+                // option lists in normal/release builds.
+                //
+                // NB: a plain release build does not merely hide these, it
+                // IGNORES `setoption` for them. Verified 2026-08-21: on a
+                // `cargo build --release` binary, `setoption name RFP_DEPTH
+                // value 2` vs `value 20` gives byte-identical node counts;
+                // rebuilt with `--features tune` the same commands give 45091
+                // vs 105817. Local A/B of any tunable therefore needs the tune
+                // feature — OpenBench is unaffected because `make openbench`
+                // sets TUNE=1.
                 #[cfg(feature = "tune")]
                 {
                     println!("option name HiddenActivation type combo default screlu var screlu var crelu");
