@@ -7492,6 +7492,18 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
                   if full > 0 { acc.stats_rebuild_root as f64 * 100.0 / full as f64 } else { 0.0 },
                   acc.stats_rebuild_chain,
                   if full > 0 { acc.stats_rebuild_chain as f64 * 100.0 / full as f64 } else { 0.0 });
+        // A "full rebuild" above is really a Finny REFRESH. Split it: a cold
+        // entry is a true recompute of every piece feature; a warm entry is a
+        // diff whose cost is the row count. Mean diff rows is the number that
+        // says whether king-bucket refreshes are actually expensive.
+        let cold = acc.stats_finny_cold;
+        let warm = acc.stats_finny_warm;
+        eprintln!("  finny:     cold(recompute)={} ({:>5.2}%)  warm(diff)={} ({:>5.2}%)  mean diff rows={:.1}",
+                  cold,
+                  if cold + warm > 0 { cold as f64 * 100.0 / (cold + warm) as f64 } else { 0.0 },
+                  warm,
+                  if cold + warm > 0 { warm as f64 * 100.0 / (cold + warm) as f64 } else { 0.0 },
+                  if warm > 0 { acc.stats_finny_diff_rows as f64 / warm as f64 } else { 0.0 });
         eprintln!("NNUE incremental:   {:>10} ({:>5.2}% of evals)", incr,
                   if total_evals > 0 { incr as f64 * 100.0 / total_evals as f64 } else { 0.0 });
         eprintln!("TT static-eval hit: {:>10} ({:>5.2}% of call sites)", tt,

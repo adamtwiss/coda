@@ -4950,6 +4950,16 @@ pub struct NNUEAccumulator {
     pub stats_rebuild_kind0: u64,
     pub stats_rebuild_root: u64,
     pub stats_rebuild_chain: u64,
+    /// Finny COLD: entry was invalid, so the refresh was a true full recompute
+    /// of every piece feature. Expensive.
+    pub stats_finny_cold: u64,
+    /// Finny WARM: entry was valid, so the refresh was a diff against the
+    /// cached bucket state. Cost is proportional to the diff size below.
+    pub stats_finny_warm: u64,
+    /// Total add+sub feature rows applied across all WARM refreshes. Divided by
+    /// stats_finny_warm this gives the mean diff size, which is the number that
+    /// decides whether king-bucket refreshes are actually expensive.
+    pub stats_finny_diff_rows: u64,
     pub stats_incremental_updates: u64,
     pub stats_cached_skips: u64,
 }
@@ -4988,6 +4998,9 @@ impl NNUEAccumulator {
             stats_rebuild_kind0: 0,
             stats_rebuild_root: 0,
             stats_rebuild_chain: 0,
+            stats_finny_cold: 0,
+            stats_finny_warm: 0,
+            stats_finny_diff_rows: 0,
             stats_incremental_updates: 0,
             stats_cached_skips: 0,
         }
@@ -4999,6 +5012,9 @@ impl NNUEAccumulator {
         self.stats_rebuild_kind0 = 0;
         self.stats_rebuild_root = 0;
         self.stats_rebuild_chain = 0;
+        self.stats_finny_cold = 0;
+        self.stats_finny_warm = 0;
+        self.stats_finny_diff_rows = 0;
         self.stats_incremental_updates = 0;
         self.stats_cached_skips = 0;
     }
@@ -5702,6 +5718,7 @@ impl NNUEAccumulator {
             let dst = self.psq.view_mut(self.top, perspective as usize);
             dst.copy_from_slice(&self.finny[perspective as usize * FINNY_STRIDE_PER_PERSPECTIVE + bucket * 2 + mirror_idx].acc[..h]);
             self.stack[self.top].psq_accurate[perspective as usize] = true;
+            self.stats_finny_cold += 1;
             return;
         }
 
@@ -5747,6 +5764,7 @@ impl NNUEAccumulator {
         }
         let add_rows = scratch_slice!(add_rows_ptr, n_adds);
         let sub_rows = scratch_slice!(sub_rows_ptr, n_subs);
+        let diff_rows = (n_adds + n_subs) as u64;
 
         // Batch apply with register blocking
         if n_adds > 0 || n_subs > 0 {
@@ -5761,6 +5779,8 @@ impl NNUEAccumulator {
         let dst = self.psq.view_mut(self.top, perspective as usize);
         dst.copy_from_slice(&self.finny[perspective as usize * FINNY_STRIDE_PER_PERSPECTIVE + bucket * 2 + mirror_idx].acc[..h]);
         self.stack[self.top].psq_accurate[perspective as usize] = true;
+        self.stats_finny_warm += 1;
+        self.stats_finny_diff_rows += diff_rows;
     }
 
     /// Reset to bottom of stack and invalidate Finny table.
