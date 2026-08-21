@@ -106,6 +106,21 @@ tunables!(
     (RFP_DEPTH, 18, 2, 20, 2.0, true),
     (RFP_MARGIN_IMP, 26, 0, 150, 6.0, true),
     (RFP_MARGIN_NOIMP, 32, 0, 200, 7.5, true),
+    // Opponent-worsening: the mirror of `improving`. `improving` asks whether
+    // OUR eval rose over two plies; this asks whether the OPPONENT's position
+    // deteriorated on their last move, read off the same static_evals stack as
+    // `static_evals[ply-1] + static_eval <= 0` (both stored side-to-move-POV,
+    // so a non-positive sum means their gain did not cover our reply).
+    //
+    // Coda already computes exactly this quantity, but uses it in one narrow
+    // place only — the hindsight-reduction bump, gated on prior_reduction >= 3
+    // and non-PV. Nothing feeds it to the margins.
+    //
+    // Direction follows `improving`: a favourable trend licenses MORE pruning,
+    // so the margin shrinks (improving already picks 26 over 32). The default
+    // is that same 6cp/depth delta — Coda's own measured worth of a trend
+    // signal in this exact expression — rather than an imported constant.
+    (RFP_MARGIN_OPPW, 6, 0, 40, 3.0, true),
     // Root-depth-aware RFP relaxation (single-set, self-adapts STC<->LTC):
     // demand MORE static-eval confidence to RFP-cut as the OVERALL search
     // depth grows past RFP_ROOT_THRESH (diminishing-returns of depth — the
@@ -4944,6 +4959,13 @@ fn negamax(
         if depth <= tp(&RFP_DEPTH) && ply > 0 && !tt_pv && !tt_move_is_quiet && info.excluded_move[ply_u] == NO_MOVE && FEAT_RFP.load(Ordering::Relaxed)
             && static_eval.abs() < MATE_SCORE - 200 {
             let mut margin = if improving { depth * tp(&RFP_MARGIN_IMP) } else { depth * tp(&RFP_MARGIN_NOIMP) };
+            // Opponent-worsening trims the margin further. Computed here rather
+            // than per-node so nodes that never reach RFP pay nothing.
+            if ply_u >= 1 && info.static_evals[ply_u - 1] > -(MATE_IN_MAX_PLY)
+                && info.static_evals[ply_u - 1] + static_eval <= 0
+            {
+                margin -= depth * tp(&RFP_MARGIN_OPPW);
+            }
             // Root-depth-aware relaxation: + depth*(root_depth-thresh)+ *coef/100.
             // Zero at STC (root_depth <= thresh); grows with both remaining
             // depth and how deep the overall search is, so deep RFP at LTC
