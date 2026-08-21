@@ -422,6 +422,29 @@ tunables!(
     //   bonus = err * (depth+1).min(W) / CORR_ERR_DIV
     // clamped at the gravity cap only.
     (CORR_ERR_DIV_10X, 55, 20, 640, 30.0, false),
+    // 50MR index bucketing for the MATERIAL-keyed corrhist sources.
+    //
+    // pawn_corr and np_corr are keyed on material alone, so during a shuffling
+    // / no-progress phase the position keeps reading and writing the SAME slot.
+    // The gravity update then integrates a consistently-signed residual into
+    // that one entry until it rails — which is the drift measured on 2026-08-19
+    // (a dead-drawn R+2P vs r+2P ending reads exactly 0 through depth 20 then
+    // reaches +20 by depth 24, while NO_CORRECTION=1 stays 0 at every depth).
+    //
+    // Folding the halfmove clock into the index means a position that has been
+    // shuffling for N plies reads a DIFFERENT, near-empty slot from the same
+    // material at clock 0, so correction physically cannot accumulate across a
+    // no-progress phase. Material-independent, so unlike a piece-count proxy it
+    // also catches high-material locked positions (blocked chains, opposite-side
+    // castling lockups).
+    //
+    // Width 8 plies: the clock runs 0..100 (the range Coda's own
+    // apply_halfmove_scale treats linearly), so 8 gives ~13 regions across the
+    // full 50-move window — a fresh slot every four full moves of shuffling.
+    // Normal play resets the clock constantly and therefore sits in bucket 0,
+    // where the rotate below is the identity and nothing changes.
+    // 0 disables.
+    (CORR_50MR_BUCKET_PLIES, 8, 0, 32, 3.0, true),
     (ESCAPE_BONUS_R, 8181, 3000, 30000, 1350.0, false),
     // Threat-escape ordering bonuses by escaping piece type. Ablating the
     // queen/minor terms measured only slightly load-bearing, so they are kept
@@ -1999,11 +2022,11 @@ fn cont_corr_value(info: &SearchInfo, ply: usize) -> i64 {
 /// |correction| — extend less on uncertain (drifting) evals.
 fn correction_value(info: &SearchInfo, board: &Board, ply: usize) -> i32 {
     let stm = board.side_to_move as usize;
-    let pawn_idx = (board.pawn_hash as usize) & (CORR_HIST_SIZE - 1);
+    let pawn_idx = (corr_50mr_key(board.pawn_hash, board.halfmove) as usize) & (CORR_HIST_SIZE - 1);
     let pawn_corr = info.pawn_corr[stm][pawn_idx] as i64;
-    let white_np_idx = (board.non_pawn_key[WHITE as usize] as usize) & (CORR_HIST_SIZE - 1);
+    let white_np_idx = (corr_50mr_key(board.non_pawn_key[WHITE as usize], board.halfmove) as usize) & (CORR_HIST_SIZE - 1);
     let white_np_corr = info.np_corr[stm][WHITE as usize][white_np_idx] as i64;
-    let black_np_idx = (board.non_pawn_key[BLACK as usize] as usize) & (CORR_HIST_SIZE - 1);
+    let black_np_idx = (corr_50mr_key(board.non_pawn_key[BLACK as usize], board.halfmove) as usize) & (CORR_HIST_SIZE - 1);
     let black_np_corr = info.np_corr[stm][BLACK as usize][black_np_idx] as i64;
     let cont_corr = cont_corr_value(info, ply);
     let trans_corr = if !board.undo_stack.is_empty() {
@@ -2034,6 +2057,24 @@ fn corrected_eval(info: &SearchInfo, board: &Board, raw_eval: i32, ply: usize) -
     // can never be read back as a mate by the MATE_IN_MAX_PLY guards. (Real
     // evals live in ±4095, so this clamp is purely defensive.)
     adjusted.clamp(-MATE_IN_MAX_PLY + 1, MATE_IN_MAX_PLY - 1)
+}
+
+/// Fold the 50-move clock into a material-keyed corrhist index.
+///
+/// Rotating by the bucket keeps every bit of the original key live (no bits are
+/// masked away, so per-bucket capacity is unchanged) and introduces no magic
+/// constant — the rotation amount IS the bucket. Bucket 0 rotates by 0, i.e.
+/// normal play is bit-for-bit unchanged.
+///
+/// MUST be used by both the read (corrected_eval) and write
+/// (update_correction_history) sites; a mismatch would silently train one slot
+/// and read another.
+#[inline(always)]
+fn corr_50mr_key(key: u64, halfmove: u16) -> u64 {
+    let width = tp(&CORR_50MR_BUCKET_PLIES);
+    if width <= 0 { return key; }
+    let bucket = ((halfmove as i32).min(100) / width) as u32;
+    key.rotate_left(bucket)
 }
 
 /// Update correction history entry with gravity.
@@ -2070,13 +2111,13 @@ fn update_correction_history(info: &mut SearchInfo, board: &Board, search_score:
     let stm = board.side_to_move as usize;
 
     // Pawn correction
-    let pawn_idx = (board.pawn_hash as usize) & (CORR_HIST_SIZE - 1);
+    let pawn_idx = (corr_50mr_key(board.pawn_hash, board.halfmove) as usize) & (CORR_HIST_SIZE - 1);
     update_corr_entry(&mut info.pawn_corr[stm][pawn_idx], scaled_err, cap_div);
 
     // Non-pawn corrections (per color)
-    let white_np_idx = (board.non_pawn_key[WHITE as usize] as usize) & (CORR_HIST_SIZE - 1);
+    let white_np_idx = (corr_50mr_key(board.non_pawn_key[WHITE as usize], board.halfmove) as usize) & (CORR_HIST_SIZE - 1);
     update_corr_entry(&mut info.np_corr[stm][WHITE as usize][white_np_idx], scaled_err, cap_div);
-    let black_np_idx = (board.non_pawn_key[BLACK as usize] as usize) & (CORR_HIST_SIZE - 1);
+    let black_np_idx = (corr_50mr_key(board.non_pawn_key[BLACK as usize], board.halfmove) as usize) & (CORR_HIST_SIZE - 1);
     update_corr_entry(&mut info.np_corr[stm][BLACK as usize][black_np_idx], scaled_err, cap_div);
 
     // Continuation correction — paired 2-ply/4-ply (H1). Index by the LAST move
@@ -4481,11 +4522,11 @@ fn negamax(
         use std::arch::x86_64::{_mm_prefetch, _MM_HINT_T0};
         let stm = board.side_to_move as usize;
         unsafe {
-            let pawn_idx = (board.pawn_hash as usize) & (CORR_HIST_SIZE - 1);
+            let pawn_idx = (corr_50mr_key(board.pawn_hash, board.halfmove) as usize) & (CORR_HIST_SIZE - 1);
             _mm_prefetch(&info.pawn_corr[stm][pawn_idx] as *const i32 as *const i8, _MM_HINT_T0);
-            let wnp_idx = (board.non_pawn_key[WHITE as usize] as usize) & (CORR_HIST_SIZE - 1);
+            let wnp_idx = (corr_50mr_key(board.non_pawn_key[WHITE as usize], board.halfmove) as usize) & (CORR_HIST_SIZE - 1);
             _mm_prefetch(&info.np_corr[stm][WHITE as usize][wnp_idx] as *const i32 as *const i8, _MM_HINT_T0);
-            let bnp_idx = (board.non_pawn_key[BLACK as usize] as usize) & (CORR_HIST_SIZE - 1);
+            let bnp_idx = (corr_50mr_key(board.non_pawn_key[BLACK as usize], board.halfmove) as usize) & (CORR_HIST_SIZE - 1);
             _mm_prefetch(&info.np_corr[stm][BLACK as usize][bnp_idx] as *const i32 as *const i8, _MM_HINT_T0);
             if let Some(last) = board.undo_stack.last() {
                 if last.mv != NO_MOVE {
@@ -4983,11 +5024,11 @@ fn negamax(
                         let div = tp(&CORR_HIST_DIV) as i64;
                         let grain = tp(&CORR_HIST_GRAIN_T) as i64;
                         let scale = (div * grain).max(1);
-                        let pawn_idx = (board.pawn_hash as usize) & (CORR_HIST_SIZE - 1);
+                        let pawn_idx = (corr_50mr_key(board.pawn_hash, board.halfmove) as usize) & (CORR_HIST_SIZE - 1);
                         let c1 = info.pawn_corr[stm][pawn_idx] as i64 * tp(&CORR_W_PAWN) as i64 / scale;
-                        let wnp = (board.non_pawn_key[WHITE as usize] as usize) & (CORR_HIST_SIZE - 1);
+                        let wnp = (corr_50mr_key(board.non_pawn_key[WHITE as usize], board.halfmove) as usize) & (CORR_HIST_SIZE - 1);
                         let c2 = info.np_corr[stm][WHITE as usize][wnp] as i64 * tp(&CORR_W_NP) as i64 / scale;
-                        let bnp = (board.non_pawn_key[BLACK as usize] as usize) & (CORR_HIST_SIZE - 1);
+                        let bnp = (corr_50mr_key(board.non_pawn_key[BLACK as usize], board.halfmove) as usize) & (CORR_HIST_SIZE - 1);
                         let c3 = info.np_corr[stm][BLACK as usize][bnp] as i64 * tp(&CORR_W_NP) as i64 / scale;
                         let c4 = cont_corr_value(info, ply_u) * tp(&CORR_W_CONT) as i64 / scale;
                         let c5 = if let Some(last) = board.undo_stack.last() {
@@ -7799,9 +7840,9 @@ mod tests {
         update_correction_history(&mut info, &board, raw + 400, raw, 20, 0);
 
         let stm = board.side_to_move as usize;
-        let pawn_idx = (board.pawn_hash as usize) & (CORR_HIST_SIZE - 1);
-        let white_np_idx = (board.non_pawn_key[WHITE as usize] as usize) & (CORR_HIST_SIZE - 1);
-        let black_np_idx = (board.non_pawn_key[BLACK as usize] as usize) & (CORR_HIST_SIZE - 1);
+        let pawn_idx = (corr_50mr_key(board.pawn_hash, board.halfmove) as usize) & (CORR_HIST_SIZE - 1);
+        let white_np_idx = (corr_50mr_key(board.non_pawn_key[WHITE as usize], board.halfmove) as usize) & (CORR_HIST_SIZE - 1);
+        let black_np_idx = (corr_50mr_key(board.non_pawn_key[BLACK as usize], board.halfmove) as usize) & (CORR_HIST_SIZE - 1);
 
         // The slot indexed by the test position's hash must be non-zero
         // in every per-position table. cont_corr is excluded — needs a
