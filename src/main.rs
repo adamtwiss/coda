@@ -2934,14 +2934,20 @@ fn run_eval_dist(input: &str, n: usize, nnue_path: &Option<String>, csv: &Option
         // `min_error` cp (both STM-POV). This is the eval-blindspot gate.
         if min_error > 0 && (score - entry.score as i32).abs() < min_error { continue; }
 
-        // Game result from STM perspective: 1.0=stm wins, 0.0=stm loses
-        // entry.result: 1=white win, 0=draw, -1=black win
+        // `entry.result` is STM-RELATIVE, exactly like `entry.score` — the
+        // sfbinpack docs say so outright ("1, 0, -1 for win, draw, loss for the
+        // side to move (like with score)"), and `is_continuation` relies on it
+        // (`self.result == -other.result` between plies). An earlier comment
+        // here claimed "1=white win", which is what produced two mirror-image
+        // POV bugs: this analysis path paired an STM-POV eval with a white-POV
+        // result, and the CSV below paired a white-POV eval with an STM-POV
+        // result. Measured on 40k T80 rows, the eval/outcome correlation was
+        // +0.011 broken vs +0.547 correct — the bug did not degrade the signal,
+        // it erased it, and positions scored above +500 and below -500 both
+        // read as ~33% wins.
         let stm_is_white = entry.pos.side_to_move() == sfbinpack::chess::color::Color::White;
-        let result_f = match entry.result {
-            1 => if stm_is_white { 1.0 } else { 0.0 },
-            -1 => if stm_is_white { 0.0 } else { 1.0 },
-            _ => 0.5, // draw
-        };
+        // STM-POV, to match `score` which is also STM-POV.
+        let result_f = match entry.result { 1 => 1.0, -1 => 0.0, _ => 0.5 };
 
         // In scan/harvest mode we stream straight to CSV and never
         // accumulate (the file has billions of rows — Vecs would OOM).
@@ -2954,7 +2960,9 @@ fn run_eval_dist(input: &str, n: usize, nnue_path: &Option<String>, csv: &Option
         if let Some(w) = csv_w.as_mut() {
             // White-POV result and eval, to match the white-POV `eval`
             // output of all engines in the benchmark driver.
-            let white_result = match entry.result { 1 => 1.0, -1 => 0.0, _ => 0.5 };
+            // `result_f` is STM-POV; this column is white-POV, so it needs the
+            // same conversion the two eval columns below get.
+            let white_result: f64 = if stm_is_white { result_f } else { 1.0 - result_f };
             let white_cp = if stm_is_white { score } else { -score };
             let lc0_white = if stm_is_white { entry.score } else { -entry.score };
             writeln!(w, "{},{:.1},{},{},{}", fen, white_result, white_cp, lc0_white, game_id).unwrap();
