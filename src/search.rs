@@ -36,6 +36,24 @@ use crate::types::*;
 /// 28840, clearing TB by 40cp; at 256 it would be 28744 and the whole TB band
 /// would read as mate. A unit test in tt.rs asserts this invariant.
 pub const MAX_PLY: usize = 160;
+
+/// Maximum ROOT depth for iterative deepening.
+///
+/// This was `MAX_PLY / 2`, a stack-safety margin left so that extensions below
+/// the root could not push `ply` past the MAX_PLY-sized stacks. That margin is
+/// redundant: `negamax` hard-guards `ply_u >= MAX_PLY` and returns a static
+/// eval, so a deep root cannot overrun anything — an over-extended line simply
+/// stops getting searched, exactly as it does today.
+///
+/// The halving cost us the entire deep-endgame tail. In the 2026-08 CCRL corpus
+/// every one of the 78 moves that hit the ceiling was an endgame (median 6
+/// pieces), and Coda returned in a median 3s where a position one ply shallower
+/// took 11-13s — it had run out of DEPTH, not time, while peers in the same
+/// event reported up to 256.
+///
+/// 3/4 keeps 40 plies of extension headroom instead of 80. It cannot change any
+/// search that does not reach depth 80, so bench is unaffected.
+pub const ROOT_DEPTH_MAX: i32 = (MAX_PLY as i32) * 3 / 4;
 const INFINITY: i32 = 30000;
 
 // Pawn history table size
@@ -2909,7 +2927,7 @@ pub(crate) fn search_helper(board: &mut Board, info: &mut SearchInfo, _limits: &
     // Iterative deepening with aspiration windows — same flow as main
     // `search()` but no UCI output and no TM decisions. Helpers stop
     // when main sets the shared stop flag.
-    let effective_max = info.max_depth.min(MAX_PLY as i32 / 2);
+    let effective_max = info.max_depth.min(ROOT_DEPTH_MAX);
     let mut prev_score = 0i32;
     // Cross-thread TM (concept from SF): track this helper's best-move changes between
     // completed iterations and publish into its own slot of the shared array.
@@ -3288,7 +3306,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
         info.time_limit = 0;
     }
 
-    info.max_depth = if limits.depth > 0 { limits.depth } else { MAX_PLY as i32 / 2 };
+    info.max_depth = if limits.depth > 0 { limits.depth } else { ROOT_DEPTH_MAX };
     info.max_nodes = limits.nodes;
 
     // TT generation is advanced by the entry-point caller (search_smp or
@@ -3345,7 +3363,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
         info.soft_floor = 0;
     }
 
-    let effective_max = info.max_depth.min(MAX_PLY as i32 / 2);
+    let effective_max = info.max_depth.min(ROOT_DEPTH_MAX);
     for depth in 1..=effective_max {
         if info.should_stop() { break; }
         info.root_depth = depth;
