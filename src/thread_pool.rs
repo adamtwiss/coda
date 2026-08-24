@@ -29,8 +29,9 @@ use crate::types::{Move, NO_MOVE};
 use std::sync::{Condvar, Mutex};
 use std::thread::JoinHandle;
 
-/// The vote tuple returned per worker: (nodes, best_move, score, depth, ponder).
-type HelperResult = (u64, Move, i32, i32, Move);
+/// The vote tuple returned per worker:
+/// (nodes, best_move, score, depth, seldepth, tb_hits, ponder).
+type HelperResult = (u64, Move, i32, i32, i32, u64, Move);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Phase {
@@ -116,7 +117,7 @@ fn build(num_workers: usize, main: &SearchInfo, board: &Board) -> ThreadPool {
                 board: board.clone(),
                 thread_id: id,
                 max_depth: 0,
-                result: (0, NO_MOVE, 0, 0, NO_MOVE),
+                result: (0, NO_MOVE, 0, 0, 0, 0, NO_MOVE),
             }),
             to_worker: Condvar::new(),
             to_main: Condvar::new(),

@@ -1510,6 +1510,7 @@ fn parse_go(tokens: &[&str]) -> SearchLimits {
     while idx < tokens.len() {
         match tokens[idx] {
             "depth" => {
+                limits.fixed_depth = true;
                 idx += 1;
                 if idx < tokens.len() {
                     // Fail-closed to a real depth-1 search on malformed /
@@ -1841,6 +1842,16 @@ mod tests {
 
     fn init() { crate::init(); }
 
+    #[test]
+    fn parse_go_marks_only_explicit_depth_as_fixed() {
+        let depth = parse_go(&["go", "depth", "12"]);
+        assert!(depth.fixed_depth);
+        assert_eq!(depth.depth, 12);
+
+        let clock = parse_go(&["go", "wtime", "10000", "btime", "10000"]);
+        assert!(!clock.fixed_depth);
+    }
+
     /// P4 — the TT-probe ponder-hint fallback must NEVER emit an illegal
     /// hint (PV_PONDER_BUG class), and must produce the TT move when it IS
     /// legal. Property test over random playouts: at every position we
@@ -1933,7 +1944,9 @@ mod tests {
         let mut board = Board::from_fen(
             "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1");
         let limits = crate::search::SearchLimits {
-            depth: 8, ..crate::search::SearchLimits::new()
+            depth: 8,
+            fixed_depth: true,
+            ..crate::search::SearchLimits::new()
         };
         let best = crate::search::search(&mut board, &mut info, &limits);
         assert!(best != NO_MOVE);

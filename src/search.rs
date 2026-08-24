@@ -40,6 +40,8 @@ const INFINITY: i32 = 30000;
 
 // Pawn history table size
 const PAWN_HIST_SIZE: usize = 512;
+const ROOT_MOVE_BUCKETS: usize = 5;
+const ROOT_MOVE_TABLE_SIZE: usize = 64 * 64 * ROOT_MOVE_BUCKETS;
 
 // ============================================================================
 // Tunable search parameters (exposed as UCI options for SPSA tuning)
@@ -744,7 +746,8 @@ pub fn disable_all_features() {
     FEAT_BAD_NOISY.store(false, Ordering::Relaxed); FEAT_EXTENSIONS.store(false, Ordering::Relaxed); FEAT_FH_BLEND.store(false, Ordering::Relaxed);
     FEAT_IIR.store(false, Ordering::Relaxed); FEAT_HINDSIGHT.store(false, Ordering::Relaxed); FEAT_CORRECTION.store(false, Ordering::Relaxed);
     FEAT_PVS.store(false, Ordering::Relaxed); FEAT_TT_CUTOFF.store(false, Ordering::Relaxed); FEAT_TT_NEARMISS.store(false, Ordering::Relaxed);
-    FEAT_TT_STORE.store(false, Ordering::Relaxed); FEAT_QS_CAPTURES.store(false, Ordering::Relaxed);
+    FEAT_TT_STORE.store(false, Ordering::Relaxed); FEAT_TT_STATIC_EVAL.store(false, Ordering::Relaxed);
+    FEAT_QS_CAPTURES.store(false, Ordering::Relaxed);
     FEAT_SINGULAR.store(false, Ordering::Relaxed); FEAT_CUCKOO.store(false, Ordering::Relaxed);
     FEAT_4D_HISTORY.store(false, Ordering::Relaxed);
 }
@@ -758,15 +761,14 @@ pub fn enable_all_features() {
     FEAT_BAD_NOISY.store(true, Ordering::Relaxed); FEAT_EXTENSIONS.store(true, Ordering::Relaxed); FEAT_FH_BLEND.store(true, Ordering::Relaxed);
     FEAT_IIR.store(true, Ordering::Relaxed); FEAT_HINDSIGHT.store(true, Ordering::Relaxed); FEAT_CORRECTION.store(true, Ordering::Relaxed);
     FEAT_PVS.store(true, Ordering::Relaxed); FEAT_TT_CUTOFF.store(true, Ordering::Relaxed); FEAT_TT_NEARMISS.store(true, Ordering::Relaxed);
-    FEAT_TT_STORE.store(true, Ordering::Relaxed); FEAT_QS_CAPTURES.store(true, Ordering::Relaxed);
+    FEAT_TT_STORE.store(true, Ordering::Relaxed); FEAT_TT_STATIC_EVAL.store(true, Ordering::Relaxed);
+    FEAT_QS_CAPTURES.store(true, Ordering::Relaxed);
     FEAT_SINGULAR.store(true, Ordering::Relaxed); FEAT_CUCKOO.store(true, Ordering::Relaxed);
     FEAT_4D_HISTORY.store(true, Ordering::Relaxed);
 }
 
 // Correction history constants
 const CORR_HIST_SIZE: usize = 16384;
-const CORR_HIST_GRAIN: i32 = 8;       // Scaled with LIMIT: 256/32000 ≈ 8/1024
-const CORR_HIST_MAX: i32 = 4;         // Scaled: 128/32000 ≈ 4/1024
 const CORR_HIST_LIMIT: i32 = 1024;    // Consensus (SF, Obsidian)
 
 
@@ -774,6 +776,10 @@ const CORR_HIST_LIMIT: i32 = 1024;    // Consensus (SF, Obsidian)
 #[derive(Clone)]
 pub struct SearchLimits {
     pub depth: i32,
+    /// True when `depth` came from an explicit fixed-depth request. Clocked
+    /// searches also carry a high depth ceiling, so `depth` alone cannot tell
+    /// SMP whether helper voting is allowed.
+    pub fixed_depth: bool,
     pub movetime: u64,    // milliseconds
     pub wtime: u64,
     pub btime: u64,
@@ -809,6 +815,7 @@ impl SearchLimits {
     pub fn new() -> Self {
         SearchLimits {
             depth: 100,
+            fixed_depth: false,
             movetime: 0,
             wtime: 0,
             btime: 0,
@@ -943,9 +950,10 @@ struct TmDbg {
 
 pub struct SearchInfo {
     pub nodes: u64,
-    /// Interior Syzygy WDL probe hits this search (main thread). Cosmetic —
-    /// surfaced in the UCI `tbhits` field so TB usage is observable. Root
-    /// TB-move hits are reported separately at their own info lines.
+    /// Interior Syzygy WDL probe hits this search, aggregated across SMP
+    /// workers after collection. Cosmetic — surfaced in the UCI `tbhits`
+    /// field so TB usage is observable. Root TB-move hits are reported
+    /// separately at their own info lines.
     pub tb_hits: u64,
     pub global_nodes: std::sync::Arc<AtomicU64>,  // aggregate nodes across SMP threads
     /// Cross-thread best-move-changes, PER THREAD (concept from SF). Thread `i` writes
@@ -963,6 +971,9 @@ pub struct SearchInfo {
     /// Cell because should_stop takes &self.
     last_flushed_nodes: std::cell::Cell<u64>,
     pub silent: bool,  // suppress UCI output (for datagen)
+    /// SMP defers search-end output until helpers have been collected and the
+    /// winning thread and aggregate counters are final.
+    defer_final_info: bool,
     pub stats: PruneStats,
     // Eval-path decomposition counters.
     // `stats_tt_static_eval_hits` counts nodes where we used the TT's
@@ -1051,9 +1062,10 @@ pub struct SearchInfo {
     /// Our remaining clock (ms, post-overhead) for the current search — feeds
     /// the inc-relative-to-budget ceiling discriminator.
     tm_time_left: u64,
-    /// Per-root-move node counts for node-based time management.
-    /// Indexed by from_sq * 64 + to_sq. Reset each search.
-    root_move_nodes: Box<[u64; 4096]>,
+    /// Per-root-move node counts for node-based time management. The fifth
+    /// bucket distinguishes ordinary moves from the four promotion choices.
+    /// Reset each search.
+    root_move_nodes: Box<[u64; ROOT_MOVE_TABLE_SIZE]>,
     /// Ponderhit: shared atomic time limit (ms). 0 = ponder mode (infinite).
     /// Set by UCI thread on ponderhit to switch from infinite to timed search.
     pub ponderhit_time: std::sync::Arc<AtomicU64>,
@@ -1229,6 +1241,7 @@ impl SearchInfo {
             num_threads: 1,
             last_flushed_nodes: std::cell::Cell::new(0),
             silent: false,
+            defer_final_info: false,
             stats: PruneStats::default(),
             stats_tt_static_eval_hits: 0,
             tt,
@@ -2168,6 +2181,17 @@ fn lmr_reduction(depth: i32, moves: i32) -> i32 {
     LMR_TABLE[d][m].load(Ordering::Relaxed)
 }
 
+#[inline(always)]
+fn root_move_index(mv: Move) -> usize {
+    let promotion_bucket = if is_promotion(mv) {
+        (move_flags(mv) - FLAG_PROMOTE_N) as usize
+    } else {
+        ROOT_MOVE_BUCKETS - 1
+    };
+    ((move_from(mv) as usize * 64 + move_to(mv) as usize) * ROOT_MOVE_BUCKETS)
+        + promotion_bucket
+}
+
 /// Initialize feature flags from environment variables (called once at process startup).
 /// NO_XXX=1 disables individual features. DISABLE_ALL=1 disables everything,
 /// then ENABLE_XXX=1 re-enables individual features.
@@ -2193,6 +2217,7 @@ fn init_feature_flags() {
             if std::env::var("ENABLE_TT_CUTOFF").is_ok() { FEAT_TT_CUTOFF.store(true, Ordering::Relaxed); }
             if std::env::var("ENABLE_TT_NEARMISS").is_ok() { FEAT_TT_NEARMISS.store(true, Ordering::Relaxed); }
             if std::env::var("ENABLE_TT_STORE").is_ok() { FEAT_TT_STORE.store(true, Ordering::Relaxed); }
+            if std::env::var("ENABLE_TT_STATIC_EVAL").is_ok() { FEAT_TT_STATIC_EVAL.store(true, Ordering::Relaxed); }
             if std::env::var("ENABLE_QS_CAPTURES").is_ok() { FEAT_QS_CAPTURES.store(true, Ordering::Relaxed); }
         } else {
             if std::env::var("NO_NMP").is_ok() { FEAT_NMP.store(false, Ordering::Relaxed); }
@@ -2327,8 +2352,10 @@ fn refresh_helper_common(helper: &mut SearchInfo, main: &SearchInfo) {
     helper.ponderhit_abs = main.ponderhit_abs.clone(); // in-flight forfeit guard
     helper.global_nodes = main.global_nodes.clone();
     helper.thread_bmc = main.thread_bmc.clone(); // shared per-thread bmc array (SF cross-thread TM)
+    helper.syzygy = main.syzygy.clone();
+    helper.tb_probe_depth = main.tb_probe_depth;
 
-    // Correction tables — copied for eval consistency (see fn-doc). ~260 KB.
+    // Correction tables — copied for eval consistency (see fn-doc). ~3.14 MiB.
     helper.pawn_corr.copy_from_slice(&main.pawn_corr[..]);
     helper.np_corr.copy_from_slice(&main.np_corr[..]);
     helper.cont_corr.copy_from_slice(&main.cont_corr[..]);
@@ -2395,7 +2422,8 @@ pub(crate) fn prepare_helper_for_search(info: &mut SearchInfo, board: &Board) {
 }
 
 /// Run one helper search to completion and return the vote tuple
-/// `(nodes, best_move, score, completed_depth, ponder)`. Shared verbatim by
+/// `(nodes, best_move, score, completed_depth, seldepth, tb_hits, ponder)`.
+/// Shared verbatim by
 /// the per-`go` spawn path and the persistent thread pool so both produce
 /// byte-identical helper behavior. `search_helper` ignores its `_limits`
 /// (helpers take depth from `info.max_depth` and stop on the shared flag), so
@@ -2405,17 +2433,25 @@ pub(crate) fn helper_run(
     board: &mut Board,
     max_depth: i32,
     thread_id: usize,
-) -> (u64, Move, i32, i32, Move) {
+) -> (u64, Move, i32, i32, i32, u64, Move) {
     prepare_helper_for_search(info, board);
     info.max_depth = max_depth;
     let placeholder = SearchLimits {
-        depth: max_depth, movetime: 0, wtime: 0, btime: 0, winc: 0, binc: 0,
+        depth: max_depth, fixed_depth: true, movetime: 0, wtime: 0, btime: 0, winc: 0, binc: 0,
         movestogo: 0, nodes: 0, infinite: false, movetime_floor: 0,
         min_think_ms: 0, abs_clock: 0,
     };
     let mv = search_helper(board, info, &placeholder, thread_id);
     let ponder = if info.pv_len[0] >= 2 { info.pv_table[0][1] } else { NO_MOVE };
-    (info.nodes, mv, info.last_score, info.completed_depth, ponder)
+    (
+        info.nodes,
+        mv,
+        info.last_score,
+        info.completed_depth,
+        info.sel_depth,
+        info.tb_hits,
+        ponder,
+    )
 }
 
 /// Identity of the NNUE net a `SearchInfo` currently holds (0 if none). The
@@ -2429,7 +2465,7 @@ pub(crate) fn nnue_net_identity(info: &SearchInfo) -> usize {
 }
 
 /// Compute time-management budgets from clock state. Returns
-/// (soft, hard, soft_floor) all in milliseconds.
+/// (soft, hard, max, soft_floor) all in milliseconds.
 ///
 /// Shared by `start_search` (initial allocation on `go wtime/btime`)
 /// and the UCI ponderhit handler (allocation after ponderhit when the
@@ -2626,8 +2662,63 @@ pub fn compute_tm_budgets(
     (opt_time, hard_time, max_time, soft_floor)
 }
 
-#[allow(dead_code)]
+/// A completed root iteration eligible for Lazy-SMP best-thread selection.
+#[derive(Clone, Copy)]
+struct SmpCandidate {
+    mv: Move,
+    score: i32,
+    depth: i32,
+    sel_depth: i32,
+    ponder: Move,
+    is_main: bool,
+}
 
+fn select_smp_candidate(cands: &[SmpCandidate], allow_helper: bool) -> Option<usize> {
+    if !allow_helper {
+        return cands.iter().position(|c| c.is_main);
+    }
+    if cands.is_empty() {
+        return None;
+    }
+
+    // Sum depth-weighted votes per move. The offset keeps the lowest-scoring
+    // candidate's vote positive, so depth still breaks equal-score choices.
+    let min_score = cands.iter().map(|c| c.score).min().unwrap();
+    let mut votes: Vec<(Move, i64)> = Vec::with_capacity(cands.len());
+    for c in cands {
+        let weight = c.depth as i64 * (c.score as i64 - min_score as i64 + 14);
+        if let Some(entry) = votes.iter_mut().find(|(m, _)| *m == c.mv) {
+            entry.1 += weight;
+        } else {
+            votes.push((c.mv, weight));
+        }
+    }
+    let vote_of = |mv: Move| {
+        votes
+            .iter()
+            .find(|(m, _)| *m == mv)
+            .map(|(_, weight)| *weight)
+            .unwrap_or(0)
+    };
+
+    let mut best = 0usize;
+    for i in 1..cands.len() {
+        let (score, mv, depth) = (cands[i].score, cands[i].mv, cands[i].depth);
+        let (best_score, best_move) = (cands[best].score, cands[best].mv);
+        if best_score >= MATE_IN_MAX_PLY {
+            if score > best_score {
+                best = i;
+            }
+        } else if score >= MATE_IN_MAX_PLY
+            || (score > -MATE_IN_MAX_PLY
+                && (vote_of(mv) > vote_of(best_move)
+                    || (vote_of(mv) == vote_of(best_move) && depth > cands[best].depth)))
+        {
+            best = i;
+        }
+    }
+    Some(best)
+}
 
 /// Run Lazy SMP search: main thread + N-1 helper threads.
 pub fn search_smp(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits, threads: usize) -> Move {
@@ -2665,27 +2756,44 @@ pub fn search_smp(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimit
     crate::thread_pool::dispatch(threads - 1, info, board, limits.depth);
 
     // Main thread searches normally
+    info.defer_final_info = true;
     let main_move = search(board, info, limits);
+    info.defer_final_info = false;
     let main_score = info.last_score;
     let main_depth = info.completed_depth;
+    let main_sel_depth = info.sel_depth;
 
     // Signal all helpers to stop
     info.stop.store(true, Ordering::Relaxed);
 
-    // Collect per-thread candidates: (move, score, depth, ponder, is_main).
+    // Collect per-thread candidates.
     // Helpers now also return their 2nd PV move (ponder) so a winning helper
     // can hand uci.rs a consistent bestmove+ponder pair.
-    struct Cand { mv: Move, score: i32, depth: i32, ponder: Move, is_main: bool }
     let mut total_nodes = info.nodes;
-    let mut cands: Vec<Cand> = Vec::with_capacity(threads);
+    let mut cands: Vec<SmpCandidate> = Vec::with_capacity(threads);
     let main_ponder = if info.pv_len[0] >= 2 { info.pv_table[0][1] } else { NO_MOVE };
     if main_move != NO_MOVE && main_depth > 0 {
-        cands.push(Cand { mv: main_move, score: main_score, depth: main_depth, ponder: main_ponder, is_main: true });
+        cands.push(SmpCandidate {
+            mv: main_move,
+            score: main_score,
+            depth: main_depth,
+            sel_depth: main_sel_depth,
+            ponder: main_ponder,
+            is_main: true,
+        });
     }
-    for (helper_nodes, mv, score, depth, ponder) in crate::thread_pool::collect() {
+    for (helper_nodes, mv, score, depth, sel_depth, tb_hits, ponder) in crate::thread_pool::collect() {
         total_nodes += helper_nodes;
+        info.tb_hits += tb_hits;
         if mv != NO_MOVE && depth > 0 {
-            cands.push(Cand { mv, score, depth, ponder, is_main: false });
+            cands.push(SmpCandidate {
+                mv,
+                score,
+                depth,
+                sel_depth,
+                ponder,
+                is_main: false,
+            });
         }
     }
     info.nodes = total_nodes;
@@ -2693,24 +2801,9 @@ pub fn search_smp(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimit
     // Nothing completed a real iteration — fall back to main's move (which may
     // itself be NO_MOVE only in pathological instant-stop cases).
     if cands.is_empty() {
+        emit_final_info(info, board, total_nodes);
         return main_move;
     }
-
-    // Vote-based selection (SF/Obsidian/Plenty). weight = depth * (score -
-    // min_score + 14): the +14 keeps the worst-scored thread's vote nonzero so
-    // depth still matters on tied scores; ×depth makes shallow helpers count
-    // less. Votes are summed per move across threads.
-    let min_score = cands.iter().map(|c| c.score).min().unwrap();
-    let mut votes: Vec<(Move, i64)> = Vec::with_capacity(cands.len());
-    for c in &cands {
-        let weight = c.depth as i64 * (c.score as i64 - min_score as i64 + 14);
-        if let Some(entry) = votes.iter_mut().find(|(m, _)| *m == c.mv) {
-            entry.1 += weight;
-        } else {
-            votes.push((c.mv, weight));
-        }
-    }
-    let vote_of = |mv: Move| votes.iter().find(|(m, _)| *m == mv).map(|(_, w)| *w).unwrap_or(0);
 
     // Select the best THREAD, not just the max-vote move (SF get_best_thread):
     // prefer a proven win (shortest mate = highest score); otherwise switch to a
@@ -2719,20 +2812,12 @@ pub fn search_smp(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimit
     // PV/ponder out — the previous `max_by_key(votes)` returned a move with no
     // owning thread, so on any vote-override uci.rs saw pv_table[0][0] != bestmove
     // and dropped the ponder entirely.
-    let mut best = 0usize;
-    for i in 1..cands.len() {
-        let (cs, cmv, cd) = (cands[i].score, cands[i].mv, cands[i].depth);
-        let (bs, bmv) = (cands[best].score, cands[best].mv);
-        if bs >= MATE_IN_MAX_PLY {
-            if cs > bs { best = i; }
-        } else if cs >= MATE_IN_MAX_PLY
-            || (cs > -MATE_IN_MAX_PLY
-                && (vote_of(cmv) > vote_of(bmv)
-                    || (vote_of(cmv) == vote_of(bmv) && cd > cands[best].depth)))
-        {
-            best = i;
-        }
-    }
+    // An explicit fixed-depth request always keeps main's completed result;
+    // helpers may be interrupted at a shallower iteration when main finishes.
+    let Some(best) = select_smp_candidate(&cands, !limits.fixed_depth) else {
+        emit_final_info(info, board, total_nodes);
+        return main_move;
+    };
 
     // If a non-main thread won, adopt its move + ponder into info so uci.rs sees
     // pv_table[0][0] == returned bestmove and can emit the ponder. Main's own PV
@@ -2741,6 +2826,8 @@ pub fn search_smp(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimit
     if !cands[best].is_main {
         info.pv_table[0][0] = winner_mv;
         info.last_score = cands[best].score;
+        info.completed_depth = cands[best].depth;
+        info.sel_depth = cands[best].sel_depth;
         if cands[best].ponder != NO_MOVE {
             info.pv_table[0][1] = cands[best].ponder;
             info.pv_len[0] = 2;
@@ -2752,6 +2839,9 @@ pub fn search_smp(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimit
             info.pv_len[0] = 1;
         }
     }
+    // search() deferred its search-end line. Emit the final thread choice and
+    // exact aggregate counters now so the last UCI info agrees with bestmove.
+    emit_final_info(info, board, total_nodes);
     winner_mv
 }
 
@@ -2952,6 +3042,30 @@ fn build_pv_string(info: &SearchInfo, board: &Board, target_depth: i32) -> Strin
     }
 
     pv_str
+}
+
+fn emit_final_info(info: &SearchInfo, board: &Board, nodes: u64) {
+    if info.silent || info.completed_depth <= 0 {
+        return;
+    }
+
+    let elapsed = info.start_time.elapsed().as_millis() as u64;
+    let nps = if elapsed > 0 { nodes * 1000 / elapsed } else { 0 };
+    let score_str = crate::tt::format_uci_score(info.last_score);
+    let pv_str = build_pv_string(info, board, info.completed_depth);
+    if pv_str.is_empty() {
+        println!(
+            "info depth {} seldepth {} {} nodes {} nps {} time {} hashfull {} tbhits {}",
+            info.completed_depth, info.sel_depth, score_str,
+            nodes, nps, elapsed, info.tt.hashfull(), info.tb_hits
+        );
+    } else {
+        println!(
+            "info depth {} seldepth {} {} nodes {} nps {} time {} hashfull {} tbhits {} pv {}",
+            info.completed_depth, info.sel_depth, score_str,
+            nodes, nps, elapsed, info.tt.hashfull(), info.tb_hits, pv_str
+        );
+    }
 }
 
 /// Run iterative deepening search.
@@ -3667,11 +3781,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
         // adjustment couldn't bite.
         let score_drop = if depth >= 4 {
             if info.tm_has_data {
-                let bm_from = move_from(best_move);
-                let bm_to = move_to(best_move);
-                let prev_from = move_from(info.tm_prev_best);
-                let prev_to = move_to(info.tm_prev_best);
-                if bm_from == prev_from && bm_to == prev_to {
+                if best_move == info.tm_prev_best {
                     info.tm_best_stable += 1;
                 } else {
                     info.tm_best_stable = 0;
@@ -3857,9 +3967,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             //   low fraction (<0.3):  uncertain → increase time
             let mut subtree_frac = -1.0f64; // diagnostic only; -1 = not computed
             let subtree_size_multiplier = if depth > 9 && best_move != NO_MOVE {
-                let bm_from = move_from(best_move) as usize;
-                let bm_to = move_to(best_move) as usize;
-                let best_nodes = info.root_move_nodes[bm_from * 64 + bm_to];
+                let best_nodes = info.root_move_nodes[root_move_index(best_move)];
                 let total = info.nodes;
                 if total > 0 {
                     let frac = best_nodes as f64 / total as f64;
@@ -4187,26 +4295,10 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     // here holds the adopted final line (deepest completed, or the banked
     // partial on a mid-iteration abort); build_pv_string applies the same
     // legality guard as the per-iteration print.
-    if !info.silent && info.completed_depth > 0 {
-        let elapsed = info.start_time.elapsed().as_millis() as u64;
-        let global = info.global_nodes.load(Ordering::Relaxed)
-            + (info.nodes - info.last_flushed_nodes.get());
-        let nps = if elapsed > 0 { global * 1000 / elapsed } else { 0 };
-        let score_str = crate::tt::format_uci_score(info.last_score);
-        let pv_str = build_pv_string(info, board, info.completed_depth);
-        if pv_str.is_empty() {
-            println!(
-                "info depth {} seldepth {} {} nodes {} nps {} time {} hashfull {} tbhits {}",
-                info.completed_depth, info.sel_depth, score_str,
-                global, nps, elapsed, info.tt.hashfull(), info.tb_hits
-            );
-        } else {
-            println!(
-                "info depth {} seldepth {} {} nodes {} nps {} time {} hashfull {} tbhits {} pv {}",
-                info.completed_depth, info.sel_depth, score_str,
-                global, nps, elapsed, info.tt.hashfull(), info.tb_hits, pv_str
-            );
-        }
+    let global = info.global_nodes.load(Ordering::Relaxed)
+        + (info.nodes - info.last_flushed_nodes.get());
+    if !info.defer_final_info {
+        emit_final_info(info, board, global);
     }
 
     best_move
@@ -6148,7 +6240,7 @@ fn negamax(
 
         // Accumulate nodes for this root move
         if ply == 0 {
-            let idx = (from as usize) * 64 + (to as usize);
+            let idx = root_move_index(mv);
             info.root_move_nodes[idx] += info.nodes - nodes_before;
         }
 
@@ -6810,6 +6902,10 @@ fn quiescence_with_depth(
             if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
         if info.threat_stack.active { info.threat_stack.pop(); }
 
+            if info.stop.load(Ordering::Relaxed) {
+                return 0;
+            }
+
             if score > best_score {
                 best_score = score;
                 best_move = mv;
@@ -6848,7 +6944,10 @@ fn quiescence_with_depth(
     // Use TT staticEval when available to avoid recomputing. TT stores
     // halfmove-independent values (see SearchInfo::eval doc), so we apply
     // the scale freshly against `board.halfmove` after reading.
-    let raw_stand_pat = if tt_hit && tt_entry.static_eval > -4095 {
+    let raw_stand_pat = if FEAT_TT_STATIC_EVAL.load(Ordering::Relaxed)
+        && tt_hit
+        && tt_entry.static_eval > -4095
+    {
         // Threshold matches pack_data's clamp range. -INFINITY sentinels
         // (from in-check TT stores) get clamped to -4095 and would
         // otherwise pass a wider check.
@@ -7033,6 +7132,10 @@ fn quiescence_with_depth(
         if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
         if info.threat_stack.active { info.threat_stack.pop(); }
 
+        if info.stop.load(Ordering::Relaxed) {
+            return 0;
+        }
+
         if score > best_score {
             best_score = score;
             best_move = mv;
@@ -7171,6 +7274,7 @@ pub fn bench_pathology(depth: i32, node_threshold: u64, nnue_path: Option<&str>)
     }
     let limits = SearchLimits {
         depth,
+        fixed_depth: true,
         infinite: true,
         ..SearchLimits::new()
     };
@@ -7231,6 +7335,7 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
 
     let limits = SearchLimits {
         depth,
+        fixed_depth: true,
         infinite: true,
         ..SearchLimits::new()
     };
@@ -7539,6 +7644,71 @@ mod tests {
     use super::*;
 
     #[test]
+    fn root_move_index_distinguishes_promotions() {
+        let from = square(0, 6);
+        let to = square(0, 7);
+        let indices = [
+            root_move_index(make_move(from, to, FLAG_PROMOTE_N)),
+            root_move_index(make_move(from, to, FLAG_PROMOTE_B)),
+            root_move_index(make_move(from, to, FLAG_PROMOTE_R)),
+            root_move_index(make_move(from, to, FLAG_PROMOTE_Q)),
+            root_move_index(make_move(from, to, FLAG_NONE)),
+        ];
+        for i in 0..indices.len() {
+            for j in i + 1..indices.len() {
+                assert_ne!(indices[i], indices[j]);
+            }
+        }
+        assert!(indices.iter().all(|&idx| idx < ROOT_MOVE_TABLE_SIZE));
+    }
+
+    #[test]
+    fn fixed_depth_smp_selection_keeps_main_candidate() {
+        let main_move = make_move(square(4, 1), square(4, 3), FLAG_NONE);
+        let helper_move = make_move(square(3, 1), square(3, 3), FLAG_NONE);
+        let cands = [
+            SmpCandidate {
+                mv: main_move,
+                score: 0,
+                depth: 12,
+                sel_depth: 18,
+                ponder: NO_MOVE,
+                is_main: true,
+            },
+            SmpCandidate {
+                mv: helper_move,
+                score: 100,
+                depth: 8,
+                sel_depth: 14,
+                ponder: NO_MOVE,
+                is_main: false,
+            },
+            SmpCandidate {
+                mv: helper_move,
+                score: 100,
+                depth: 8,
+                sel_depth: 14,
+                ponder: NO_MOVE,
+                is_main: false,
+            },
+        ];
+
+        assert_eq!(select_smp_candidate(&cands, false), Some(0));
+        assert_ne!(select_smp_candidate(&cands, true), Some(0));
+    }
+
+    #[test]
+    fn helper_refresh_updates_syzygy_probe_depth() {
+        let mut main = SearchInfo::new(1);
+        let mut helper = create_helper_info(&main);
+        main.tb_probe_depth = 19;
+
+        refresh_helper_per_go(&mut helper, &main);
+
+        assert_eq!(helper.tb_probe_depth, 19);
+    }
+
+    #[test]
     fn persistent_history_reset_clears_all_history_tables() {
         let mut info = SearchInfo::new(1);
         info.dirty_persistent_histories_for_test();
@@ -7637,7 +7807,12 @@ mod tests {
             ("8/k7/P2K4/8/5p2/P7/1b2B3/8 b - - 26 67", "7-man OCB down a pawn (game PYiXcgdg mv67)"),
             ("8/k2K4/P7/P7/8/8/8/2b2B2 b - - 0 94",    "K+B+2P vs K+B fortress (game PYiXcgdg mv94)"),
         ];
-        let limits = SearchLimits { depth: 16, infinite: true, ..SearchLimits::new() };
+        let limits = SearchLimits {
+            depth: 16,
+            fixed_depth: true,
+            infinite: true,
+            ..SearchLimits::new()
+        };
         for (fen, label) in fortresses {
             let mut board = Board::from_fen(fen);
             info.clear_correction_history();   // fresh corrhist per position
@@ -7684,6 +7859,7 @@ mod tests {
 
         let limits = SearchLimits {
             depth: 8, // enough to hit SE at SE_DEPTH threshold
+            fixed_depth: true,
             movetime: 0,
             wtime: 0, btime: 0, winc: 0, binc: 0,
             movestogo: 0, nodes: 0, infinite: false,

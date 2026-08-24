@@ -680,7 +680,7 @@ fn play_one_game(info: &mut SearchInfo, rng: &mut SimpleRng, depth: i32, blunder
         if is_repetition(&board) { result = Some(0); break; }
         if ply > 500 { result = Some(0); break; }
 
-        let limits = SearchLimits { depth, ..SearchLimits::default() };
+        let limits = SearchLimits { depth, fixed_depth: true, ..SearchLimits::default() };
         info.tt.new_search();
         let best_move = search::search(&mut board, info, &limits);
         let score = info.last_score;
@@ -826,7 +826,7 @@ fn material_worker(
 
             if !is_valid_position(&modified) { continue; }
 
-            let limits = SearchLimits { depth, ..SearchLimits::default() };
+            let limits = SearchLimits { depth, fixed_depth: true, ..SearchLimits::default() };
             reset_material_position_state(&mut info);
             let best_move = search::search(&mut modified, &mut info, &limits);
             let score = info.last_score;
