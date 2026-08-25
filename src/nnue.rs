@@ -2390,11 +2390,34 @@ unsafe fn neon_l1_int8_dot_x4_dotprod(
     ]
 }
 
+/// Test/benchmark ISA ceiling (env `CODA_ISA_MAX`, read once): caps the SIMD
+/// tier BELOW what the CPU actually supports. 1 = AVX2 only, 2 = + AVX-VNNI /
+/// AVX-512BW, 3 = + AVX-512 VNNI; unset = no cap (normal behaviour).
+///
+/// Exists so one host can exercise another host's kernels. The release matrix
+/// ships one binary per compile target, but a single artefact (e.g.
+/// x86-64-v3) is dispatched at RUNTIME across AVX2-only and AVX-512 CPUs — so
+/// "does a PGO profile collected on an AVX-512 box pessimise the AVX2 kernels
+/// its own binary will run elsewhere?" is otherwise untestable without two
+/// machines. Affects kernel SELECTION only: every tier must produce identical
+/// results, so bench node counts are expected to match across settings, and a
+/// mismatch is a real bug rather than a quirk of this switch.
+pub(crate) fn isa_max() -> u8 {
+    use std::sync::OnceLock;
+    static C: OnceLock<u8> = OnceLock::new();
+    *C.get_or_init(|| {
+        std::env::var("CODA_ISA_MAX")
+            .ok()
+            .and_then(|v| v.trim().parse::<u8>().ok())
+            .unwrap_or(u8::MAX)
+    })
+}
+
 /// Detect AVX2 support at runtime.
 fn detect_avx2() -> bool {
     #[cfg(target_arch = "x86_64")]
     {
-        is_x86_feature_detected!("avx2")
+        isa_max() >= 1 && is_x86_feature_detected!("avx2")
     }
     #[cfg(not(target_arch = "x86_64"))]
     {
@@ -2406,7 +2429,9 @@ fn detect_avx2() -> bool {
 fn detect_avx512() -> bool {
     #[cfg(target_arch = "x86_64")]
     {
-        is_x86_feature_detected!("avx512f") && is_x86_feature_detected!("avx512bw")
+        isa_max() >= 2
+            && is_x86_feature_detected!("avx512f")
+            && is_x86_feature_detected!("avx512bw")
     }
     #[cfg(not(target_arch = "x86_64"))]
     {
@@ -2420,7 +2445,8 @@ fn detect_avx512() -> bool {
 fn detect_avx512_vnni() -> bool {
     #[cfg(target_arch = "x86_64")]
     {
-        is_x86_feature_detected!("avx512f")
+        isa_max() >= 3
+            && is_x86_feature_detected!("avx512f")
             && is_x86_feature_detected!("avx512bw")
             && is_x86_feature_detected!("avx512vnni")
     }
@@ -2436,7 +2462,9 @@ fn detect_avx512_vnni() -> bool {
 fn detect_avx_vnni() -> bool {
     #[cfg(target_arch = "x86_64")]
     {
-        is_x86_feature_detected!("avx2") && is_x86_feature_detected!("avxvnni")
+        isa_max() >= 2
+            && is_x86_feature_detected!("avx2")
+            && is_x86_feature_detected!("avxvnni")
     }
     #[cfg(not(target_arch = "x86_64"))]
     {

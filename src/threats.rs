@@ -502,9 +502,10 @@ fn x86_simd_tier() -> u8 {
     use std::sync::OnceLock;
     static TIER: OnceLock<u8> = OnceLock::new();
     *TIER.get_or_init(|| {
-        if is_x86_feature_detected!("avx512f") && is_x86_feature_detected!("avx512bw") {
+        let cap = crate::nnue::isa_max();
+        if cap >= 2 && is_x86_feature_detected!("avx512f") && is_x86_feature_detected!("avx512bw") {
             2
-        } else if is_x86_feature_detected!("avx2") {
+        } else if cap >= 1 && is_x86_feature_detected!("avx2") {
             1
         } else {
             0
