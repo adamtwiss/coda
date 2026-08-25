@@ -92,31 +92,43 @@ pub fn see_ge(board: &Board, mv: Move, threshold: i32) -> bool {
         let their_diag = (board.pieces[BISHOP as usize] | board.pieces[QUEEN as usize]) & board.colors[them as usize];
         let their_orth = (board.pieces[ROOK as usize] | board.pieces[QUEEN as usize]) & board.colors[them as usize];
         let (mut pinned, mut pinners) = (0u64, 0u64);
-        let mut p = bishop_attacks(ksq, 0) & their_diag;
+        // `bishop_attacks(ksq, 0)` / `rook_attacks(ksq, 0)` are by definition the
+        // empty-board rays, which we already keep in a 512-byte table each. Going
+        // through the magic path for them costs a PEXT plus a load from the
+        // multi-hundred-KB attack table for a value that never varies.
+        let mut p = bishop_attacks_empty(ksq) & their_diag;
         while p != 0 { let sq = pop_lsb(&mut p); let b = crate::bitboard::between(ksq, sq) & occ_all; if popcount(b) == 1 && b & board.colors[us as usize] != 0 { pinned |= b; pinners |= 1u64 << sq; } }
-        let mut p = rook_attacks(ksq, 0) & their_orth;
+        let mut p = rook_attacks_empty(ksq) & their_orth;
         while p != 0 { let sq = pop_lsb(&mut p); let b = crate::bitboard::between(ksq, sq) & occ_all; if popcount(b) == 1 && b & board.colors[us as usize] != 0 { pinned |= b; pinners |= 1u64 << sq; } }
         (pinned, pinners)
     };
-    let (pinned_w, pinners_b) = pin_info(WHITE);
-    let (pinned_b, pinners_w) = pin_info(BLACK);
-    let pinned = [pinned_w, pinned_b];
-    // pinners[c] = sliders of colour c that pin an enemy piece.
-    let pinners = [pinners_w, pinners_b];
+    // Filled on first touch, per colour. The swap loop only ever consults the
+    // masks for the side currently to move, and for that side it needs both
+    // halves of one `pin_info` call: `pinned` of `stm` and the pinners of its
+    // opponent are exactly what `pin_info(stm)` returns. Computing both colours
+    // up front therefore did two king-ray scans where most calls use one and
+    // many use none — the loop commonly breaks on the first `stm_attackers == 0`
+    // test, before any pin mask is read. Board state read by `pin_info` (kings,
+    // pieces, colours, the original occupancy) does not change across the loop,
+    // so a cached value stays valid for the whole call; only the `& occ` test
+    // against the live occupancy belongs inside the loop.
+    let mut pin_cache: [Option<(Bitboard, Bitboard)>; 2] = [None, None];
 
     loop {
         let mut stm_attackers = attackers & board.colors[stm as usize];
         if stm_attackers == 0 {
             break;
         }
+        let (pinned_stm, pinners_them) =
+            *pin_cache[stm as usize].get_or_insert_with(|| pin_info(stm));
         // Exclude pinned pieces from recapturing (they cannot legally move off
         // the pin ray) — but ONLY while the pinner is still on the board. Once
         // the pinner has been captured (including as the very first capture,
         // which is why `to` was cleared from `occ`), the pin is gone and the
         // piece is free to recapture. Same rule as SF's
         // `if (pinners(~stm) & occupied) stmAttackers &= ~blockers_for_king(stm)`.
-        if pinners[flip_color(stm) as usize] & occ != 0 {
-            stm_attackers &= !pinned[stm as usize];
+        if pinners_them & occ != 0 {
+            stm_attackers &= !pinned_stm;
             if stm_attackers == 0 {
                 break;
             }
