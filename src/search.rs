@@ -737,6 +737,11 @@ pub static FEAT_4D_HISTORY: AtomicBool = AtomicBool::new(true); // threat-aware 
 // Diagnostic-only (env RFP_VERIFY_SAMPLE=N): fully search one deterministic
 // sample per roughly N RFP cutoffs. Zero disables it; never a play feature.
 pub static RFP_VERIFY_SAMPLE: AtomicU64 = AtomicU64::new(0);
+// Diagnostic-only (env RFP_DECISIVE_SAMPLE=N): count every RFP cutoff whose
+// beta is in the TB/mate-loss band, and decline/search a deterministic 1/N
+// sample. Kept separate from the general sampler so rare decisive candidates
+// are not drowned out by ordinary cutoffs.
+pub static RFP_DECISIVE_SAMPLE: AtomicU64 = AtomicU64::new(0);
 // Diagnostic-only correction calibration counters (env CORR_AUDIT=1).
 pub static CORR_AUDIT: AtomicBool = AtomicBool::new(false);
 
@@ -898,6 +903,20 @@ pub struct PruneStats {
     pub rfp_verify_regret: [u64; 24],
     pub rfp_verify_corr_flips: [u64; 24],
     pub rfp_verify_corr_flip_rejected: [u64; 24],
+    // Decisive-beta candidates: band [TB/downgraded, mate], plus orthogonal
+    // depth, ply and cutoff-surplus views. "Rejected" means the declined
+    // full-depth search returned below beta; it is disagreement evidence, not
+    // a proof that the original lower-bound cutoff was incorrect.
+    pub rfp_decisive_candidates: [u64; 2],
+    pub rfp_decisive_sampled: [u64; 2],
+    pub rfp_decisive_rejected: [u64; 2],
+    pub rfp_decisive_nodes: [u64; 2],
+    pub rfp_decisive_regret: [u64; 2],
+    pub rfp_decisive_candidates_depth: [u64; 24],
+    pub rfp_decisive_candidates_ply: [u64; 4],
+    pub rfp_decisive_rejected_ply: [u64; 4],
+    pub rfp_decisive_candidates_surplus: [u64; 4],
+    pub rfp_decisive_rejected_surplus: [u64; 4],
     // Correction calibration by depth band × halfmove band. Depth bands are
     // <=4, 5-8, >=9; halfmove bands are 0-24, 25-49, 50-74, 75+.
     pub corr_audit_updates: [u64; 12],
@@ -907,6 +926,19 @@ pub struct PruneStats {
     pub corr_audit_clipped: [u64; 12],
     pub corr_audit_rfp_flip_on: [u64; 4],
     pub corr_audit_rfp_flip_off: [u64; 4],
+    // Leave-one-source-out calibration by source × halfmove bucket. Sources:
+    // pawn, white non-pawn, black non-pawn, continuation, transition.
+    pub corr_source_samples: [u64; 20],
+    pub corr_source_nonzero: [u64; 20],
+    pub corr_source_abs: [u64; 20],
+    pub corr_source_loss_without: [u64; 20],
+    pub corr_source_helped: [u64; 20],
+    pub corr_source_hurt: [u64; 20],
+    pub corr_source_rfp_flip_on: [u64; 20],
+    pub corr_source_rfp_flip_off: [u64; 20],
+    // Update pressure by ply bucket: 0-3, 4-7, 8-15, 16+.
+    pub corr_update_ply_samples: [u64; 4],
+    pub corr_update_ply_clipped: [u64; 4],
     // TREESTATS parity counters, for tree-shape comparison against an
     // instrumented SF build; dumped by the UCI `treestats` command in the same
     // line format that patch emits. Bucket 0 = qsearch;
@@ -2015,10 +2047,10 @@ fn cont_corr_value(info: &SearchInfo, ply: usize) -> i64 {
     sum
 }
 
-/// Compute the correction value alone (the centipawn delta corrhist would apply
-/// to raw eval). Used by SE-margin formulas to gate extension confidence on
-/// |correction| — extend less on uncertain (drifting) evals.
-fn correction_value(info: &SearchInfo, board: &Board, ply: usize) -> i32 {
+/// Weighted numerators for each correction source, before the shared divisors.
+/// Keeping these separable lets diagnostics remove exactly one source without
+/// approximating around integer rounding.
+fn correction_parts(info: &SearchInfo, board: &Board, ply: usize) -> [i64; 5] {
     let stm = board.side_to_move as usize;
     let pawn_idx = (board.pawn_hash as usize) & (CORR_HIST_SIZE - 1);
     let pawn_corr = info.pawn_corr[stm][pawn_idx] as i64;
@@ -2034,9 +2066,26 @@ fn correction_value(info: &SearchInfo, board: &Board, ply: usize) -> i32 {
             info.trans_corr[stm][trans_idx] as i64
         } else { 0 }
     } else { 0 };
-    let total_corr = (pawn_corr * tp(&CORR_W_PAWN) as i64 + white_np_corr * tp(&CORR_W_NP) as i64 + black_np_corr * tp(&CORR_W_NP) as i64
-        + cont_corr * tp(&CORR_W_CONT) as i64 + trans_corr * tp(&CORR_W_TRANS) as i64) / tp(&CORR_HIST_DIV) as i64;
+    [
+        pawn_corr * tp(&CORR_W_PAWN) as i64,
+        white_np_corr * tp(&CORR_W_NP) as i64,
+        black_np_corr * tp(&CORR_W_NP) as i64,
+        cont_corr * tp(&CORR_W_CONT) as i64,
+        trans_corr * tp(&CORR_W_TRANS) as i64,
+    ]
+}
+
+#[inline]
+fn correction_from_parts(parts: [i64; 5]) -> i32 {
+    let total_corr = parts.iter().sum::<i64>() / tp(&CORR_HIST_DIV) as i64;
     (total_corr as i32) / tp(&CORR_HIST_GRAIN_T)
+}
+
+/// Compute the correction value alone (the centipawn delta corrhist would apply
+/// to raw eval). Used by SE-margin formulas to gate extension confidence on
+/// |correction| — extend less on uncertain (drifting) evals.
+fn correction_value(info: &SearchInfo, board: &Board, ply: usize) -> i32 {
+    correction_from_parts(correction_parts(info, board, ply))
 }
 
 /// Apply correction history to raw static eval.
@@ -2066,6 +2115,47 @@ fn corr_audit_halfmove_bucket(halfmove: u16) -> usize {
 fn corr_audit_bucket(depth: i32, halfmove: u16) -> usize {
     let depth_bucket = if depth <= 4 { 0 } else if depth <= 8 { 1 } else { 2 };
     depth_bucket * 4 + corr_audit_halfmove_bucket(halfmove)
+}
+
+#[inline]
+fn corr_audit_ply_bucket(ply: usize) -> usize {
+    match ply {
+        0..=3 => 0,
+        4..=7 => 1,
+        8..=15 => 2,
+        _ => 3,
+    }
+}
+
+#[inline]
+fn rfp_decisive_band(beta: i32) -> Option<usize> {
+    if beta <= -MATE_IN_MAX_PLY {
+        Some(1)
+    } else if is_loss(beta) {
+        Some(0)
+    } else {
+        None
+    }
+}
+
+#[inline]
+fn rfp_audit_ply_bucket(ply: i32) -> usize {
+    match ply {
+        ..=2 => 0,
+        3..=4 => 1,
+        5..=8 => 2,
+        _ => 3,
+    }
+}
+
+#[inline]
+fn rfp_audit_surplus_bucket(surplus: i32) -> usize {
+    match surplus {
+        ..=15 => 0,
+        16..=31 => 1,
+        32..=63 => 2,
+        _ => 3,
+    }
 }
 
 #[inline]
@@ -2276,6 +2366,11 @@ fn init_feature_flags() {
             let sample = value.parse::<u64>().unwrap_or(1024).max(1);
             RFP_VERIFY_SAMPLE.store(sample, Ordering::Relaxed);
             eprintln!("RFP_VERIFY_SAMPLE enabled: full-searching about 1/{} RFP cutoffs", sample);
+        }
+        if let Ok(value) = std::env::var("RFP_DECISIVE_SAMPLE") {
+            let sample = value.parse::<u64>().unwrap_or(64).max(1);
+            RFP_DECISIVE_SAMPLE.store(sample, Ordering::Relaxed);
+            eprintln!("RFP_DECISIVE_SAMPLE enabled: counting decisive-beta RFP candidates and full-searching about 1/{}", sample);
         }
         if std::env::var("CORR_AUDIT").is_ok() {
             CORR_AUDIT.store(true, Ordering::Relaxed);
@@ -5102,18 +5197,51 @@ fn negamax_inner(
                 } else if raw_cut && !corrected_cut {
                     info.stats.corr_audit_rfp_flip_off[hm] += 1;
                 }
+                let parts = correction_parts(info, board, ply_u);
+                for source in 0..5 {
+                    let mut without = parts;
+                    without[source] = 0;
+                    let without_eval = (scaled_eval + correction_from_parts(without))
+                        .clamp(-MATE_IN_MAX_PLY + 1, MATE_IN_MAX_PLY - 1);
+                    let without_cut = without_eval - margin >= beta;
+                    let idx = source * 4 + hm;
+                    if corrected_cut && !without_cut {
+                        info.stats.corr_source_rfp_flip_on[idx] += 1;
+                    } else if !corrected_cut && without_cut {
+                        info.stats.corr_source_rfp_flip_off[idx] += 1;
+                    }
+                }
             }
             if static_eval - margin >= beta {
-                let sample = RFP_VERIFY_SAMPLE.load(Ordering::Relaxed);
-                let sampled = sample > 0
+                let d_idx = depth.clamp(0, 23) as usize;
+                let decisive_rate = RFP_DECISIVE_SAMPLE.load(Ordering::Relaxed);
+                let decisive_band = if decisive_rate > 0 { rfp_decisive_band(beta) } else { None };
+                let ply_idx = rfp_audit_ply_bucket(ply);
+                let surplus_idx = rfp_audit_surplus_bucket(static_eval - margin - beta);
+                if let Some(band) = decisive_band {
+                    info.stats.rfp_decisive_candidates[band] += 1;
+                    info.stats.rfp_decisive_candidates_depth[d_idx] += 1;
+                    info.stats.rfp_decisive_candidates_ply[ply_idx] += 1;
+                    info.stats.rfp_decisive_candidates_surplus[surplus_idx] += 1;
+                }
+                let sample_key = board.hash.rotate_left((ply + depth).rem_euclid(64) as u32);
+                let decisive_sampled = decisive_band.is_some()
                     && !info.rfp_verify_active
-                    && board.hash.rotate_left((ply + depth).rem_euclid(64) as u32) % sample == 0;
+                    && sample_key.is_multiple_of(decisive_rate);
+                let general_rate = RFP_VERIFY_SAMPLE.load(Ordering::Relaxed);
+                let general_sampled = decisive_band.is_none()
+                    && general_rate > 0
+                    && !info.rfp_verify_active
+                    && sample_key.is_multiple_of(general_rate);
+                let sampled = decisive_sampled || general_sampled;
                 if sampled {
-                    let d_idx = depth.clamp(0, 23) as usize;
                     let corr_created_cutoff = scaled_eval - margin < beta;
                     info.stats.rfp_verify_attempts[d_idx] += 1;
                     if corr_created_cutoff {
                         info.stats.rfp_verify_corr_flips[d_idx] += 1;
+                    }
+                    if let Some(band) = decisive_band {
+                        info.stats.rfp_decisive_sampled[band] += 1;
                     }
                     let nodes_before = info.nodes;
                     info.rfp_verify_active = true;
@@ -5121,12 +5249,23 @@ fn negamax_inner(
                         board, info, alpha, beta, entry_depth, ply, cut_node, true,
                     );
                     info.rfp_verify_active = false;
-                    info.stats.rfp_verify_nodes[d_idx] += info.nodes.saturating_sub(nodes_before);
+                    let verify_nodes = info.nodes.saturating_sub(nodes_before);
+                    info.stats.rfp_verify_nodes[d_idx] += verify_nodes;
+                    if let Some(band) = decisive_band {
+                        info.stats.rfp_decisive_nodes[band] += verify_nodes;
+                    }
                     if !info.stop.load(Ordering::Relaxed) && verified < beta {
+                        let regret = (beta - verified) as u64;
                         info.stats.rfp_verify_rejected[d_idx] += 1;
-                        info.stats.rfp_verify_regret[d_idx] += (beta - verified) as u64;
+                        info.stats.rfp_verify_regret[d_idx] += regret;
                         if corr_created_cutoff {
                             info.stats.rfp_verify_corr_flip_rejected[d_idx] += 1;
+                        }
+                        if let Some(band) = decisive_band {
+                            info.stats.rfp_decisive_rejected[band] += 1;
+                            info.stats.rfp_decisive_regret[band] += regret;
+                            info.stats.rfp_decisive_rejected_ply[ply_idx] += 1;
+                            info.stats.rfp_decisive_rejected_surplus[surplus_idx] += 1;
                         }
                     }
                     return verified;
@@ -6649,6 +6788,8 @@ fn negamax_inner(
     {
         if CORR_AUDIT.load(Ordering::Relaxed) {
             let bucket = corr_audit_bucket(depth, board.halfmove);
+            let hm = corr_audit_halfmove_bucket(board.halfmove);
+            let ply_bucket = corr_audit_ply_bucket(ply_u);
             let before = corr_bound_loss(scaled_eval, best_score, alpha_orig, beta);
             let after = corr_bound_loss(static_eval, best_score, alpha_orig, beta);
             let correction = (static_eval - scaled_eval).unsigned_abs() as u64;
@@ -6662,8 +6803,38 @@ fn negamax_inner(
             info.stats.corr_audit_loss_before[bucket] += before;
             info.stats.corr_audit_loss_after[bucket] += after;
             info.stats.corr_audit_abs[bucket] += correction;
+            info.stats.corr_update_ply_samples[ply_bucket] += 1;
             if scaled_err.abs() > cap {
                 info.stats.corr_audit_clipped[bucket] += 1;
+                info.stats.corr_update_ply_clipped[ply_bucket] += 1;
+            }
+
+            let parts = correction_parts(info, board, ply_u);
+            for source in 0..5 {
+                let idx = source * 4 + hm;
+                let source_cp = correction_from_parts({
+                    let mut only = [0i64; 5];
+                    only[source] = parts[source];
+                    only
+                });
+                let mut without = parts;
+                without[source] = 0;
+                let prediction_without = (scaled_eval + correction_from_parts(without))
+                    .clamp(-MATE_IN_MAX_PLY + 1, MATE_IN_MAX_PLY - 1);
+                let loss_without = corr_bound_loss(
+                    prediction_without, best_score, alpha_orig, beta,
+                );
+                info.stats.corr_source_samples[idx] += 1;
+                info.stats.corr_source_abs[idx] += source_cp.unsigned_abs() as u64;
+                info.stats.corr_source_loss_without[idx] += loss_without;
+                if parts[source] != 0 {
+                    info.stats.corr_source_nonzero[idx] += 1;
+                }
+                if loss_without > after {
+                    info.stats.corr_source_helped[idx] += 1;
+                } else if loss_without < after {
+                    info.stats.corr_source_hurt[idx] += 1;
+                }
             }
         }
         // Train the update against the CORRECTED eval (`static_eval`, the
@@ -7438,6 +7609,14 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
             total_stats.rfp_verify_regret[d] += info.stats.rfp_verify_regret[d];
             total_stats.rfp_verify_corr_flips[d] += info.stats.rfp_verify_corr_flips[d];
             total_stats.rfp_verify_corr_flip_rejected[d] += info.stats.rfp_verify_corr_flip_rejected[d];
+            total_stats.rfp_decisive_candidates_depth[d] += info.stats.rfp_decisive_candidates_depth[d];
+        }
+        for i in 0..2 {
+            total_stats.rfp_decisive_candidates[i] += info.stats.rfp_decisive_candidates[i];
+            total_stats.rfp_decisive_sampled[i] += info.stats.rfp_decisive_sampled[i];
+            total_stats.rfp_decisive_rejected[i] += info.stats.rfp_decisive_rejected[i];
+            total_stats.rfp_decisive_nodes[i] += info.stats.rfp_decisive_nodes[i];
+            total_stats.rfp_decisive_regret[i] += info.stats.rfp_decisive_regret[i];
         }
         for i in 0..12 {
             total_stats.corr_audit_updates[i] += info.stats.corr_audit_updates[i];
@@ -7449,6 +7628,22 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
         for i in 0..4 {
             total_stats.corr_audit_rfp_flip_on[i] += info.stats.corr_audit_rfp_flip_on[i];
             total_stats.corr_audit_rfp_flip_off[i] += info.stats.corr_audit_rfp_flip_off[i];
+            total_stats.rfp_decisive_candidates_ply[i] += info.stats.rfp_decisive_candidates_ply[i];
+            total_stats.rfp_decisive_rejected_ply[i] += info.stats.rfp_decisive_rejected_ply[i];
+            total_stats.rfp_decisive_candidates_surplus[i] += info.stats.rfp_decisive_candidates_surplus[i];
+            total_stats.rfp_decisive_rejected_surplus[i] += info.stats.rfp_decisive_rejected_surplus[i];
+            total_stats.corr_update_ply_samples[i] += info.stats.corr_update_ply_samples[i];
+            total_stats.corr_update_ply_clipped[i] += info.stats.corr_update_ply_clipped[i];
+        }
+        for i in 0..20 {
+            total_stats.corr_source_samples[i] += info.stats.corr_source_samples[i];
+            total_stats.corr_source_nonzero[i] += info.stats.corr_source_nonzero[i];
+            total_stats.corr_source_abs[i] += info.stats.corr_source_abs[i];
+            total_stats.corr_source_loss_without[i] += info.stats.corr_source_loss_without[i];
+            total_stats.corr_source_helped[i] += info.stats.corr_source_helped[i];
+            total_stats.corr_source_hurt[i] += info.stats.corr_source_hurt[i];
+            total_stats.corr_source_rfp_flip_on[i] += info.stats.corr_source_rfp_flip_on[i];
+            total_stats.corr_source_rfp_flip_off[i] += info.stats.corr_source_rfp_flip_off[i];
         }
 
         // Accumulate EBF data across all positions
@@ -7623,6 +7818,41 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
             corr_rejected as f64 * 100.0 / corr_flips.max(1) as f64);
     }
 
+    let decisive_total: u64 = s.rfp_decisive_candidates.iter().sum();
+    if decisive_total > 0 {
+        let band_names = ["TB/downgraded", "mate"];
+        eprintln!("--- Decisive-beta RFP candidates ---");
+        eprintln!("band          | candidates | sampled | disagree | rate | mean nodes | mean regret");
+        for (band, name) in band_names.iter().enumerate() {
+            let candidates = s.rfp_decisive_candidates[band];
+            let sampled = s.rfp_decisive_sampled[band];
+            let rejected = s.rfp_decisive_rejected[band];
+            eprintln!("{:<13} | {:>10} | {:>7} | {:>8} | {:>5.1}% | {:>10.1} | {:>11.1}",
+                name, candidates, sampled, rejected,
+                rejected as f64 * 100.0 / sampled.max(1) as f64,
+                s.rfp_decisive_nodes[band] as f64 / sampled.max(1) as f64,
+                s.rfp_decisive_regret[band] as f64 / rejected.max(1) as f64);
+        }
+        eprintln!("Candidates by depth:");
+        for d in 0..24 {
+            if s.rfp_decisive_candidates_depth[d] > 0 {
+                eprintln!("  d{:<2}: {}", d, s.rfp_decisive_candidates_depth[d]);
+            }
+        }
+        let ply_names = ["ply1-2", "ply3-4", "ply5-8", "ply9+"];
+        let surplus_names = ["0-15", "16-31", "32-63", "64+"];
+        eprintln!("Candidates/disagreements by ply proximity:");
+        for i in 0..4 {
+            eprintln!("  {:<7}: {:>8} / {:>6}", ply_names[i],
+                s.rfp_decisive_candidates_ply[i], s.rfp_decisive_rejected_ply[i]);
+        }
+        eprintln!("Candidates/disagreements by cutoff surplus:");
+        for i in 0..4 {
+            eprintln!("  {:<5}: {:>8} / {:>6}", surplus_names[i],
+                s.rfp_decisive_candidates_surplus[i], s.rfp_decisive_rejected_surplus[i]);
+        }
+    }
+
     let corr_total: u64 = s.corr_audit_updates.iter().sum();
     if corr_total > 0 {
         let depth_names = ["d<=4", "d5-8", "d>=9"];
@@ -7646,6 +7876,37 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
         for h in 0..4 {
             eprintln!("  {:<7}: correction enabled {} cuts, suppressed {} cuts",
                 hm_names[h], s.corr_audit_rfp_flip_on[h], s.corr_audit_rfp_flip_off[h]);
+        }
+        let source_names = ["pawn", "white-np", "black-np", "continuation", "transition"];
+        eprintln!("Leave-one-source-out calibration (gain = loss_without - full_loss):");
+        eprintln!("source/hm             | samples | nonzero | |part| | gain | helped | hurt | RFP on/off");
+        for source in 0..5 {
+            for h in 0..4 {
+                let i = source * 4 + h;
+                let n = s.corr_source_samples[i];
+                if n == 0 { continue; }
+                let full_loss: u64 = (0..3).map(|d| s.corr_audit_loss_after[d * 4 + h]).sum();
+                let full_n: u64 = (0..3).map(|d| s.corr_audit_updates[d * 4 + h]).sum();
+                let full_mean = full_loss as f64 / full_n.max(1) as f64;
+                let without_mean = s.corr_source_loss_without[i] as f64 / n as f64;
+                eprintln!("{:<12}/{:<7} | {:>7} | {:>6.1}% | {:>6.1} | {:>+5.2} | {:>6.1}% | {:>4.1}% | {}/{}",
+                    source_names[source], hm_names[h], n,
+                    s.corr_source_nonzero[i] as f64 * 100.0 / n as f64,
+                    s.corr_source_abs[i] as f64 / n as f64,
+                    without_mean - full_mean,
+                    s.corr_source_helped[i] as f64 * 100.0 / n as f64,
+                    s.corr_source_hurt[i] as f64 * 100.0 / n as f64,
+                    s.corr_source_rfp_flip_on[i], s.corr_source_rfp_flip_off[i]);
+            }
+        }
+        let ply_names = ["ply0-3", "ply4-7", "ply8-15", "ply16+"];
+        eprintln!("Correction update clipping by ply:");
+        for (i, name) in ply_names.iter().enumerate() {
+            let n = s.corr_update_ply_samples[i];
+            if n > 0 {
+                eprintln!("  {:<7}: {:>8} updates, {:>6.2}% clipped", name, n,
+                    s.corr_update_ply_clipped[i] as f64 * 100.0 / n as f64);
+            }
         }
     }
 
@@ -7852,6 +8113,43 @@ mod tests {
         assert_eq!(corr_audit_bucket(5, 25), 5);
         assert_eq!(corr_audit_bucket(9, 50), 10);
         assert_eq!(corr_audit_bucket(20, 100), 11);
+        assert_eq!(corr_audit_ply_bucket(0), 0);
+        assert_eq!(corr_audit_ply_bucket(7), 1);
+        assert_eq!(corr_audit_ply_bucket(15), 2);
+        assert_eq!(corr_audit_ply_bucket(16), 3);
+    }
+
+    #[test]
+    fn correction_parts_use_the_production_rounding_path() {
+        let parts = [12_345, -2_111, 900, 77, -43];
+        let expected = ((parts.iter().sum::<i64>() / tp(&CORR_HIST_DIV) as i64) as i32)
+            / tp(&CORR_HIST_GRAIN_T);
+        assert_eq!(correction_from_parts(parts), expected);
+
+        let mut without = parts;
+        without[2] = 0;
+        assert_eq!(
+            correction_from_parts(without),
+            ((without.iter().sum::<i64>() / tp(&CORR_HIST_DIV) as i64) as i32)
+                / tp(&CORR_HIST_GRAIN_T)
+        );
+    }
+
+    #[test]
+    fn decisive_rfp_audit_buckets_cover_boundaries() {
+        assert_eq!(rfp_decisive_band(-(TB_WIN - 200) + 1), None);
+        assert_eq!(rfp_decisive_band(-(TB_WIN - 200)), Some(0));
+        assert_eq!(rfp_decisive_band(-MATE_IN_MAX_PLY + 1), Some(0));
+        assert_eq!(rfp_decisive_band(-MATE_IN_MAX_PLY), Some(1));
+
+        assert_eq!(rfp_audit_ply_bucket(2), 0);
+        assert_eq!(rfp_audit_ply_bucket(3), 1);
+        assert_eq!(rfp_audit_ply_bucket(8), 2);
+        assert_eq!(rfp_audit_ply_bucket(9), 3);
+        assert_eq!(rfp_audit_surplus_bucket(15), 0);
+        assert_eq!(rfp_audit_surplus_bucket(16), 1);
+        assert_eq!(rfp_audit_surplus_bucket(63), 2);
+        assert_eq!(rfp_audit_surplus_bucket(64), 3);
     }
 
     /// Regression guard against corrhist fortress drift.
