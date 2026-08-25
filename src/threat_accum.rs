@@ -245,9 +245,11 @@ impl ThreatStack {
         self.stack[0].accurate = [false; 2];
     }
 
-    /// Force a refresh on the next `ensure_computed` — used by the
-    /// eval-bench microbench to isolate threat-refresh cost.
-    pub fn reset_for_bench(&mut self) {
+    /// Mark both perspectives stale so the next `ensure_computed` does a full
+    /// refresh. Used by the eval-bench microbench to isolate threat-refresh
+    /// cost, and by the UCI `eval` command, which evaluates an arbitrary
+    /// position that the stack was never walked to.
+    pub fn invalidate(&mut self) {
         self.stack[self.index].accurate = [false; 2];
     }
 

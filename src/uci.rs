@@ -1369,27 +1369,41 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>) {
                         info = returned_info;
                     }
                 }
-                let score = if let (Some(net), Some(acc)) = (&info.nnue_net, &mut info.nnue_acc) {
-                    // The accumulator holds whatever position the last search
-                    // left it at; applying it to a different `position` gives
-                    // silently-wrong evals (measured: -2.47 clean vs -0.16
-                    // after a foreign search, same FEN). Rebuild from the
-                    // current board.
-                    acc.force_recompute(net, &board);
-                    // Build a real ThreatStack for v9 nets — without this,
-                    // forward_with_threats falls through and the threat
-                    // half of the eval is silently zeroed. Refresh against
-                    // the current board before evaluating.
-                    let mut ts = crate::threat_accum::ThreatStack::new(net.hidden_size);
-                    ts.active = net.has_threats;
-                    if ts.active {
-                        ts.ensure_computed(&net.threat_weights, net.num_threat_features, &board);
-                    }
-                    crate::eval::evaluate_nnue(&board, net, acc, &ts)
-                } else {
+                if info.nnue_net.is_none() {
                     println!("info string ERROR: No NNUE net loaded! An NNUE net is required.");
                     continue;
-                };
+                }
+                // Search does this on `go`; without it a bare `eval` would
+                // report the default feature set and silently ignore NO_XXX.
+                crate::search::init_feature_flags();
+                // The accumulator and threat stack hold whatever position the
+                // last search left them at; applying them to a different
+                // `position` gives silently-wrong evals (measured: -2.47 clean
+                // vs -0.16 after a foreign search, same FEN). Rebuild both
+                // against the current board.
+                if let (Some(net), Some(acc)) = (&info.nnue_net, &mut info.nnue_acc) {
+                    acc.force_recompute(net, &board);
+                }
+                if let Some(net) = &info.nnue_net {
+                    // Without an active stack, forward_with_threats falls
+                    // through and the threat half of a v9/v10 eval is silently
+                    // zeroed.
+                    info.threat_stack.active = net.has_threats;
+                }
+                info.threat_stack.invalidate();
+                // Report what SEARCH sees, by going through the same function
+                // search does: net output + material scaling + the saturation
+                // tiebreak. This used to call `evaluate_nnue` directly, which
+                // reported the bare net output and so silently drifted from the
+                // search's view every time `SearchInfo::eval` gained a term —
+                // it was already missing MAT_SCALE_BASE before the tiebreak was
+                // added. `eval verbose` still dumps the raw net output.
+                //
+                // Halfmove scaling is deliberately absent: `SearchInfo::eval`
+                // returns the halfmove-INDEPENDENT score and callers apply
+                // `apply_halfmove_scale` at the point of use, so this matches
+                // what search stores and compares.
+                let score = info.eval(&board);
                 // Clean, parseable static-eval line (white POV, pawns) —
                 // matches the common `eval` output format so external
                 // tooling can parse it uniformly across engines. `score`
@@ -1407,7 +1421,14 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>) {
                     println!("info string pawn_hash {:016x}", board.pawn_hash);
                     println!("info string npkey_w {:016x}", board.non_pawn_key[0]);
                     println!("info string npkey_b {:016x}", board.non_pawn_key[1]);
-                    println!("info string raw_nnue {} (stm)", score);
+                    // Bare net output, for comparison against the scaled
+                    // value on the main line above.
+                    if let (Some(net), Some(acc)) = (&info.nnue_net, &mut info.nnue_acc) {
+                        acc.force_recompute(net, &board);
+                        let raw = crate::eval::evaluate_nnue(&board, net, acc, &info.threat_stack);
+                        println!("info string raw_nnue {} (stm)", raw);
+                    }
+                    println!("info string search_eval {} (stm)", score);
                     println!("info string side {}", board.side_to_move);
 
                     // Dump accumulator values

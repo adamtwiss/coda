@@ -832,7 +832,7 @@ fn main() {
                         // in real search when Finny has no cached state.
                         acc.invalidate_for_bench();
                         if tstack.active {
-                            tstack.reset_for_bench();
+                            tstack.invalidate();
                         }
                         acc.materialize(&net, &board);
                         let s = evaluate_nnue(&board, &net, &mut acc, &tstack);

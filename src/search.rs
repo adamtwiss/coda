@@ -1660,7 +1660,11 @@ impl SearchInfo {
 
     /// Evaluate using NNUE. A net is required to run — shipped/bench builds
     /// always embed one, so the no-net branch below is never hit in practice.
-    fn eval(&mut self, board: &Board) -> i32 {
+    /// The eval as SEARCH sees it: net output, material scaling, and the
+    /// saturation tiebreak. `pub(crate)` so the UCI `eval` command reports
+    /// this same number instead of re-deriving a raw net output that drifts
+    /// every time a term is added here.
+    pub(crate) fn eval(&mut self, board: &Board) -> i32 {
         // Ensure threat accumulator is computed before eval
         if self.threat_stack.active {
             if let Some(ref net) = self.nnue_net {
@@ -2285,7 +2289,11 @@ fn root_move_index(mv: Move) -> usize {
 /// Initialize feature flags from environment variables (called once at process startup).
 /// NO_XXX=1 disables individual features. DISABLE_ALL=1 disables everything,
 /// then ENABLE_XXX=1 re-enables individual features.
-fn init_feature_flags() {
+///
+/// `pub(crate)` and `Once`-guarded: the UCI `eval` command calls it too, so a
+/// bare `eval` with no preceding `go` still reflects the ablation env vars
+/// rather than silently reporting defaults.
+pub(crate) fn init_feature_flags() {
     static INIT: std::sync::Once = std::sync::Once::new();
     INIT.call_once(|| {
         if std::env::var("DISABLE_ALL").is_ok() {
