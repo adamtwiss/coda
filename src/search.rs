@@ -2031,7 +2031,7 @@ fn correction_value(info: &SearchInfo, board: &Board, ply: usize) -> i32 {
     (total_corr as i32) / tp(&CORR_HIST_GRAIN_T)
 }
 
-/// Apply correction history to raw static eval.
+/// Apply correction history in raw-eval space, then halfmove-scale the sum.
 ///
 /// Thin wrapper over `correction_value` so the five-source blend exists in ONE
 /// place. It previously duplicated that whole computation, which is the shape
@@ -2042,7 +2042,16 @@ fn corrected_eval(info: &SearchInfo, board: &Board, raw_eval: i32, ply: usize) -
     // There is deliberately no material damping here: the residual update
     // baseline makes corrhist converge to the true (~0) correction in
     // low-signal positions, so a piece-count fortress guard is redundant.
-    let adjusted = raw_eval + correction_value(info, board, ply);
+    apply_correction_and_halfmove_scale(
+        raw_eval,
+        correction_value(info, board, ply),
+        board.halfmove,
+    )
+}
+
+#[inline]
+fn apply_correction_and_halfmove_scale(raw_eval: i32, correction: i32, halfmove: u16) -> i32 {
+    let adjusted = apply_halfmove_scale(raw_eval + correction, halfmove);
     // Keep the corrected static eval strictly inside the non-mate band so it
     // can never be read back as a mate by the MATE_IN_MAX_PLY guards. (Real
     // evals live in ±4095, so this clamp is purely defensive.)
@@ -4848,11 +4857,9 @@ fn negamax(
     // Compute static eval for pruning and LMR improving detection.
     //
     // Three variables — same value at different processing stages:
-    //   raw_eval    : halfmove-INDEPENDENT  (what goes in/out of TT, also
-    //                                        passed to corrhist *update*)
-    //   scaled_eval : halfmove-scaled, pre-correction (corrhist sees this as
-    //                                                   its input base)
-    //   static_eval : scaled + corrected (what pruning/LMR decisions use)
+    //   raw_eval    : halfmove-INDEPENDENT (what goes in/out of TT)
+    //   scaled_eval : halfmove-scaled raw eval (pre-correction baseline)
+    //   static_eval : halfmove-scaled (raw + correction), used by search
     //
     // Keeping these separate fixes the TT staleness bug where a position
     // first seen at hm=20 stored an eval scaled against hm=20, then
@@ -4902,8 +4909,8 @@ fn negamax(
             }
         }
         scaled_eval = apply_halfmove_scale(raw_eval, board.halfmove);
-        // Apply correction history to the halfmove-scaled value
-        static_eval = if FEAT_CORRECTION.load(Ordering::Relaxed) { corrected_eval(info, board, scaled_eval, ply_u) } else { scaled_eval };
+        // Apply halfmove scaling to the raw evaluation and correction together.
+        static_eval = if FEAT_CORRECTION.load(Ordering::Relaxed) { corrected_eval(info, board, raw_eval, ply_u) } else { scaled_eval };
         if ply_u < MAX_PLY {
             info.static_evals[ply_u] = static_eval;
         }
@@ -6962,16 +6969,12 @@ fn quiescence_with_depth(
     } else {
         info.eval(board)
     };
-    // Apply correction history to the QS stand-pat, mirroring negamax's
-    // static-eval path (halfmove-scale THEN corrected_eval).
-    // Every reference engine surveyed (SF, Berserk, Obsidian, PlentyChess,
-    // Alexandria) corrects the QS stand-pat. It feeds the returned cutoff
-    // score, the best_score floor, AND the delta-prune base, so an
-    // uncorrected error compounds. TT still stores the RAW value
-    // (raw_stand_pat) — correct-on-read discipline is unchanged.
+    // Correct the QS stand-pat in the same space and order as negamax. It feeds
+    // the returned cutoff score, best-score floor, and delta-pruning base. TT
+    // still stores the raw value, so correct-on-read discipline is unchanged.
     let scaled_stand_pat = apply_halfmove_scale(raw_stand_pat, board.halfmove);
     let stand_pat = if FEAT_CORRECTION.load(Ordering::Relaxed) {
-        corrected_eval(info, board, scaled_stand_pat, (ply as usize).min(MAX_PLY))
+        corrected_eval(info, board, raw_stand_pat, (ply as usize).min(MAX_PLY))
     } else {
         scaled_stand_pat
     };
@@ -7767,6 +7770,42 @@ mod tests {
         assert_eq!(apply_halfmove_scale(-INFINITY, 50), -INFINITY);
         assert_eq!(apply_halfmove_scale(MATE_SCORE - 5, 99), MATE_SCORE - 5);
         assert_eq!(apply_halfmove_scale(-(MATE_SCORE - 5), 99), -(MATE_SCORE - 5));
+    }
+
+    #[test]
+    fn correction_is_scaled_with_raw_eval_at_draw_horizon() {
+        assert_eq!(apply_correction_and_halfmove_scale(400, 100, 0), 500);
+        assert_eq!(apply_correction_and_halfmove_scale(400, 100, 100), 250);
+        assert_eq!(apply_correction_and_halfmove_scale(-400, -100, 100), -250);
+
+        // This distinguishes the experiment from the old ordering, which
+        // scaled 400 to 200 and then added the undamped 100 correction.
+        assert_ne!(apply_correction_and_halfmove_scale(400, 100, 100), 300);
+    }
+
+    #[test]
+    fn corrected_eval_damps_the_same_history_entry_by_halfmove() {
+        crate::init();
+        let mut info = SearchInfo::new(1);
+        let mut board = Board::from_fen(
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+        );
+        let stm = board.side_to_move as usize;
+        let pawn_idx = (board.pawn_hash as usize) & (CORR_HIST_SIZE - 1);
+        info.pawn_corr[stm][pawn_idx] = CORR_HIST_LIMIT / 2;
+        let correction = correction_value(&info, &board, 0);
+        assert_ne!(correction, 0);
+
+        let raw = 400;
+        assert_eq!(
+            corrected_eval(&info, &board, raw, 0),
+            apply_halfmove_scale(raw + correction, 0)
+        );
+        board.halfmove = 100;
+        assert_eq!(
+            corrected_eval(&info, &board, raw, 0),
+            apply_halfmove_scale(raw + correction, 100)
+        );
     }
 
     #[test]
