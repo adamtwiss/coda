@@ -92,3 +92,22 @@ A retained interior FEN records the board and observed window, but searching it
 as a new root is not expected to recreate the event: root search has a different
 window, TT state and ply. The deterministic `tb-transition` run is the complete
 reproduction path; the interior record makes the discrepant node inspectable.
+
+### TB-loss window audit
+
+Interior WDL results are directional bounds: a definite win is a lower bound
+and a definite loss is an upper bound. In particular, a synthetic TB-loss score
+that lies above `beta` cannot justify a fail-high return. The retained
+counterexample exposed that reversed-bound case.
+
+RFP also needs care when an ordinary centipawn eval meets a TB-loss beta. The
+search now declines that cutoff only in three measured contexts: a maximum-men
+node below `SyzygyProbeDepth`, a one-piece-larger node with a capture into the
+tables, or a probe-confirmed definite loss. The corpus report splits those
+counts as `max-men below depth`, `transition capture`, and `probed loss`.
+
+With the five-piece tables, `RFP_DECISIVE_SAMPLE=1` found zero TB-band
+disagreements in the direct depth-10 run and in transition runs at depths 8, 10
+and 12. Mate-band disagreements remain visible and are intentionally not
+folded into this TB-only candidate; a context-wide loss guard more than doubled
+the unsampled transition tree at depth 10.

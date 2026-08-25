@@ -917,6 +917,9 @@ pub struct PruneStats {
     pub rfp_decisive_rejected_ply: [u64; 4],
     pub rfp_decisive_candidates_surplus: [u64; 4],
     pub rfp_decisive_rejected_surplus: [u64; 4],
+    // RFP cutoffs declined in a Syzygy-covered node, or its one-piece
+    // transition parent, while beta already represented a proven loss.
+    pub tb_loss_rfp_guards: [u64; 3],
     // Correction calibration by depth band × halfmove band. Depth bands are
     // <=4, 5-8, >=9; halfmove bands are 0-24, 25-49, 50-74, 75+.
     pub corr_audit_updates: [u64; 12],
@@ -2135,6 +2138,32 @@ fn rfp_decisive_band(beta: i32) -> Option<usize> {
         Some(0)
     } else {
         None
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum TbProbeAction {
+    Return(i32),
+    LowerBound(i32),
+    UpperBound(i32),
+    Ignore,
+}
+
+#[inline]
+fn classify_definite_tb_probe(wdl: i32, score: i32, alpha: i32, beta: i32) -> TbProbeAction {
+    debug_assert!(wdl.abs() > 1);
+    if wdl > 1 {
+        if score >= beta {
+            TbProbeAction::Return(score)
+        } else if score > alpha {
+            TbProbeAction::LowerBound(score)
+        } else {
+            TbProbeAction::Ignore
+        }
+    } else if score <= alpha {
+        TbProbeAction::Return(score)
+    } else {
+        TbProbeAction::UpperBound(score)
     }
 }
 
@@ -4629,9 +4658,12 @@ fn negamax_inner(
     // causes a cutoff, so the search doesn't waste time in solved endgames.
     // Only at non-root (ply > 0) and non-excluded (not in singular verification).
     //
-    // tb_floor: Some(tb_score) when an in-window PV TB hit raised alpha.
-    // Search must not return / store below this — TB is ground truth.
+    // Definite WDL wins are lower bounds and losses are upper bounds. Keep
+    // those directions explicit: treating either synthetic TB score as exact
+    // can turn a known loss into a fail-high, or a known win into a fail-low.
     let mut tb_floor: Option<i32> = None;
+    let mut tb_ceiling: Option<i32> = None;
+    let mut tb_loss_rfp_guard: Option<usize> = None;
     if ply > 0 && info.excluded_move[ply_u] == NO_MOVE {
         if let Some(ref tb) = info.syzygy {
             // SF SyzygyProbeDepth gate: at the maximum loaded piece count,
@@ -4643,9 +4675,25 @@ fn negamax_inner(
             // deeper endgame, a cutoff prunes more).
             let pc = crate::bitboard::popcount(board.occupied()) as usize;
             let max_pc = tb.max_pieces();
+            // Where a max-men probe was skipped, or a capture can cross into
+            // the tables from one piece above them, a decisive-loss beta has
+            // plausible TB provenance even without a probe at this node.
+            let tb_band_loss = is_loss(beta) && beta > -MATE_IN_MAX_PLY;
+            if tb_band_loss && pc == max_pc && depth < info.tb_probe_depth {
+                tb_loss_rfp_guard = Some(0);
+            } else if tb_band_loss && pc == max_pc.saturating_add(1) {
+                let us_attacks = board.attacks_by_color(board.side_to_move);
+                let enemy_pieces = board.colors[flip_color(board.side_to_move) as usize];
+                if us_attacks & enemy_pieces != 0 {
+                    tb_loss_rfp_guard = Some(1);
+                }
+            }
             if pc <= max_pc && (pc < max_pc || depth >= info.tb_probe_depth) {
                 if let Some(wdl) = tb.probe_wdl(board) {
                     info.tb_hits += 1;
+                    if wdl < -1 && tb_band_loss {
+                        tb_loss_rfp_guard = Some(2);
+                    }
                     // wdl from ambiguous_wdl_to_score: ±20000 = definite, ±1 = ambiguous, 0 = draw
                     // Only use large TB scores for definite Win/Loss.
                     // Ambiguous results (CursedWin=1, MaybeLoss=-1) stay small
@@ -4670,19 +4718,25 @@ fn negamax_inner(
                     // so they're only trusted as a lower/upper bound (SF pattern).
                     if (-1..=1).contains(&wdl) { return tb_score; }
 
-                    if tb_score >= beta { return tb_score; }
-                    if tb_score <= alpha { return tb_score; }
-                    // Definite Win/Loss in window: tighten bounds AND remember
-                    // the TB ground truth so the final TT store / return doesn't
-                    // poison future probes with a sub-TB UPPER bound. (The
-                    // ambiguous wdl ∈ {-1, 0, +1} cases now return directly
-                    // above via f5d9809; this branch covers definite wdl ±2
-                    // landing in a wide window.) Without the floor, if the
-                    // local search returns best_score < tb_score the final
-                    // flag computation stuffs UPPER at sub-TB best_score —
-                    // contradicting TB ground truth on every future probe.
-                    alpha = tb_score;
-                    tb_floor = Some(tb_score);
+                    match classify_definite_tb_probe(wdl, tb_score, alpha, beta) {
+                        TbProbeAction::Return(score) => return score,
+                        TbProbeAction::LowerBound(score) => {
+                            // A definite win may raise alpha, but can never
+                            // justify a fail-low return.
+                            alpha = score;
+                            tb_floor = Some(score);
+                        }
+                        TbProbeAction::UpperBound(score) => {
+                            // A definite loss may fail low, but cannot justify
+                            // fail high just because its synthetic score lies
+                            // above a deeper loss window.
+                            tb_ceiling = Some(score);
+                        }
+                        TbProbeAction::Ignore => {
+                            // The one-sided bound lies outside the useful side
+                            // of this window, so it cannot tighten the search.
+                        }
+                    }
                 }
             }
         }
@@ -5212,7 +5266,13 @@ fn negamax_inner(
                     }
                 }
             }
-            if static_eval - margin >= beta {
+            let rfp_would_cut = static_eval - margin >= beta;
+            if rfp_would_cut {
+                if let Some(bucket) = tb_loss_rfp_guard {
+                    info.stats.tb_loss_rfp_guards[bucket] += 1;
+                }
+            }
+            if rfp_would_cut && tb_loss_rfp_guard.is_none() {
                 let d_idx = depth.clamp(0, 23) as usize;
                 let decisive_rate = RFP_DECISIVE_SAMPLE.load(Ordering::Relaxed);
                 let decisive_band = if decisive_rate > 0 { rfp_decisive_band(beta) } else { None };
@@ -6682,13 +6742,20 @@ fn negamax_inner(
         return 0;
     }
 
-    // TB floor: a PV in-window TB hit established `tb_score` as ground
-    // truth. If the local search couldn't beat it, return / store the TB
-    // value instead of the sub-TB local result. Without this the next
-    // block stores UPPER below TB truth and poisons future probes.
+    // Preserve the direction of any WDL bound that the local depth-limited
+    // search failed to reach. The forced TT flag below must preserve that
+    // direction too: a clamped one-sided bound is not an exact score.
+    let mut tb_clamp_flag = None;
     if let Some(floor) = tb_floor {
         if best_score < floor {
             best_score = floor;
+            tb_clamp_flag = Some(TT_FLAG_LOWER);
+        }
+    }
+    if let Some(ceiling) = tb_ceiling {
+        if best_score > ceiling {
+            best_score = ceiling;
+            tb_clamp_flag = Some(TT_FLAG_UPPER);
         }
     }
 
@@ -6697,7 +6764,9 @@ fn negamax_inner(
     // Child nodes that completed before stop are individually valid but
     // the parent's best_score is based on an incomplete move list.
     if info.excluded_move[ply_u] == NO_MOVE && !info.stop.load(Ordering::Relaxed) {
-        let flag = if best_score <= alpha_orig {
+        let flag = if let Some(bound) = tb_clamp_flag {
+            bound
+        } else if best_score <= alpha_orig {
             TT_FLAG_UPPER
         } else if best_score >= beta {
             TT_FLAG_LOWER
@@ -7735,6 +7804,9 @@ fn bench_positions_inner<S: AsRef<str>>(
             total_stats.corr_source_rfp_flip_on[i] += info.stats.corr_source_rfp_flip_on[i];
             total_stats.corr_source_rfp_flip_off[i] += info.stats.corr_source_rfp_flip_off[i];
         }
+        for i in 0..3 {
+            total_stats.tb_loss_rfp_guards[i] += info.stats.tb_loss_rfp_guards[i];
+        }
 
         // Accumulate EBF data across all positions
         let max_d = info.completed_depth as usize;
@@ -7881,6 +7953,17 @@ fn bench_positions_inner<S: AsRef<str>>(
     eprintln!("First-move cut: {:>5.1}%", if s.beta_cutoffs > 0 { s.first_move_cutoffs as f64 / s.beta_cutoffs as f64 * 100.0 } else { 0.0 });
 
     eprintln!("Total nodes:    {:>8}", total_nodes);
+
+    let tb_loss_rfp_guards: u64 = s.tb_loss_rfp_guards.iter().sum();
+    if tb_loss_rfp_guards > 0 {
+        eprintln!(
+            "TB loss-window RFP cutoffs declined: {} (max-men below depth {}, transition capture {}, probed loss {})",
+            tb_loss_rfp_guards,
+            s.tb_loss_rfp_guards[0],
+            s.tb_loss_rfp_guards[1],
+            s.tb_loss_rfp_guards[2],
+        );
+    }
 
     // Sampled decline-and-search verification. This is deliberately not called
     // a false-positive count: the diagnostic search perturbs shared search state.
@@ -8130,6 +8213,34 @@ mod tests {
         refresh_helper_per_go(&mut helper, &main);
 
         assert_eq!(helper.tb_probe_depth, 19);
+    }
+
+    #[test]
+    fn definite_tb_probe_respects_bound_direction() {
+        let alpha = -28797;
+        let beta = -28796;
+
+        // This is the retained failure shape: a TB-loss score above beta is
+        // only an upper bound, never a fail-high return.
+        assert_eq!(
+            classify_definite_tb_probe(-20000, -28787, alpha, beta),
+            TbProbeAction::UpperBound(-28787),
+        );
+        assert_eq!(
+            classify_definite_tb_probe(-20000, -28810, alpha, beta),
+            TbProbeAction::Return(-28810),
+        );
+
+        // Mirror direction: a win below alpha carries no useful bound and
+        // cannot be returned as a fail-low.
+        assert_eq!(
+            classify_definite_tb_probe(20000, 28787, 28796, 28797),
+            TbProbeAction::Ignore,
+        );
+        assert_eq!(
+            classify_definite_tb_probe(20000, 28810, 28796, 28797),
+            TbProbeAction::Return(28810),
+        );
     }
 
     #[test]
