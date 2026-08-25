@@ -748,6 +748,11 @@ pub static FEAT_TT_STORE: AtomicBool = AtomicBool::new(true);
 // Ablate (NO_TT_STATIC_EVAL=1) to test whether skipping evals hurts more
 // than it helps via deeper lazy-replay gaps (fatter threat/finny applies).
 pub static FEAT_TT_STATIC_EVAL: AtomicBool = AtomicBool::new(true);
+/// Saturation material tiebreak (issue #18). Deliberately NOT cleared by
+/// `disable_all_features()`: it is an eval-correctness term, not a search
+/// heuristic, and letting DISABLE_ALL switch it off would fold an eval change
+/// into every pruning ablation.
+pub static FEAT_SAT_TIEBREAK: AtomicBool = AtomicBool::new(true);
 pub static FEAT_QS_CAPTURES: AtomicBool = AtomicBool::new(true); // false = QS returns eval immediately
 pub static FEAT_SINGULAR: AtomicBool = AtomicBool::new(true); // singular extensions specifically
 pub static FEAT_CUCKOO: AtomicBool = AtomicBool::new(true);
@@ -786,6 +791,17 @@ pub fn enable_all_features() {
 }
 
 // Correction history constants
+// --- Saturation material tiebreak (issue #18) ---------------------------
+// Ramp start, in SEE units: the measured knee is a 4-pawn imbalance, so the
+// term is exactly zero for anything less lopsided than that.
+const SAT_MAT_KNEE: i32 = 400;
+// Ramp reaches full weight a queen's worth of material past the knee.
+const SAT_MAT_FULL: i32 = 900;
+// Weight per pawn (100 SEE units) at full ramp. Three times the measured
+// -13 cp/pawn inversion, so ordering is monotone with margin while the term
+// stays a tiebreak rather than a second material eval.
+const SAT_TIEBREAK_W: i32 = 40;
+
 const CORR_HIST_SIZE: usize = 16384;
 const CORR_HIST_LIMIT: i32 = 1024;    // Consensus (SF, Obsidian)
 
@@ -1796,7 +1812,71 @@ impl SearchInfo {
         // formula) that bakes in gross errors and wipes out the correction —
         // worth about -8 Elo. The fix is structural: keep TT storage
         // halfmove-independent, and apply the scale freshly on read.
-        let final_score = score * (tp(&MAT_SCALE_BASE) + material) / 32 / 1024;
+        let mut final_score = score * (tp(&MAT_SCALE_BASE) + material) / 32 / 1024;
+
+        // Signed material balance in SEE units, white-positive. Shared by the
+        // saturation tiebreak below and the dispatch instrumentation.
+        let signed_material = {
+            let w = board.colors[WHITE as usize];
+            let b = board.colors[BLACK as usize];
+            let mut m = 0i32;
+            for pt in 0..5u8 {
+                let d = (board.pieces[pt as usize] & w).count_ones() as i32
+                    - (board.pieces[pt as usize] & b).count_ones() as i32;
+                m += crate::eval::see_value(pt) * d;
+            }
+            m
+        };
+
+        // Saturation material tiebreak (issue #18).
+        //
+        // Measured on this tree with net-1EB961AF by stripping material from
+        // the start position one piece at a time and reading `go depth 14`
+        // (ScoreScale 100, i.e. internal units):
+        //
+        //   deficit    0    -1    -2    -3    -4    -5   -12   -22   -31
+        //   eval      +49   -67  -460  -810 -1079 -1079 -1247 -1120 -1017
+        //
+        // The net tracks material closely out to about 4 pawns (|eval| ~1080)
+        // and then stops. Past that knee the slope collapses from ~250 cp per
+        // pawn to about -13 -- i.e. slightly INVERTED: shedding material
+        // *raises* the eval. The mirror ladder stripping White is the same
+        // shape, so this is an output-range ceiling of the net, not a
+        // losing-side pathology.
+        //
+        // Consequence: inside that band the search sees no cost to giving
+        // pieces away, and does. Issue #18 reports exactly this -- the eval
+        // pinned at the plateau while a queen, two knights, a bishop and two
+        // rooks came off the board.
+        //
+        // So restore a monotone material ordering past the knee. The ramp is
+        // zero at the knee and reaches full weight at the measured floor, so
+        // the calibrated band below is untouched and there is no step at the
+        // boundary for the search to oscillate across.
+        //
+        // NET-DEPENDENT: the knee is a property of the net's output range.
+        // Re-measure these three constants whenever the production net
+        // changes; the ladder probe lives in the research repo.
+        // The ramp keys off MATERIAL, not off |eval|. Keying it off the eval
+        // is the obvious first cut and it is wrong: as material is shed the
+        // saturated eval drifts back *toward* zero, which shrinks the ramp and
+        // fades the correction out exactly where it is needed. Measured on the
+        // first attempt -- the -12 -> -31 band stayed inverted. Material is
+        // monotone by construction, so there is no feedback loop.
+        if FEAT_SAT_TIEBREAK.load(Ordering::Relaxed) {
+            // stm-relative, to match the point of view of `final_score`
+            let mat = if board.side_to_move == WHITE {
+                signed_material
+            } else {
+                -signed_material
+            };
+            let excess = mat.abs() - SAT_MAT_KNEE;
+            if excess > 0 {
+                let span = SAT_MAT_FULL - SAT_MAT_KNEE;
+                let ramp = excess.min(span);
+                final_score += mat * SAT_TIEBREAK_W * ramp / (100 * span);
+            }
+        }
 
         // Dual-net dispatch instrumentation (both paths still call the big
         // net). Proxy = SIGNED piece-material balance in SEE
@@ -1807,15 +1887,7 @@ impl SearchInfo {
         // small-net qualification rate at ANY threshold plus the
         // false-positive rate the re-eval guard would face there.
         {
-            let w = board.colors[WHITE as usize];
-            let b = board.colors[BLACK as usize];
-            let mut proxy = 0i32;
-            for pt in 0..5u8 {
-                let d = (board.pieces[pt as usize] & w).count_ones() as i32
-                    - (board.pieces[pt as usize] & b).count_ones() as i32;
-                proxy += crate::eval::see_value(pt) * d;
-            }
-            let bucket = ((proxy.abs() / 100) as usize).min(11);
+            let bucket = ((signed_material.abs() / 100) as usize).min(11);
             self.stats.dualnet_evals[bucket] += 1;
             self.stats.dualnet_abseval[bucket] += final_score.unsigned_abs() as u64;
             if final_score.abs() < 100 {
@@ -2256,6 +2328,7 @@ fn init_feature_flags() {
             if std::env::var("NO_TT_NEARMISS").is_ok() { FEAT_TT_NEARMISS.store(false, Ordering::Relaxed); }
             if std::env::var("NO_TT_STORE").is_ok() { FEAT_TT_STORE.store(false, Ordering::Relaxed); }
             if std::env::var("NO_TT_STATIC_EVAL").is_ok() { FEAT_TT_STATIC_EVAL.store(false, Ordering::Relaxed); }
+            if std::env::var("NO_SAT_TIEBREAK").is_ok() { FEAT_SAT_TIEBREAK.store(false, Ordering::Relaxed); }
             if std::env::var("NO_QS_CAPTURES").is_ok() { FEAT_QS_CAPTURES.store(false, Ordering::Relaxed); }
             if std::env::var("NO_SINGULAR").is_ok() { FEAT_SINGULAR.store(false, Ordering::Relaxed); }
             if std::env::var("NO_CUCKOO").is_ok() { FEAT_CUCKOO.store(false, Ordering::Relaxed); }
