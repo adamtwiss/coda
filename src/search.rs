@@ -4490,6 +4490,10 @@ fn negamax(
     // tb_floor: Some(tb_score) when an in-window PV TB hit raised alpha.
     // Search must not return / store below this — TB is ground truth.
     let mut tb_floor: Option<i32> = None;
+    // A centipawn RFP result cannot refute a proven TB loss. Track only nodes
+    // with concrete tablebase provenance; a blanket loss-window guard was too
+    // broad in testing.
+    let mut tb_loss_rfp_guard = false;
     if ply > 0 && info.excluded_move[ply_u] == NO_MOVE {
         if let Some(ref tb) = info.syzygy {
             // SF SyzygyProbeDepth gate: at the maximum loaded piece count,
@@ -4501,9 +4505,25 @@ fn negamax(
             // deeper endgame, a cutoff prunes more).
             let pc = crate::bitboard::popcount(board.occupied()) as usize;
             let max_pc = tb.max_pieces();
+            let tb_band_loss = is_loss(beta) && beta > -MATE_IN_MAX_PLY;
+            if tb_band_loss && pc == max_pc && depth < info.tb_probe_depth {
+                // The probe-depth gate skipped a position which is otherwise
+                // covered by the loaded tables.
+                tb_loss_rfp_guard = true;
+            } else if tb_band_loss && pc == max_pc.saturating_add(1) {
+                // A legal capture may take the next ply into the tables. Pseudo
+                // attacks are intentionally conservative; a false positive
+                // here only declines one shallow RFP cutoff.
+                let us_attacks = board.attacks_by_color(board.side_to_move);
+                let enemy_pieces = board.colors[flip_color(board.side_to_move) as usize];
+                tb_loss_rfp_guard = us_attacks & enemy_pieces != 0;
+            }
             if pc <= max_pc && (pc < max_pc || depth >= info.tb_probe_depth) {
                 if let Some(wdl) = tb.probe_wdl(board) {
                     info.tb_hits += 1;
+                    if wdl < -1 && tb_band_loss {
+                        tb_loss_rfp_guard = true;
+                    }
                     // wdl from ambiguous_wdl_to_score: ±20000 = definite, ±1 = ambiguous, 0 = draw
                     // Only use large TB scores for definite Win/Loss.
                     // Ambiguous results (CursedWin=1, MaybeLoss=-1) stay small
@@ -5047,7 +5067,7 @@ fn negamax(
             }
             // Widen margin when opponent pawns attack our pieces (Minic/Berserk pattern)
             if has_pawn_threats { margin += margin / 3; }
-            if static_eval - margin >= beta {
+            if static_eval - margin >= beta && !tb_loss_rfp_guard {
                 trace_node!(info, board.hash, ply, "rfp_cut", depth);
                 info.stats.rfp_cutoffs += 1;
                 // RFP_AUDIT (diagnostic): null-verify this static cutoff with
