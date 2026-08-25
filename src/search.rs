@@ -2049,6 +2049,11 @@ fn corrected_eval(info: &SearchInfo, board: &Board, raw_eval: i32, ply: usize) -
     adjusted.clamp(-MATE_IN_MAX_PLY + 1, MATE_IN_MAX_PLY - 1)
 }
 
+#[inline]
+fn rfp_score_domain_safe(static_eval: i32, beta: i32) -> bool {
+    static_eval.abs() < MATE_SCORE - 200 && !is_loss(beta)
+}
+
 /// Update correction history entry with gravity.
 fn update_corr_entry(entry: &mut i32, scaled_err: i32, cap_div_10x: i32) {
     // Proportional gravity (consensus: every top engine uses this)
@@ -5031,10 +5036,11 @@ fn negamax(
             && board.piece_type_at(move_to(tt_move)) == NO_PIECE_TYPE
             && move_flags(tt_move) != FLAG_EN_PASSANT
             && !is_promotion(tt_move);
-        // TB/mate guard: every peer skips RFP when eval is near mate/TB range.
-        // Without this, RFP could cut a node where NNUE sees forced mate. (RFP audit RFP-3)
+        // Exclude sentinel-like static evals and decisive-loss beta windows.
+        // A losing beta is trivially exceeded by almost any ordinary eval;
+        // treating that as a cutoff would replace a mate/TB loss with a cp score.
         if depth <= tp(&RFP_DEPTH) && ply > 0 && !tt_pv && !tt_move_is_quiet && info.excluded_move[ply_u] == NO_MOVE && FEAT_RFP.load(Ordering::Relaxed)
-            && static_eval.abs() < MATE_SCORE - 200 {
+            && rfp_score_domain_safe(static_eval, beta) {
             let mut margin = if improving { depth * tp(&RFP_MARGIN_IMP) } else { depth * tp(&RFP_MARGIN_NOIMP) };
             // Root-depth-aware relaxation: + depth*(root_depth-thresh)+ *coef/100.
             // Zero at STC (root_depth <= thresh); grows with both remaining
@@ -7761,6 +7767,26 @@ mod tests {
         assert_eq!(apply_halfmove_scale(-INFINITY, 50), -INFINITY);
         assert_eq!(apply_halfmove_scale(MATE_SCORE - 5, 99), MATE_SCORE - 5);
         assert_eq!(apply_halfmove_scale(-(MATE_SCORE - 5), 99), -(MATE_SCORE - 5));
+    }
+
+    #[test]
+    fn rfp_rejects_decisive_loss_beta_domain() {
+        let first_tb_loss = -(TB_WIN - 200);
+
+        assert!(
+            rfp_score_domain_safe(0, first_tb_loss + 1),
+            "the ordinary cp window immediately above the TB-loss band is valid"
+        );
+        assert!(!rfp_score_domain_safe(0, first_tb_loss));
+        assert!(!rfp_score_domain_safe(0, -MATE_IN_MAX_PLY));
+
+        // Guard the concrete failure mode: an ordinary eval would trivially
+        // clear this beta, but RFP must not replace a decisive loss with cp.
+        let beta: i32 = -28_700;
+        let margin = 140;
+        assert!(beta.abs() < MATE_IN_MAX_PLY);
+        assert!(0 - margin >= beta);
+        assert!(!rfp_score_domain_safe(0, beta));
     }
 
     /// Regression guard against corrhist fortress drift.
