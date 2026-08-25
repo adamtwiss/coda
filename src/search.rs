@@ -5266,6 +5266,20 @@ fn negamax_inner(
                             info.stats.rfp_decisive_regret[band] += regret;
                             info.stats.rfp_decisive_rejected_ply[ply_idx] += 1;
                             info.stats.rfp_decisive_rejected_surplus[surplus_idx] += 1;
+                            eprintln!(
+                                "RFP_DECISIVE_DISAGREE fen=\"{}\" band={} depth={} ply={} alpha={} beta={} static_eval={} margin={} rfp_score={} verified={} nodes={}",
+                                board.to_fen(),
+                                if band == 0 { "tb" } else { "mate" },
+                                depth,
+                                ply,
+                                alpha,
+                                beta,
+                                static_eval,
+                                margin,
+                                static_eval - margin,
+                                verified,
+                                verify_nodes,
+                            );
                         }
                     }
                     return verified;
@@ -7462,6 +7476,54 @@ pub fn bench(depth: i32, nnue_path: Option<&str>) -> u64 {
     bench_inner(depth, nnue_path, true)
 }
 
+/// Run the normal fixed-depth bench machinery over an external full-FEN
+/// corpus. Text after the six FEN fields is metadata and is ignored by search.
+/// Unlike the UCI root path, this calls `search` directly, so five-piece roots
+/// exercise interior TB-score propagation instead of being short-circuited by
+/// a root DTZ move.
+pub fn bench_corpus(
+    depth: i32,
+    nnue_path: Option<&str>,
+    path: &str,
+    syzygy_path: &str,
+    kind_filter: Option<&str>,
+) -> u64 {
+    let text = std::fs::read_to_string(path)
+        .unwrap_or_else(|e| panic!("failed to read search corpus '{}': {}", path, e));
+    let positions: Vec<String> = text
+        .lines()
+        .filter_map(|line| {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                return None;
+            }
+            if let Some(kind) = kind_filter {
+                let wanted = format!("kind={}", kind);
+                let has_kind = trimmed
+                    .split_once(';')
+                    .map(|(_, metadata)| metadata.split_whitespace().any(|field| field == wanted))
+                    .unwrap_or(false);
+                if !has_kind {
+                    return None;
+                }
+            }
+            let fields: Vec<&str> = trimmed.split_whitespace().take(6).collect();
+            assert_eq!(fields.len(), 6, "corpus line is not a six-field FEN: {}", line);
+            Some(fields.join(" "))
+        })
+        .collect();
+    assert!(!positions.is_empty(), "search corpus '{}' is empty", path);
+    bench_positions_inner(
+        depth,
+        nnue_path,
+        true,
+        &positions,
+        Some(syzygy_path),
+        "corpus",
+        true,
+    )
+}
+
 /// Run pathology bench: per-position node + wall-clock report. Returns
 /// the count of positions exceeding `node_threshold` so callers can
 /// fail-fast on regressions.
@@ -7517,10 +7579,23 @@ pub fn bench_silent(depth: i32, nnue_path: Option<&str>) -> u64 {
 }
 
 fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
-    let positions = BENCH_POSITIONS;
+    bench_positions_inner(depth, nnue_path, print_stats, BENCH_POSITIONS, None, "bench", false)
+}
+
+fn bench_positions_inner<S: AsRef<str>>(
+    depth: i32,
+    nnue_path: Option<&str>,
+    print_stats: bool,
+    positions: &[S],
+    syzygy_path: Option<&str>,
+    label: &str,
+    isolate_positions: bool,
+) -> u64 {
 
     let mut info = SearchInfo::new(16);
-    info.silent = !print_stats;
+    // Corpus runs want aggregate diagnostics, not an iterative-deepening line
+    // for every position. The standard bench retains its historical output.
+    info.silent = !print_stats || isolate_positions;
     if let Some(path) = nnue_path {
         if let Err(e) = info.load_nnue(path) {
             // An EXPLICIT net override that fails must be fatal: silently
@@ -7532,6 +7607,11 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
         }
     } else {
         info.auto_discover_nnue();
+    }
+    if let Some(path) = syzygy_path {
+        let tb = crate::tb::SyzygyTB::new(path)
+            .unwrap_or_else(|e| panic!("failed to load Syzygy corpus tables '{}': {}", path, e));
+        info.syzygy = Some(std::sync::Arc::new(tb));
     }
     let mut total_nodes = 0u64;
     let mut ebf_ln_sum = 0.0f64;
@@ -7546,11 +7626,21 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
     };
 
     for fen in positions {
-        let mut board = Board::from_fen(fen);
+        let mut board = Board::from_fen(fen.as_ref());
         info.nodes = 0;
         info.last_flushed_nodes.set(0);
         info.global_nodes.store(0, Ordering::Relaxed); // P2.8: reset per position — was cumulative, so every info line after #1 printed garbage NPS
-        reset_bench_position_state(&mut info);
+        if isolate_positions {
+            // Halfmove-clock variants intentionally share the board Zobrist
+            // key. A generation bump would still admit cross-generation hits,
+            // allowing one variant's TT bounds to contaminate another despite
+            // their different 50-move-rule state.
+            info.tt.clear();
+            info.tb_hits = 0;
+            info.clear_persistent_histories();
+        } else {
+            reset_bench_position_state(&mut info);
+        }
 
         let _mv = search(&mut board, &mut info, &limits);
         total_nodes += info.nodes;
@@ -7662,7 +7752,7 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
 
     // Print pruning stats (accumulated across all positions)
     let s = &total_stats;
-    eprintln!("=== Pruning Stats (cumulative across all bench positions) ===");
+    eprintln!("=== Pruning Stats (cumulative across all {} positions) ===", label);
     eprintln!("TT probes:      {:>8}  hits: {} ({:.1}%)  cross-gen hits: {} ({:.1}% of hits)",
         s.tt_probes,
         s.tt_hits,

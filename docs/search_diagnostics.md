@@ -53,3 +53,42 @@ cap, rather than the observed residual, is controlling learning in that region.
 Halfmove buckets with few samples should not drive a change without a targeted
 position corpus.
 
+## Targeted mate and tablebase corpus
+
+`testdata/search_audit.epd` contains full six-field FENs rather than ordinary
+four-field EPD records, so halfmove clocks survive intact. Its deterministic
+mix is:
+
+- 32 fixed-depth mate roots and their 32 legal child positions;
+- 64 five-piece Syzygy roots;
+- 64 six-piece roots with a legal capture into the five-piece tables;
+- retained interior counterexamples found by this diagnostic.
+
+Each tablebase placement is represented at halfmove clocks 0, 50, 90 and 99.
+The runner clears the TT and persistent histories between positions because
+clock variants have the same board Zobrist key but different draw state.
+
+Build the corpus again from the local tactical suites and five-piece tables:
+
+```sh
+./target/release/coda build-search-corpus \
+  --syzygy /home/adam/chess/tablebases
+```
+
+Run all positions, or isolate one metadata category:
+
+```sh
+RFP_DECISIVE_SAMPLE=1 ./target/release/coda search-corpus --depth 10
+RFP_DECISIVE_SAMPLE=1 ./target/release/coda search-corpus --depth 10 \
+  --kind tb-transition
+```
+
+The search path deliberately bypasses UCI's root-DTZ shortcut. Five-piece
+roots therefore search normally while their children exercise interior WDL
+score propagation. `--kind` accepts `mate-root`, `mate-child`, `tb-direct`,
+`tb-transition`, or `tb-counterexample`.
+
+A retained interior FEN records the board and observed window, but searching it
+as a new root is not expected to recreate the event: root search has a different
+window, TT state and ply. The deterministic `tb-transition` run is the complete
+reproduction path; the interior record makes the discrepant node inspectable.

@@ -42,6 +42,7 @@ mod see;
 mod tt;
 mod movepicker;
 mod search;
+mod search_corpus;
 mod thread_pool;
 mod uci;
 mod epd;
@@ -130,6 +131,42 @@ enum Commands {
         /// Node threshold per position; flag if exceeded
         #[arg(long = "threshold", default_value_t = 5_000_000)]
         threshold: u64,
+    },
+    /// Run a fixed-depth search over full-FEN diagnostic corpus positions.
+    SearchCorpus {
+        /// Corpus path; each non-comment line begins with a six-field FEN.
+        #[arg(default_value = "testdata/search_audit.epd")]
+        path: String,
+        /// Fixed search depth.
+        #[arg(long, default_value_t = 12)]
+        depth: i32,
+        /// Syzygy directory. Required for TB-transition coverage.
+        #[arg(long, default_value = "")]
+        syzygy: String,
+        /// Restrict to one metadata kind, e.g. mate-root or tb-transition.
+        #[arg(long)]
+        kind: Option<String>,
+    },
+    /// Deterministically build the mate/TB search diagnostic corpus.
+    BuildSearchCorpus {
+        /// Output corpus path.
+        #[arg(long, default_value = "testdata/search_audit.epd")]
+        output: String,
+        /// Tactical EPD source (repeatable); defaults to Coda's tactical suites.
+        #[arg(long = "epd")]
+        epd: Vec<String>,
+        /// Fixed depth used to retain positions with a proven mate score.
+        #[arg(long, default_value_t = 14)]
+        depth: i32,
+        /// Maximum mate positions retained.
+        #[arg(long, default_value_t = 64)]
+        mates: usize,
+        /// Number of five/six-piece TB positions, including clock variants.
+        #[arg(long, default_value_t = 128)]
+        tb: usize,
+        /// Syzygy directory used to label generated positions.
+        #[arg(long, default_value = "")]
+        syzygy: String,
     },
     /// NNUE micro-benchmark: pure inference throughput (no search).
     /// `--mode fresh` uses the debug scalar `force_recompute` path.
@@ -754,6 +791,32 @@ fn main() {
             let nnue_path = cli.nnue.as_deref();
             let over = search::bench_pathology(depth, threshold, nnue_path);
             std::process::exit(over.min(127) as i32);
+        }
+
+        Some(Commands::SearchCorpus { path, depth, syzygy, kind }) => {
+            println!("{}", isa_banner());
+            let syzygy = search_corpus::resolve_syzygy_path(&syzygy);
+            let nodes = search::bench_corpus(
+                depth,
+                cli.nnue.as_deref(),
+                &path,
+                &syzygy,
+                kind.as_deref(),
+            );
+            println!("\n{} nodes", nodes);
+        }
+
+        Some(Commands::BuildSearchCorpus { output, epd, depth, mates, tb, syzygy }) => {
+            let syzygy = search_corpus::resolve_syzygy_path(&syzygy);
+            search_corpus::build(
+                &output,
+                &epd,
+                depth,
+                mates,
+                tb,
+                &syzygy,
+                cli.nnue.as_deref(),
+            );
         }
 
         Some(Commands::EvalBench { epd, positions, reps, mode, no_avx512, no_threat_deltas }) => {

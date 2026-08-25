@@ -1,0 +1,198 @@
+# Coda search audit corpus v1
+# Six-field FEN is mandatory; metadata follows ';'.
+# mate classification depth=14 requested=64 retained=64
+# tablebase positions=128 generator_seed=0xC0DA5EEDD1A62026
+# retained TB/RFP counterexamples=1
+r1bq2rk/pp3pbp/2p1p1pQ/7P/3P4/2PB1N2/PP3PPR/2KR4 w - - 0 1 ; kind=mate-root score=28997 source=WAC.004
+r1bq2rk/pp3pbQ/2p1p1p1/7P/3P4/2PB1N2/PP3PPR/2KR4 b - - 0 1 ; kind=mate-child parent_score=28997 move=h6h7 source=WAC.004
+5k2/6pp/p1qN4/1p1p4/3P4/2PKP2Q/PP3r2/3R4 b - - 0 1 ; kind=mate-root score=28997 source=WAC.005
+5k2/6pp/p2N4/1p1p4/2qP4/2PKP2Q/PP3r2/3R4 w - - 1 2 ; kind=mate-child parent_score=28997 move=c6c4 source=WAC.005
+4k1r1/2p3r1/1pR1p3/3pP2p/3P2qP/P4N2/1PQ4P/5R1K b - - 0 1 ; kind=mate-root score=28997 source=WAC.012
+4k1r1/2p3r1/1pR1p3/3pP2p/3P3P/P4q2/1PQ4P/5R1K w - - 0 2 ; kind=mate-child parent_score=28997 move=g4f3 source=WAC.012
+r2rb1k1/pp1q1p1p/2n1p1p1/2bp4/5P2/PP1BPR1Q/1BPN2PP/R5K1 w - - 0 1 ; kind=mate-root score=28993 source=WAC.014
+r2rb1k1/pp1q1p1Q/2n1p1p1/2bp4/5P2/PP1BPR2/1BPN2PP/R5K1 b - - 0 1 ; kind=mate-child parent_score=28993 move=h3h7 source=WAC.014
+7k/pp4np/2p3p1/3pN1q1/3P4/Q7/1r3rPP/2R2RK1 w - - 0 1 ; kind=mate-root score=28997 source=WAC.027
+5Q1k/pp4np/2p3p1/3pN1q1/3P4/8/1r3rPP/2R2RK1 b - - 1 1 ; kind=mate-child parent_score=28997 move=a3f8 source=WAC.027
+r3r2k/2R3pp/pp1q1p2/8/3P3R/7P/PP3PP1/3Q2K1 w - - 0 1 ; kind=mate-root score=28993 source=WAC.035
+r3r2k/2R3pR/pp1q1p2/8/3P4/7P/PP3PP1/3Q2K1 b - - 0 1 ; kind=mate-child parent_score=28993 move=h4h7 source=WAC.035
+k4r2/1R4pb/1pQp1n1p/3P4/5p1P/3P2P1/r1q1R2K/8 w - - 0 1 ; kind=mate-root score=28995 source=WAC.050
+k4r2/6pb/1RQp1n1p/3P4/5p1P/3P2P1/r1q1R2K/8 b - - 0 1 ; kind=mate-child parent_score=28995 move=b7b6 source=WAC.050
+3r3k/p1Q3bp/2p3p1/8/2P1BRn1/1P4Pb/P1N1q2P/6BK b - - 0 1 ; kind=mate-root score=28987 source=ECM.1122
+3r3k/p1Q3bp/2p3p1/8/2P1BR2/1P4Pb/P1N1qn1P/6BK w - - 1 2 ; kind=mate-child parent_score=28987 move=g4f2 source=ECM.1122
+r3kr2/1pp4p/1p1p4/7q/4P1n1/2PP2Q1/PP4P1/R1BB2K1 b q - 0 1 ; kind=mate-root score=28997 source=WAC.054
+r3kr2/1pp4p/1p1p4/8/4P1n1/2PP2Q1/PP4P1/R1BB2Kq w q - 1 2 ; kind=mate-child parent_score=28997 move=h5h1 source=WAC.054
+r3r1k1/pp1q1pp1/4b1p1/3p2B1/3Q1R2/8/PPP3PP/4R1K1 w - - 0 1 ; kind=mate-root score=28991 source=WAC.055
+r3r1k1/pp1q1pQ1/4b1p1/3p2B1/5R2/8/PPP3PP/4R1K1 b - - 0 1 ; kind=mate-child parent_score=28991 move=d4g7 source=WAC.055
+r3q1kr/ppp5/3p2pQ/8/3PP1b1/5R2/PPP3P1/5RK1 w - - 0 1 ; kind=mate-root score=28995 source=WAC.057
+r3qRkr/ppp5/3p2pQ/8/3PP1b1/8/PPP3P1/5RK1 b - - 1 1 ; kind=mate-child parent_score=28995 move=f3f8 source=WAC.057
+8/6pp/3q1p2/3n1k2/1P6/3NQ2P/5PP1/6K1 w - - 0 1 ; kind=mate-root score=28995 source=WAC.064
+8/6pp/3q1p2/3n1k2/1P4P1/3NQ2P/5P2/6K1 b - g3 0 1 ; kind=mate-child parent_score=28995 move=g2g4 source=WAC.064
+r2q1r1k/2p1b1pp/p1n5/1p1Q1bN1/4n3/1BP1B3/PP3PPP/R4RK1 w - - 0 1 ; kind=mate-root score=28997 source=WAC.084
+r2q1rQk/2p1b1pp/p1n5/1p3bN1/4n3/1BP1B3/PP3PPP/R4RK1 b - - 1 1 ; kind=mate-child parent_score=28997 move=d5g8 source=WAC.084
+r6k/p1Q4p/2p1b1rq/4p3/B3P3/4P3/PPP3P1/4RRK1 b - - 0 1 ; kind=mate-root score=28991 source=WAC.088
+r6k/p1Q4p/2p1b2q/4p3/B3P3/4P3/PPP3r1/4RRK1 w - - 0 2 ; kind=mate-child parent_score=28991 move=g6g2 source=WAC.088
+r2qnr2/pp3kbQ/2npb1p1/2pN1pP1/4P3/8/PPP1BP2/R1B1K1NR w KQ - 0 1 ; kind=mate-root score=28987 source=ECM.1232
+r2qnr2/pp3kb1/2npb1Q1/2pN1pP1/4P3/8/PPP1BP2/R1B1K1NR b KQ - 0 1 ; kind=mate-child parent_score=28987 move=h7g6 source=ECM.1232
+r1bq1r1k/1pp1Np1p/p2p2pQ/4R3/n7/8/PPPP1PPP/R1B3K1 w - - 0 1 ; kind=mate-root score=28997 source=WAC.099
+r1bq1r1k/1pp1Np1p/p2p2pQ/7R/n7/8/PPPP1PPP/R1B3K1 b - - 1 1 ; kind=mate-child parent_score=28997 move=e5h5 source=WAC.099
+6k1/2pb1r1p/3p1PpQ/p1nPp3/1q2P3/2N2P2/PrB5/2K3RR w - - 0 1 ; kind=mate-root score=28993 source=WAC.103
+6k1/2pb1r1p/3p1PQ1/p1nPp3/1q2P3/2N2P2/PrB5/2K3RR b - - 0 1 ; kind=mate-child parent_score=28993 move=h6g6 source=WAC.103
+3r2k1/p6p/2Q3p1/4q3/2P1p3/P3Pb2/1P3P1P/2K2BR1 b - - 0 1 ; kind=mate-root score=28993 source=WAC.134
+6k1/p6p/2Q3p1/4q3/2P1p3/P3Pb2/1P3P1P/2Kr1BR1 w - - 1 2 ; kind=mate-child parent_score=28993 move=d8d1 source=WAC.134
+r1bq3r/ppppR1p1/5n1k/3P4/6pP/3Q4/PP1N1PP1/5K1R w - - 0 1 ; kind=mate-root score=28991 source=WAC.138
+r1bq3r/ppppR1p1/5n1k/3P3P/6p1/3Q4/PP1N1PP1/5K1R b - - 0 1 ; kind=mate-child parent_score=28991 move=h4h5 source=WAC.138
+rnb3kr/ppp2ppp/1b6/3q4/3pN3/Q4N2/PPP2KPP/R1B1R3 w - - 0 1 ; kind=mate-root score=28993 source=WAC.139
+rnb3kr/ppp2ppp/1b3N2/3q4/3p4/Q4N2/PPP2KPP/R1B1R3 b - - 1 1 ; kind=mate-child parent_score=28993 move=e4f6 source=WAC.139
+4r1k1/p1qr1p2/2pb1Bp1/1p5p/3P1n1R/1B3P2/PP3PK1/2Q4R w - - 0 1 ; kind=mate-root score=28987 source=WAC.141
+4r1k1/p1qr1p2/2pb1Bp1/1p5p/3P1Q1R/1B3P2/PP3PK1/7R b - - 0 1 ; kind=mate-child parent_score=28987 move=c1f4 source=WAC.141
+5b2/pp2r1pk/2pp1pRp/4rP1N/2P1P3/1P4QP/P3q1P1/5R1K w - - 0 1 ; kind=mate-root score=28995 source=WAC.143
+5b2/pp2r1pk/2pp1p1R/4rP1N/2P1P3/1P4QP/P3q1P1/5R1K b - - 0 1 ; kind=mate-child parent_score=28995 move=g6h6 source=WAC.143
+r1b2rk1/2p2ppp/p7/1p6/3P3q/1BP3bP/PP3QP1/RNB1R1K1 w - - 0 1 ; kind=mate-root score=28997 source=WAC.154
+r1b2rk1/2p2Qpp/p7/1p6/3P3q/1BP3bP/PP4P1/RNB1R1K1 b - - 0 1 ; kind=mate-child parent_score=28997 move=f2f7 source=WAC.154
+r1b1qN1k/1pp3p1/p2p3n/4p1B1/8/1BP4Q/PP3KPP/8 w - - 0 1 ; kind=mate-root score=28997 source=WAC.156
+r1b1qN1k/1pp3p1/p2p3Q/4p1B1/8/1BP5/PP3KPP/8 b - - 0 1 ; kind=mate-child parent_score=28997 move=h3h6 source=WAC.156
+2r1b3/1pp1qrk1/p1n1P1p1/7R/2B1p3/4Q1P1/PP3PP1/3R2K1 w - - 0 1 ; kind=mate-root score=28995 source=WAC.173
+2r1b3/1pp1qrk1/p1n1P1pQ/7R/2B1p3/6P1/PP3PP1/3R2K1 b - - 1 1 ; kind=mate-child parent_score=28995 move=e3h6 source=WAC.173
+r1b2rk1/ppqn1p1p/2n1p1p1/2b3N1/2N5/PP1BP3/1B3PPP/R2QK2R w KQ - 0 1 ; kind=mate-root score=28989 source=WAC.182
+r1b2rk1/ppqn1p1p/2n1p1p1/2b3NQ/2N5/PP1BP3/1B3PPP/R3K2R b KQ - 1 1 ; kind=mate-child parent_score=28989 move=d1h5 source=WAC.182
+3RNbk1/pp3p2/4rQpp/8/1qr5/7P/P4P2/3R2K1 w - - 0 1 ; kind=mate-root score=28997 source=WAC.188
+3RNbk1/pp3pQ1/4r1pp/8/1qr5/7P/P4P2/3R2K1 b - - 1 1 ; kind=mate-child parent_score=28997 move=f6g7 source=WAC.188
+7k/1p4p1/7p/3P1n2/4Q3/2P2P2/PP3qRP/7K b - - 0 1 ; kind=mate-root score=28995 source=WAC.197
+7k/1p4p1/7p/3P1n2/4Q3/2P2P2/PP4RP/5q1K w - - 1 2 ; kind=mate-child parent_score=28995 move=f2f1 source=WAC.197
+2b2r1k/4q2p/3p2pQ/2pBp3/8/6P1/1PP2P1P/R5K1 w - - 0 1 ; kind=mate-root score=28987 source=WAC.201
+2b2r1k/R3q2p/3p2pQ/2pBp3/8/6P1/1PP2P1P/6K1 b - - 1 1 ; kind=mate-child parent_score=28987 move=a1a7 source=WAC.201
+r4rk1/5ppp/p3q1n1/2p2NQ1/4n3/P3P3/1B3PPP/1R3RK1 w - - 0 1 ; kind=mate-root score=28995 source=WAC.203
+r4rk1/5ppp/p3q1nQ/2p2N2/4n3/P3P3/1B3PPP/1R3RK1 b - - 1 1 ; kind=mate-child parent_score=28995 move=g5h6 source=WAC.203
+rn1qr2Q/pbppk1p1/1p2pb2/4N3/3P4/2N5/PPP3PP/R4RK1 w - - 0 1 ; kind=mate-root score=28991 source=WAC.212
+rn1qr3/pbppk1Q1/1p2pb2/4N3/3P4/2N5/PPP3PP/R4RK1 b - - 0 1 ; kind=mate-child parent_score=28991 move=h8g7 source=WAC.212
+3r2k1/pb1q1pp1/1p2pb1p/8/3N4/P2QB3/1P3PPP/1Br1R1K1 w - - 0 1 ; kind=mate-root score=28993 source=WAC.215
+3r2k1/pb1q1ppQ/1p2pb1p/8/3N4/P3B3/1P3PPP/1Br1R1K1 b - - 1 1 ; kind=mate-child parent_score=28993 move=d3h7 source=WAC.215
+8/1P2b3/8/6K1/7P/8/8/3k4 w - - 0 1 ; kind=tb-direct wdl=20000 wdl0=20000 clock=0
+8/1P2b3/8/6K1/7P/8/8/3k4 w - - 50 1 ; kind=tb-direct wdl=20000 wdl0=20000 clock=50
+8/1P2b3/8/6K1/7P/8/8/3k4 w - - 90 1 ; kind=tb-direct wdl=20000 wdl0=20000 clock=90
+8/1P2b3/8/6K1/7P/8/8/3k4 w - - 99 1 ; kind=tb-direct wdl=1 wdl0=20000 clock=99
+7N/8/8/1k6/8/5NK1/5P2/8 b - - 0 1 ; kind=tb-direct wdl=-20000 wdl0=-20000 clock=0
+7N/8/8/1k6/8/5NK1/5P2/8 b - - 50 1 ; kind=tb-direct wdl=-20000 wdl0=-20000 clock=50
+7N/8/8/1k6/8/5NK1/5P2/8 b - - 90 1 ; kind=tb-direct wdl=-20000 wdl0=-20000 clock=90
+7N/8/8/1k6/8/5NK1/5P2/8 b - - 99 1 ; kind=tb-direct wdl=-1 wdl0=-20000 clock=99
+7K/8/6k1/5N2/3n4/8/5B2/8 w - - 0 1 ; kind=tb-direct wdl=20000 wdl0=20000 clock=0
+7K/8/6k1/5N2/3n4/8/5B2/8 w - - 50 1 ; kind=tb-direct wdl=20000 wdl0=20000 clock=50
+7K/8/6k1/5N2/3n4/8/5B2/8 w - - 90 1 ; kind=tb-direct wdl=20000 wdl0=20000 clock=90
+7K/8/6k1/5N2/3n4/8/5B2/8 w - - 99 1 ; kind=tb-direct wdl=20000 wdl0=20000 clock=99
+2K5/4p3/8/8/N7/3k4/8/1R6 w - - 0 1 ; kind=tb-direct wdl=20000 wdl0=20000 clock=0
+2K5/4p3/8/8/N7/3k4/8/1R6 w - - 50 1 ; kind=tb-direct wdl=20000 wdl0=20000 clock=50
+2K5/4p3/8/8/N7/3k4/8/1R6 w - - 90 1 ; kind=tb-direct wdl=20000 wdl0=20000 clock=90
+2K5/4p3/8/8/N7/3k4/8/1R6 w - - 99 1 ; kind=tb-direct wdl=1 wdl0=20000 clock=99
+5k2/8/8/5b2/8/8/8/R1K4B b - - 0 1 ; kind=tb-direct wdl=-20000 wdl0=-20000 clock=0
+5k2/8/8/5b2/8/8/8/R1K4B b - - 50 1 ; kind=tb-direct wdl=-20000 wdl0=-20000 clock=50
+5k2/8/8/5b2/8/8/8/R1K4B b - - 90 1 ; kind=tb-direct wdl=-1 wdl0=-20000 clock=90
+5k2/8/8/5b2/8/8/8/R1K4B b - - 99 1 ; kind=tb-direct wdl=-1 wdl0=-20000 clock=99
+n7/6K1/8/8/8/8/8/1r3k1r w - - 0 1 ; kind=tb-direct wdl=-20000 wdl0=-20000 clock=0
+n7/6K1/8/8/8/8/8/1r3k1r w - - 50 1 ; kind=tb-direct wdl=-20000 wdl0=-20000 clock=50
+n7/6K1/8/8/8/8/8/1r3k1r w - - 90 1 ; kind=tb-direct wdl=-20000 wdl0=-20000 clock=90
+n7/6K1/8/8/8/8/8/1r3k1r w - - 99 1 ; kind=tb-direct wdl=-1 wdl0=-20000 clock=99
+8/2k1P3/8/8/8/8/1K4B1/4n3 w - - 0 1 ; kind=tb-direct wdl=20000 wdl0=20000 clock=0
+8/2k1P3/8/8/8/8/1K4B1/4n3 w - - 50 1 ; kind=tb-direct wdl=20000 wdl0=20000 clock=50
+8/2k1P3/8/8/8/8/1K4B1/4n3 w - - 90 1 ; kind=tb-direct wdl=20000 wdl0=20000 clock=90
+8/2k1P3/8/8/8/8/1K4B1/4n3 w - - 99 1 ; kind=tb-direct wdl=20000 wdl0=20000 clock=99
+3n4/1K3k2/q7/6Q1/8/8/8/8 w - - 0 1 ; kind=tb-direct wdl=20000 wdl0=20000 clock=0
+3n4/1K3k2/q7/6Q1/8/8/8/8 w - - 50 1 ; kind=tb-direct wdl=20000 wdl0=20000 clock=50
+3n4/1K3k2/q7/6Q1/8/8/8/8 w - - 90 1 ; kind=tb-direct wdl=20000 wdl0=20000 clock=90
+3n4/1K3k2/q7/6Q1/8/8/8/8 w - - 99 1 ; kind=tb-direct wdl=20000 wdl0=20000 clock=99
+8/6B1/8/8/3K4/8/8/3k2NR b - - 0 1 ; kind=tb-direct wdl=-20000 wdl0=-20000 clock=0
+8/6B1/8/8/3K4/8/8/3k2NR b - - 50 1 ; kind=tb-direct wdl=-20000 wdl0=-20000 clock=50
+8/6B1/8/8/3K4/8/8/3k2NR b - - 90 1 ; kind=tb-direct wdl=-20000 wdl0=-20000 clock=90
+8/6B1/8/8/3K4/8/8/3k2NR b - - 99 1 ; kind=tb-direct wdl=-1 wdl0=-20000 clock=99
+3Q1B2/8/6p1/8/7K/5k2/8/8 w - - 0 1 ; kind=tb-direct wdl=20000 wdl0=20000 clock=0
+3Q1B2/8/6p1/8/7K/5k2/8/8 w - - 50 1 ; kind=tb-direct wdl=20000 wdl0=20000 clock=50
+3Q1B2/8/6p1/8/7K/5k2/8/8 w - - 90 1 ; kind=tb-direct wdl=20000 wdl0=20000 clock=90
+3Q1B2/8/6p1/8/7K/5k2/8/8 w - - 99 1 ; kind=tb-direct wdl=1 wdl0=20000 clock=99
+K6b/2R5/8/8/8/2k5/6B1/8 b - - 0 1 ; kind=tb-direct wdl=-20000 wdl0=-20000 clock=0
+K6b/2R5/8/8/8/2k5/6B1/8 b - - 50 1 ; kind=tb-direct wdl=-20000 wdl0=-20000 clock=50
+K6b/2R5/8/8/8/2k5/6B1/8 b - - 90 1 ; kind=tb-direct wdl=-1 wdl0=-20000 clock=90
+K6b/2R5/8/8/8/2k5/6B1/8 b - - 99 1 ; kind=tb-direct wdl=-1 wdl0=-20000 clock=99
+6k1/8/8/N2K4/8/8/2r5/4n3 b - - 0 1 ; kind=tb-direct wdl=20000 wdl0=20000 clock=0
+6k1/8/8/N2K4/8/8/2r5/4n3 b - - 50 1 ; kind=tb-direct wdl=20000 wdl0=20000 clock=50
+6k1/8/8/N2K4/8/8/2r5/4n3 b - - 90 1 ; kind=tb-direct wdl=1 wdl0=20000 clock=90
+6k1/8/8/N2K4/8/8/2r5/4n3 b - - 99 1 ; kind=tb-direct wdl=1 wdl0=20000 clock=99
+3K4/8/4P2B/k7/8/8/7B/8 b - - 0 1 ; kind=tb-direct wdl=-20000 wdl0=-20000 clock=0
+3K4/8/4P2B/k7/8/8/7B/8 b - - 50 1 ; kind=tb-direct wdl=-20000 wdl0=-20000 clock=50
+3K4/8/4P2B/k7/8/8/7B/8 b - - 90 1 ; kind=tb-direct wdl=-20000 wdl0=-20000 clock=90
+3K4/8/4P2B/k7/8/8/7B/8 b - - 99 1 ; kind=tb-direct wdl=-1 wdl0=-20000 clock=99
+N7/8/1k4K1/8/6Q1/8/6P1/8 b - - 0 1 ; kind=tb-direct wdl=-20000 wdl0=-20000 clock=0
+N7/8/1k4K1/8/6Q1/8/6P1/8 b - - 50 1 ; kind=tb-direct wdl=-20000 wdl0=-20000 clock=50
+N7/8/1k4K1/8/6Q1/8/6P1/8 b - - 90 1 ; kind=tb-direct wdl=-20000 wdl0=-20000 clock=90
+N7/8/1k4K1/8/6Q1/8/6P1/8 b - - 99 1 ; kind=tb-direct wdl=-1 wdl0=-20000 clock=99
+K7/8/8/8/3k4/8/1P6/2b1q3 b - - 0 1 ; kind=tb-direct wdl=20000 wdl0=20000 clock=0
+K7/8/8/8/3k4/8/1P6/2b1q3 b - - 50 1 ; kind=tb-direct wdl=20000 wdl0=20000 clock=50
+K7/8/8/8/3k4/8/1P6/2b1q3 b - - 90 1 ; kind=tb-direct wdl=20000 wdl0=20000 clock=90
+K7/8/8/8/3k4/8/1P6/2b1q3 b - - 99 1 ; kind=tb-direct wdl=20000 wdl0=20000 clock=99
+5R2/8/1R6/8/5K1Q/8/3k4/8 b - - 0 1 ; kind=tb-direct wdl=-20000 wdl0=-20000 clock=0
+5R2/8/1R6/8/5K1Q/8/3k4/8 b - - 50 1 ; kind=tb-direct wdl=-20000 wdl0=-20000 clock=50
+5R2/8/1R6/8/5K1Q/8/3k4/8 b - - 90 1 ; kind=tb-direct wdl=-20000 wdl0=-20000 clock=90
+5R2/8/1R6/8/5K1Q/8/3k4/8 b - - 99 1 ; kind=tb-direct wdl=-1 wdl0=-20000 clock=99
+3rK3/5B1N/8/1N6/8/4k3/8/8 w - - 0 1 ; kind=tb-transition winning_entries=1 losing_entries=0 clock=0
+3rK3/5B1N/8/1N6/8/4k3/8/8 w - - 50 1 ; kind=tb-transition winning_entries=1 losing_entries=0 clock=50
+3rK3/5B1N/8/1N6/8/4k3/8/8 w - - 90 1 ; kind=tb-transition winning_entries=1 losing_entries=0 clock=90
+3rK3/5B1N/8/1N6/8/4k3/8/8 w - - 99 1 ; kind=tb-transition winning_entries=1 losing_entries=0 clock=99
+K7/8/8/4q1k1/1N5P/8/4R3/8 b - - 0 1 ; kind=tb-transition winning_entries=0 losing_entries=1 clock=0
+K7/8/8/4q1k1/1N5P/8/4R3/8 b - - 50 1 ; kind=tb-transition winning_entries=0 losing_entries=1 clock=50
+K7/8/8/4q1k1/1N5P/8/4R3/8 b - - 90 1 ; kind=tb-transition winning_entries=0 losing_entries=1 clock=90
+K7/8/8/4q1k1/1N5P/8/4R3/8 b - - 99 1 ; kind=tb-transition winning_entries=0 losing_entries=1 clock=99
+3n4/4K3/6k1/6p1/1B6/b7/8/8 b - - 0 1 ; kind=tb-transition winning_entries=1 losing_entries=0 clock=0
+3n4/4K3/6k1/6p1/1B6/b7/8/8 b - - 50 1 ; kind=tb-transition winning_entries=1 losing_entries=0 clock=50
+3n4/4K3/6k1/6p1/1B6/b7/8/8 b - - 90 1 ; kind=tb-transition winning_entries=1 losing_entries=0 clock=90
+3n4/4K3/6k1/6p1/1B6/b7/8/8 b - - 99 1 ; kind=tb-transition winning_entries=1 losing_entries=0 clock=99
+8/5B2/K7/8/3B3P/8/n1k5/8 w - - 0 1 ; kind=tb-transition winning_entries=1 losing_entries=0 clock=0
+8/5B2/K7/8/3B3P/8/n1k5/8 w - - 50 1 ; kind=tb-transition winning_entries=1 losing_entries=0 clock=50
+8/5B2/K7/8/3B3P/8/n1k5/8 w - - 90 1 ; kind=tb-transition winning_entries=1 losing_entries=0 clock=90
+8/5B2/K7/8/3B3P/8/n1k5/8 w - - 99 1 ; kind=tb-transition winning_entries=1 losing_entries=0 clock=99
+4r3/3K4/5R2/8/8/2k3b1/8/1B6 w - - 0 1 ; kind=tb-transition winning_entries=1 losing_entries=0 clock=0
+4r3/3K4/5R2/8/8/2k3b1/8/1B6 w - - 50 1 ; kind=tb-transition winning_entries=1 losing_entries=0 clock=50
+4r3/3K4/5R2/8/8/2k3b1/8/1B6 w - - 90 1 ; kind=tb-transition winning_entries=1 losing_entries=0 clock=90
+4r3/3K4/5R2/8/8/2k3b1/8/1B6 w - - 99 1 ; kind=tb-transition winning_entries=1 losing_entries=0 clock=99
+6B1/8/8/1NN1k3/8/5Kr1/8/8 w - - 0 1 ; kind=tb-transition winning_entries=1 losing_entries=0 clock=0
+6B1/8/8/1NN1k3/8/5Kr1/8/8 w - - 50 1 ; kind=tb-transition winning_entries=1 losing_entries=0 clock=50
+6B1/8/8/1NN1k3/8/5Kr1/8/8 w - - 90 1 ; kind=tb-transition winning_entries=1 losing_entries=0 clock=90
+6B1/8/8/1NN1k3/8/5Kr1/8/8 w - - 99 1 ; kind=tb-transition winning_entries=1 losing_entries=0 clock=99
+8/8/8/1P1K1N2/8/1P4p1/1k6/8 w - - 0 1 ; kind=tb-transition winning_entries=1 losing_entries=0 clock=0
+8/8/8/1P1K1N2/8/1P4p1/1k6/8 w - - 50 1 ; kind=tb-transition winning_entries=1 losing_entries=0 clock=50
+8/8/8/1P1K1N2/8/1P4p1/1k6/8 w - - 90 1 ; kind=tb-transition winning_entries=1 losing_entries=0 clock=90
+8/8/8/1P1K1N2/8/1P4p1/1k6/8 w - - 99 1 ; kind=tb-transition winning_entries=1 losing_entries=0 clock=99
+6n1/8/7N/8/8/2b1K3/2k5/7q b - - 0 1 ; kind=tb-transition winning_entries=2 losing_entries=0 clock=0
+6n1/8/7N/8/8/2b1K3/2k5/7q b - - 50 1 ; kind=tb-transition winning_entries=2 losing_entries=0 clock=50
+6n1/8/7N/8/8/2b1K3/2k5/7q b - - 90 1 ; kind=tb-transition winning_entries=2 losing_entries=0 clock=90
+6n1/8/7N/8/8/2b1K3/2k5/7q b - - 99 1 ; kind=tb-transition winning_entries=2 losing_entries=0 clock=99
+6KR/8/2R5/8/2kR4/8/8/4b3 b - - 0 1 ; kind=tb-transition winning_entries=0 losing_entries=1 clock=0
+6KR/8/2R5/8/2kR4/8/8/4b3 b - - 50 1 ; kind=tb-transition winning_entries=0 losing_entries=1 clock=50
+6KR/8/2R5/8/2kR4/8/8/4b3 b - - 90 1 ; kind=tb-transition winning_entries=0 losing_entries=1 clock=90
+6KR/8/2R5/8/2kR4/8/8/4b3 b - - 99 1 ; kind=tb-transition winning_entries=0 losing_entries=1 clock=99
+8/8/5k2/1r6/8/1b1P1K2/2Q5/8 b - - 0 1 ; kind=tb-transition winning_entries=1 losing_entries=0 clock=0
+8/8/5k2/1r6/8/1b1P1K2/2Q5/8 b - - 50 1 ; kind=tb-transition winning_entries=1 losing_entries=0 clock=50
+8/8/5k2/1r6/8/1b1P1K2/2Q5/8 b - - 90 1 ; kind=tb-transition winning_entries=1 losing_entries=0 clock=90
+8/8/5k2/1r6/8/1b1P1K2/2Q5/8 b - - 99 1 ; kind=tb-transition winning_entries=1 losing_entries=0 clock=99
+8/b1R5/p7/4N3/1k1K4/8/8/8 w - - 0 1 ; kind=tb-transition winning_entries=1 losing_entries=0 clock=0
+8/b1R5/p7/4N3/1k1K4/8/8/8 w - - 50 1 ; kind=tb-transition winning_entries=1 losing_entries=0 clock=50
+8/b1R5/p7/4N3/1k1K4/8/8/8 w - - 90 1 ; kind=tb-transition winning_entries=1 losing_entries=0 clock=90
+8/b1R5/p7/4N3/1k1K4/8/8/8 w - - 99 1 ; kind=tb-transition winning_entries=1 losing_entries=0 clock=99
+8/7n/6K1/8/8/8/2r2n2/4n2k w - - 0 1 ; kind=tb-transition winning_entries=0 losing_entries=1 clock=0
+8/7n/6K1/8/8/8/2r2n2/4n2k w - - 50 1 ; kind=tb-transition winning_entries=0 losing_entries=1 clock=50
+8/7n/6K1/8/8/8/2r2n2/4n2k w - - 90 1 ; kind=tb-transition winning_entries=0 losing_entries=1 clock=90
+8/7n/6K1/8/8/8/2r2n2/4n2k w - - 99 1 ; kind=tb-transition winning_entries=0 losing_entries=1 clock=99
+6B1/2R2p2/6Kp/8/8/8/8/4k3 w - - 0 1 ; kind=tb-transition winning_entries=4 losing_entries=0 clock=0
+6B1/2R2p2/6Kp/8/8/8/8/4k3 w - - 50 1 ; kind=tb-transition winning_entries=4 losing_entries=0 clock=50
+6B1/2R2p2/6Kp/8/8/8/8/4k3 w - - 90 1 ; kind=tb-transition winning_entries=4 losing_entries=0 clock=90
+6B1/2R2p2/6Kp/8/8/8/8/4k3 w - - 99 1 ; kind=tb-transition winning_entries=4 losing_entries=0 clock=99
+8/8/2n5/8/8/KP2k3/8/3Qn3 w - - 0 1 ; kind=tb-transition winning_entries=1 losing_entries=0 clock=0
+8/8/2n5/8/8/KP2k3/8/3Qn3 w - - 50 1 ; kind=tb-transition winning_entries=1 losing_entries=0 clock=50
+8/8/2n5/8/8/KP2k3/8/3Qn3 w - - 90 1 ; kind=tb-transition winning_entries=1 losing_entries=0 clock=90
+8/8/2n5/8/8/KP2k3/8/3Qn3 w - - 99 1 ; kind=tb-transition winning_entries=1 losing_entries=0 clock=99
+2q1b3/1P6/2k5/8/7R/8/7K/8 b - - 0 1 ; kind=tb-transition winning_entries=2 losing_entries=0 clock=0
+2q1b3/1P6/2k5/8/7R/8/7K/8 b - - 50 1 ; kind=tb-transition winning_entries=2 losing_entries=0 clock=50
+2q1b3/1P6/2k5/8/7R/8/7K/8 b - - 90 1 ; kind=tb-transition winning_entries=2 losing_entries=0 clock=90
+2q1b3/1P6/2k5/8/7R/8/7K/8 b - - 99 1 ; kind=tb-transition winning_entries=2 losing_entries=0 clock=99
+8/5Q2/8/8/K5Q1/Q7/2k1b3/8 w - - 0 1 ; kind=tb-transition winning_entries=1 losing_entries=0 clock=0
+8/5Q2/8/8/K5Q1/Q7/2k1b3/8 w - - 50 1 ; kind=tb-transition winning_entries=1 losing_entries=0 clock=50
+8/5Q2/8/8/K5Q1/Q7/2k1b3/8 w - - 90 1 ; kind=tb-transition winning_entries=1 losing_entries=0 clock=90
+8/5Q2/8/8/K5Q1/Q7/2k1b3/8 w - - 99 1 ; kind=tb-transition winning_entries=1 losing_entries=0 clock=99
+8/8/6qn/8/5b2/7K/2k5/8 w - - 0 8 ; kind=tb-counterexample wdl=-20000 observed_depth=2 observed_ply=13 observed_beta=-28796 observed_verified=-28985
