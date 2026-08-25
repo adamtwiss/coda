@@ -734,9 +734,11 @@ pub static FEAT_QS_CAPTURES: AtomicBool = AtomicBool::new(true); // false = QS r
 pub static FEAT_SINGULAR: AtomicBool = AtomicBool::new(true); // singular extensions specifically
 pub static FEAT_CUCKOO: AtomicBool = AtomicBool::new(true);
 pub static FEAT_4D_HISTORY: AtomicBool = AtomicBool::new(true); // threat-aware 4D history indexing
-// Diagnostic-only (env RFP_AUDIT=1): null-verify every RFP cutoff and count
-// false positives per depth. NOT a play feature — costs NPS; bench/EPD use.
-pub static RFP_AUDIT: AtomicBool = AtomicBool::new(false);
+// Diagnostic-only (env RFP_VERIFY_SAMPLE=N): fully search one deterministic
+// sample per roughly N RFP cutoffs. Zero disables it; never a play feature.
+pub static RFP_VERIFY_SAMPLE: AtomicU64 = AtomicU64::new(0);
+// Diagnostic-only correction calibration counters (env CORR_AUDIT=1).
+pub static CORR_AUDIT: AtomicBool = AtomicBool::new(false);
 
 /// Disable all features (pure negamax + eval)
 pub fn disable_all_features() {
@@ -769,7 +771,7 @@ pub fn enable_all_features() {
 
 // Correction history constants
 const CORR_HIST_SIZE: usize = 16384;
-const CORR_HIST_LIMIT: i32 = 1024;    // Consensus (SF, Obsidian)
+const CORR_HIST_LIMIT: i32 = 1024;
 
 
 /// Search limits.
@@ -864,9 +866,6 @@ pub struct PruneStats {
     // fh1 conditioned on TT-move presence: [no_tt, has_tt]
     pub cut_by_ttpresence: [u64; 2],
     pub first_cut_by_ttpresence: [u64; 2],
-    // RFP-audit FP bucketed by corr-source spread (cp): [<8, 8-24, >=24]
-    pub rfp_audit_var_attempts: [u64; 3],
-    pub rfp_audit_var_fp: [u64; 3],
     pub cut_quiet_rank1: u64,
     pub cut_quiet_rank_sum: u64,
     // Dual-net dispatch instrumentation: |material-proxy| buckets of 100
@@ -890,14 +889,24 @@ pub struct PruneStats {
     // Move ordering quality: sum of move_count² at beta cutoff (lower = better ordering)
     pub cutoff_movecount_sq_sum: u64,
     pub cutoff_movecount_sum: u64,
-    // RFP false-positive audit (diagnostic, env RFP_AUDIT=1). At each RFP
-    // cutoff, additionally run an NMP-style null-move verification (same R
-    // formula as real NMP) and count cutoffs the null search REJECTS
-    // (null_score < beta), bucketed by remaining depth. Answers "is RFP's
-    // expanded habitat cutting nodes a dynamic threat check would refuse?"
-    // Behavior-preserving: the RFP cutoff is returned regardless.
-    pub rfp_audit_attempts: [u64; 24],
-    pub rfp_audit_fp: [u64; 24],
+    // Sampled RFP verification, bucketed by remaining depth. A sampled cutoff
+    // is declined once and searched normally at full depth; descendants retain
+    // RFP. This intentionally changes sampled diagnostic trees.
+    pub rfp_verify_attempts: [u64; 24],
+    pub rfp_verify_rejected: [u64; 24],
+    pub rfp_verify_nodes: [u64; 24],
+    pub rfp_verify_regret: [u64; 24],
+    pub rfp_verify_corr_flips: [u64; 24],
+    pub rfp_verify_corr_flip_rejected: [u64; 24],
+    // Correction calibration by depth band × halfmove band. Depth bands are
+    // <=4, 5-8, >=9; halfmove bands are 0-24, 25-49, 50-74, 75+.
+    pub corr_audit_updates: [u64; 12],
+    pub corr_audit_loss_before: [u64; 12],
+    pub corr_audit_loss_after: [u64; 12],
+    pub corr_audit_abs: [u64; 12],
+    pub corr_audit_clipped: [u64; 12],
+    pub corr_audit_rfp_flip_on: [u64; 4],
+    pub corr_audit_rfp_flip_off: [u64; 4],
     // TREESTATS parity counters, for tree-shape comparison against an
     // instrumented SF build; dumped by the UCI `treestats` command in the same
     // line format that patch emits. Bucket 0 = qsearch;
@@ -980,10 +989,9 @@ pub struct SearchInfo {
     // cached static_eval and did NOT call NNUE. The NNUE counters live on
     // `nnue_acc` (full rebuilds vs incremental updates vs computed skips).
     pub stats_tt_static_eval_hits: u64,
-    /// True while inside an RFP_AUDIT verification subtree — suppresses
-    /// nested audits (each audited cutoff would otherwise spawn audits at
-    /// every RFP cutoff inside its own verification, compounding cost).
-    pub rfp_audit_active: bool,
+    /// Suppress nested sampled verification while an RFP cutoff is being
+    /// declined and searched normally.
+    pub rfp_verify_active: bool,
     pub tt: std::sync::Arc<TT>,  // shared across Lazy SMP threads
     pub history: Box<History>,
     pub stop: std::sync::Arc<AtomicBool>,  // shared stop flag
@@ -1313,7 +1321,7 @@ impl SearchInfo {
             threat_stack: crate::threat_accum::ThreatStack::new(768), // max v9 accum size
             syzygy: None,
             tb_probe_depth: 4,
-            rfp_audit_active: false,
+            rfp_verify_active: false,
         }
     }
 
@@ -2049,10 +2057,32 @@ fn corrected_eval(info: &SearchInfo, board: &Board, raw_eval: i32, ply: usize) -
     adjusted.clamp(-MATE_IN_MAX_PLY + 1, MATE_IN_MAX_PLY - 1)
 }
 
+#[inline]
+fn corr_audit_halfmove_bucket(halfmove: u16) -> usize {
+    ((halfmove as usize) / 25).min(3)
+}
+
+#[inline]
+fn corr_audit_bucket(depth: i32, halfmove: u16) -> usize {
+    let depth_bucket = if depth <= 4 { 0 } else if depth <= 8 { 1 } else { 2 };
+    depth_bucket * 4 + corr_audit_halfmove_bucket(halfmove)
+}
+
+#[inline]
+fn corr_bound_loss(prediction: i32, score: i32, alpha: i32, beta: i32) -> u64 {
+    let loss = if score >= beta {
+        (score - prediction).max(0)
+    } else if score <= alpha {
+        (prediction - score).max(0)
+    } else {
+        (score - prediction).abs()
+    };
+    loss as u64
+}
+
 /// Update correction history entry with gravity.
 fn update_corr_entry(entry: &mut i32, scaled_err: i32, cap_div_10x: i32) {
-    // Proportional gravity (consensus: every top engine uses this)
-    // Self-limiting: values near the limit get pulled back harder
+    // Self-limiting proportional gravity: values near the limit move less.
     // cap_div_10x is stored × 10 (fixed-point); cap = LIMIT * 10 / cap_div_10x.
     let cap = CORR_HIST_LIMIT * 10 / cap_div_10x.max(1);
     let bonus = scaled_err.clamp(-cap, cap);
@@ -2070,11 +2100,9 @@ fn update_corr_entry(entry: &mut i32, scaled_err: i32, cap_div_10x: i32) {
 /// caller passes `static_eval` for this reason; do not "correct" it to pass
 /// `raw_eval`.
 fn update_correction_history(info: &mut SearchInfo, board: &Board, search_score: i32, corrected_baseline: i32, depth: i32, ply: usize) {
-    // Consensus shape: feed the FULL error scaled by depth, clamping only the
-    // resulting bonus (at the gravity cap, in update_corr_entry). Pre-clamping
-    // the error instead — e.g. to ±3cp — turns corrhist into a sign-only
-    // integrator, with a max update of 21 against a cap near 341. No surveyed engine
-    // clamps the input error: SF err*depth*12/128, Obsidian err*depth/8, all clamped at the output only.
+    // Preserve residual magnitude through depth weighting, then clamp the
+    // resulting table update. Clamping the residual first would collapse
+    // materially different errors into nearly the same learning signal.
     let err = search_score - corrected_baseline;
     let weight = (depth + 1).min(tp(&CORR_UPDATE_WEIGHT_MAX));
     let scaled_err = err * weight * 10 / tp(&CORR_ERR_DIV_10X).max(10);
@@ -2110,7 +2138,7 @@ fn update_correction_history(info: &mut SearchInfo, board: &Board, search_score:
             }
         }
     }
-    // Transition correction (zobrist-delta of last move in context)
+    // Transition correction (zobrist delta produced by the last move).
     if !board.undo_stack.is_empty() {
         let last = &board.undo_stack[board.undo_stack.len() - 1];
         if last.mv != NO_MOVE {
@@ -2244,9 +2272,14 @@ fn init_feature_flags() {
             if std::env::var("NO_4D_HISTORY").is_ok() { FEAT_4D_HISTORY.store(false, Ordering::Relaxed); }
         }
         // Diagnostic audit modes (orthogonal to DISABLE_ALL/NO_XXX).
-        if std::env::var("RFP_AUDIT").is_ok() {
-            RFP_AUDIT.store(true, Ordering::Relaxed);
-            eprintln!("RFP_AUDIT enabled: null-verifying every RFP cutoff (diagnostic, slow)");
+        if let Ok(value) = std::env::var("RFP_VERIFY_SAMPLE") {
+            let sample = value.parse::<u64>().unwrap_or(1024).max(1);
+            RFP_VERIFY_SAMPLE.store(sample, Ordering::Relaxed);
+            eprintln!("RFP_VERIFY_SAMPLE enabled: full-searching about 1/{} RFP cutoffs", sample);
+        }
+        if std::env::var("CORR_AUDIT").is_ok() {
+            CORR_AUDIT.store(true, Ordering::Relaxed);
+            eprintln!("CORR_AUDIT enabled: collecting correction calibration counters");
         }
     });
 }
@@ -2367,7 +2400,7 @@ fn refresh_helper_common(helper: &mut SearchInfo, main: &SearchInfo) {
     helper.clear_pawn_hist();
     // Per-search scalars a fresh helper had zeroed.
     helper.nmp_min_ply = 0;
-    helper.rfp_audit_active = false;
+    helper.rfp_verify_active = false;
     helper.max_nodes = 0;
 }
 
@@ -4337,12 +4370,26 @@ macro_rules! trace_node {
 fn negamax(
     board: &mut Board,
     info: &mut SearchInfo,
+    alpha: i32,
+    beta: i32,
+    depth: i32,
+    ply: i32,
+    cut_node: bool, // true at expected cut nodes (child of all-node, non-first child of PV)
+) -> i32 {
+    negamax_inner(board, info, alpha, beta, depth, ply, cut_node, false)
+}
+
+fn negamax_inner(
+    board: &mut Board,
+    info: &mut SearchInfo,
     mut alpha: i32,
     mut beta: i32,
     mut depth: i32,
     ply: i32,
-    cut_node: bool, // true at expected cut nodes (child of all-node, non-first child of PV)
+    cut_node: bool,
+    skip_rfp_here: bool,
 ) -> i32 {
+    let entry_depth = depth;
     let ply_u = ply as usize;
 
     // Reset PV length FIRST — before any early return below — so the parent's
@@ -4843,8 +4890,7 @@ fn negamax(
     // Compute static eval for pruning and LMR improving detection.
     //
     // Three variables — same value at different processing stages:
-    //   raw_eval    : halfmove-INDEPENDENT  (what goes in/out of TT, also
-    //                                        passed to corrhist *update*)
+    //   raw_eval    : halfmove-INDEPENDENT (what goes in/out of TT)
     //   scaled_eval : halfmove-scaled, pre-correction (corrhist sees this as
     //                                                   its input base)
     //   static_eval : scaled + corrected (what pruning/LMR decisions use)
@@ -5033,7 +5079,7 @@ fn negamax(
             && !is_promotion(tt_move);
         // TB/mate guard: every peer skips RFP when eval is near mate/TB range.
         // Without this, RFP could cut a node where NNUE sees forced mate. (RFP audit RFP-3)
-        if depth <= tp(&RFP_DEPTH) && ply > 0 && !tt_pv && !tt_move_is_quiet && info.excluded_move[ply_u] == NO_MOVE && FEAT_RFP.load(Ordering::Relaxed)
+        if depth <= tp(&RFP_DEPTH) && ply > 0 && !tt_pv && !tt_move_is_quiet && info.excluded_move[ply_u] == NO_MOVE && FEAT_RFP.load(Ordering::Relaxed) && !skip_rfp_here
             && static_eval.abs() < MATE_SCORE - 200 {
             let mut margin = if improving { depth * tp(&RFP_MARGIN_IMP) } else { depth * tp(&RFP_MARGIN_NOIMP) };
             // Root-depth-aware relaxation: + depth*(root_depth-thresh)+ *coef/100.
@@ -5047,77 +5093,46 @@ fn negamax(
             }
             // Widen margin when opponent pawns attack our pieces (Minic/Berserk pattern)
             if has_pawn_threats { margin += margin / 3; }
+            if CORR_AUDIT.load(Ordering::Relaxed) {
+                let hm = corr_audit_halfmove_bucket(board.halfmove);
+                let raw_cut = scaled_eval - margin >= beta;
+                let corrected_cut = static_eval - margin >= beta;
+                if corrected_cut && !raw_cut {
+                    info.stats.corr_audit_rfp_flip_on[hm] += 1;
+                } else if raw_cut && !corrected_cut {
+                    info.stats.corr_audit_rfp_flip_off[hm] += 1;
+                }
+            }
             if static_eval - margin >= beta {
+                let sample = RFP_VERIFY_SAMPLE.load(Ordering::Relaxed);
+                let sampled = sample > 0
+                    && !info.rfp_verify_active
+                    && board.hash.rotate_left((ply + depth).rem_euclid(64) as u32) % sample == 0;
+                if sampled {
+                    let d_idx = depth.clamp(0, 23) as usize;
+                    let corr_created_cutoff = scaled_eval - margin < beta;
+                    info.stats.rfp_verify_attempts[d_idx] += 1;
+                    if corr_created_cutoff {
+                        info.stats.rfp_verify_corr_flips[d_idx] += 1;
+                    }
+                    let nodes_before = info.nodes;
+                    info.rfp_verify_active = true;
+                    let verified = negamax_inner(
+                        board, info, alpha, beta, entry_depth, ply, cut_node, true,
+                    );
+                    info.rfp_verify_active = false;
+                    info.stats.rfp_verify_nodes[d_idx] += info.nodes.saturating_sub(nodes_before);
+                    if !info.stop.load(Ordering::Relaxed) && verified < beta {
+                        info.stats.rfp_verify_rejected[d_idx] += 1;
+                        info.stats.rfp_verify_regret[d_idx] += (beta - verified) as u64;
+                        if corr_created_cutoff {
+                            info.stats.rfp_verify_corr_flip_rejected[d_idx] += 1;
+                        }
+                    }
+                    return verified;
+                }
                 trace_node!(info, board.hash, ply, "rfp_cut", depth);
                 info.stats.rfp_cutoffs += 1;
-                // RFP_AUDIT (diagnostic): null-verify this static cutoff with
-                // the SAME R formula real NMP uses (sans post-capture +1), and
-                // count rejections per depth. The cutoff is returned regardless
-                // — behavior-preserving, measurement-only. Nested audits are
-                // suppressed via rfp_audit_active (each verification subtree
-                // contains its own RFP cutoffs). Skipped when a null move is
-                // unsound/meaningless (pawn-only, consecutive null, mate beta).
-                if RFP_AUDIT.load(Ordering::Relaxed)
-                    && !info.rfp_audit_active
-                    && stm_non_pawn != 0
-                    && !prev_was_null
-                    && beta.abs() < MATE_IN_MAX_PLY
-                    && !info.stop.load(Ordering::Relaxed)
-                {
-                    let d_idx = depth.clamp(0, 23) as usize;
-                    info.stats.rfp_audit_attempts[d_idx] += 1;
-                    // Bucket this audited cutoff by the
-                    // SPREAD of the five correction-source cp contributions
-                    // (disagreement = low eval confidence). Computed only under
-                    // RFP_AUDIT — zero production cost.
-                    let var_bucket = {
-                        let stm = board.side_to_move as usize;
-                        let div = tp(&CORR_HIST_DIV) as i64;
-                        let grain = tp(&CORR_HIST_GRAIN_T) as i64;
-                        let scale = (div * grain).max(1);
-                        let pawn_idx = (board.pawn_hash as usize) & (CORR_HIST_SIZE - 1);
-                        let c1 = info.pawn_corr[stm][pawn_idx] as i64 * tp(&CORR_W_PAWN) as i64 / scale;
-                        let wnp = (board.non_pawn_key[WHITE as usize] as usize) & (CORR_HIST_SIZE - 1);
-                        let c2 = info.np_corr[stm][WHITE as usize][wnp] as i64 * tp(&CORR_W_NP) as i64 / scale;
-                        let bnp = (board.non_pawn_key[BLACK as usize] as usize) & (CORR_HIST_SIZE - 1);
-                        let c3 = info.np_corr[stm][BLACK as usize][bnp] as i64 * tp(&CORR_W_NP) as i64 / scale;
-                        let c4 = cont_corr_value(info, ply_u) * tp(&CORR_W_CONT) as i64 / scale;
-                        let c5 = if let Some(last) = board.undo_stack.last() {
-                            if last.mv != NO_MOVE {
-                                let ti = ((board.hash ^ last.hash) as usize) & (CORR_HIST_SIZE - 1);
-                                info.trans_corr[stm][ti] as i64 * tp(&CORR_W_TRANS) as i64 / scale
-                            } else { 0 }
-                        } else { 0 };
-                        let mx = c1.max(c2).max(c3).max(c4).max(c5);
-                        let mn = c1.min(c2).min(c3).min(c4).min(c5);
-                        let spread = mx - mn;
-                        if spread < 8 { 0 } else if spread < 24 { 1 } else { 2 }
-                    };
-                    info.stats.rfp_audit_var_attempts[var_bucket] += 1;
-                    let mut r = tp10(&NMP_BASE_R_10X) + depth / tp10(&NMP_DEPTH_DIV_10X);
-                    if static_eval > beta {
-                        let eval_r = ((static_eval - beta) / tp(&NMP_EVAL_DIV)).min(tp10(&NMP_EVAL_MAX_10X));
-                        r += eval_r;
-                    }
-                    if depth - r < 1 { r = depth - 1; }
-                    info.rfp_audit_active = true;
-                    board.make_null_move();
-                    if let Some(acc) = &mut info.nnue_acc { acc.push(DirtyPiece::incremental(&[])); }
-                    if info.threat_stack.active { info.threat_stack.push(crate::types::NO_MOVE, crate::types::NO_PIECE_TYPE); }
-                    if ply_u <= MAX_PLY {
-                        info.moved_piece_stack[ply_u] = 0;
-                        info.moved_to_stack[ply_u] = 0;
-                    }
-                    let null_score = -negamax(board, info, -beta, -beta + 1, depth - r, ply + 1, !cut_node);
-                    if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
-                    if info.threat_stack.active { info.threat_stack.pop(); }
-                    board.unmake_null_move();
-                    info.rfp_audit_active = false;
-                    if null_score < beta && !info.stop.load(Ordering::Relaxed) {
-                        info.stats.rfp_audit_fp[d_idx] += 1;
-                        info.stats.rfp_audit_var_fp[var_bucket] += 1;
-                    }
-                }
                 return static_eval - margin;
             }
         }
@@ -6604,7 +6619,7 @@ fn negamax(
     // Update pawn-hash correction history when we have a reliable score.
     //
     // Skip when best_move is a capture/promotion: the score delta
-    // (best_score - raw_eval) is then dominated by material change, not the
+    // (best_score - static_eval) is then dominated by material change, not the
     // positional-eval miscalibration correction history is trying to learn.
     // Training on noisy bestmoves pollutes the tables. Matches Stockfish
     // (skip the update when the best move is a capture/promotion).
@@ -6632,6 +6647,25 @@ fn negamax(
         && scaled_eval > -(MATE_IN_MAX_PLY)
         && !info.stop.load(Ordering::Relaxed)
     {
+        if CORR_AUDIT.load(Ordering::Relaxed) {
+            let bucket = corr_audit_bucket(depth, board.halfmove);
+            let before = corr_bound_loss(scaled_eval, best_score, alpha_orig, beta);
+            let after = corr_bound_loss(static_eval, best_score, alpha_orig, beta);
+            let correction = (static_eval - scaled_eval).unsigned_abs() as u64;
+            let err = best_score - static_eval;
+            let weight = (depth + 1).min(tp(&CORR_UPDATE_WEIGHT_MAX));
+            let scaled_err = err * weight * 10 / tp(&CORR_ERR_DIV_10X).max(10);
+            let cap = CORR_HIST_LIMIT * 10
+                / CORR_BONUS_CAP_DIV_10X.load(Ordering::Relaxed).max(1);
+
+            info.stats.corr_audit_updates[bucket] += 1;
+            info.stats.corr_audit_loss_before[bucket] += before;
+            info.stats.corr_audit_loss_after[bucket] += after;
+            info.stats.corr_audit_abs[bucket] += correction;
+            if scaled_err.abs() > cap {
+                info.stats.corr_audit_clipped[bucket] += 1;
+            }
+        }
         // Train the update against the CORRECTED eval (`static_eval`, the
         // residual after correction), like SF/Obsidian/Berserk — NOT the raw
         // `scaled_eval`. Training on raw makes the gravity fixed point the
@@ -7375,8 +7409,6 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
         for i in 0..3 {
             total_stats.cut_by_source[i] += info.stats.cut_by_source[i];
             total_stats.first_cut_by_source[i] += info.stats.first_cut_by_source[i];
-            total_stats.rfp_audit_var_attempts[i] += info.stats.rfp_audit_var_attempts[i];
-            total_stats.rfp_audit_var_fp[i] += info.stats.rfp_audit_var_fp[i];
         }
         for i in 0..2 {
             total_stats.cut_by_ttpresence[i] += info.stats.cut_by_ttpresence[i];
@@ -7400,8 +7432,23 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
         total_stats.cutoff_movecount_sum += info.stats.cutoff_movecount_sum;
         total_stats.cutoff_movecount_sq_sum += info.stats.cutoff_movecount_sq_sum;
         for d in 0..24 {
-            total_stats.rfp_audit_attempts[d] += info.stats.rfp_audit_attempts[d];
-            total_stats.rfp_audit_fp[d] += info.stats.rfp_audit_fp[d];
+            total_stats.rfp_verify_attempts[d] += info.stats.rfp_verify_attempts[d];
+            total_stats.rfp_verify_rejected[d] += info.stats.rfp_verify_rejected[d];
+            total_stats.rfp_verify_nodes[d] += info.stats.rfp_verify_nodes[d];
+            total_stats.rfp_verify_regret[d] += info.stats.rfp_verify_regret[d];
+            total_stats.rfp_verify_corr_flips[d] += info.stats.rfp_verify_corr_flips[d];
+            total_stats.rfp_verify_corr_flip_rejected[d] += info.stats.rfp_verify_corr_flip_rejected[d];
+        }
+        for i in 0..12 {
+            total_stats.corr_audit_updates[i] += info.stats.corr_audit_updates[i];
+            total_stats.corr_audit_loss_before[i] += info.stats.corr_audit_loss_before[i];
+            total_stats.corr_audit_loss_after[i] += info.stats.corr_audit_loss_after[i];
+            total_stats.corr_audit_abs[i] += info.stats.corr_audit_abs[i];
+            total_stats.corr_audit_clipped[i] += info.stats.corr_audit_clipped[i];
+        }
+        for i in 0..4 {
+            total_stats.corr_audit_rfp_flip_on[i] += info.stats.corr_audit_rfp_flip_on[i];
+            total_stats.corr_audit_rfp_flip_off[i] += info.stats.corr_audit_rfp_flip_off[i];
         }
 
         // Accumulate EBF data across all positions
@@ -7470,16 +7517,6 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
                 eprintln!("fh1[{}]: {:.1}% of {} cutoffs", name,
                     100.0 * s.first_cut_by_ttpresence[i] as f64 / c as f64,
                     s.cut_by_ttpresence[i]);
-            }
-            let va: u64 = s.rfp_audit_var_attempts.iter().sum();
-            if va > 0 {
-                let names = ["spread<8cp", "8-24cp", ">=24cp"];
-                for i in 0..3 {
-                    let a = s.rfp_audit_var_attempts[i].max(1);
-                    eprintln!("RFP-FP[{}]: {:.1}% of {} audited",
-                        names[i], 100.0 * s.rfp_audit_var_fp[i] as f64 / a as f64,
-                        s.rfp_audit_var_attempts[i]);
-                }
             }
         }
         eprintln!("Move ordering:  avg cutoff pos {:.2}, avg pos² {:.1}, first-move {:.1}%",
@@ -7560,20 +7597,56 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
 
     eprintln!("Total nodes:    {:>8}", total_nodes);
 
-    // RFP false-positive audit table (only when RFP_AUDIT=1 produced data).
-    let audit_total: u64 = s.rfp_audit_attempts.iter().sum();
+    // Sampled decline-and-search verification. This is deliberately not called
+    // a false-positive count: the diagnostic search perturbs shared search state.
+    let audit_total: u64 = s.rfp_verify_attempts.iter().sum();
     if audit_total > 0 {
-        let fp_total: u64 = s.rfp_audit_fp.iter().sum();
-        eprintln!("--- RFP False-Positive Audit (null-verified, NMP R formula) ---");
-        eprintln!("depth | audited  | rejected | FP rate");
+        let rejected_total: u64 = s.rfp_verify_rejected.iter().sum();
+        eprintln!("--- RFP sampled decline-and-search verification ---");
+        eprintln!("Diagnostic trees are perturbed; use fixed depth and Threads=1 for comparisons.");
+        eprintln!("depth | sampled  | rejected | disagree | mean nodes | mean regret");
         for d in 0..24 {
-            let a = s.rfp_audit_attempts[d];
+            let a = s.rfp_verify_attempts[d];
             if a == 0 { continue; }
-            let f = s.rfp_audit_fp[d];
-            eprintln!("{:>5} | {:>8} | {:>8} | {:>6.2}%", d, a, f, f as f64 * 100.0 / a as f64);
+            let rejected = s.rfp_verify_rejected[d];
+            eprintln!("{:>5} | {:>8} | {:>8} | {:>7.2}% | {:>10.1} | {:>11.1}",
+                d, a, rejected, rejected as f64 * 100.0 / a as f64,
+                s.rfp_verify_nodes[d] as f64 / a as f64,
+                s.rfp_verify_regret[d] as f64 / rejected.max(1) as f64);
         }
-        eprintln!("TOTAL | {:>8} | {:>8} | {:>6.2}%", audit_total, fp_total,
-            fp_total as f64 * 100.0 / audit_total as f64);
+        let corr_flips: u64 = s.rfp_verify_corr_flips.iter().sum();
+        let corr_rejected: u64 = s.rfp_verify_corr_flip_rejected.iter().sum();
+        eprintln!("TOTAL | {:>8} | {:>8} | {:>7.2}%", audit_total, rejected_total,
+            rejected_total as f64 * 100.0 / audit_total as f64);
+        eprintln!("Correction-created sampled cuts: {} ({} rejected, {:.2}%)",
+            corr_flips, corr_rejected,
+            corr_rejected as f64 * 100.0 / corr_flips.max(1) as f64);
+    }
+
+    let corr_total: u64 = s.corr_audit_updates.iter().sum();
+    if corr_total > 0 {
+        let depth_names = ["d<=4", "d5-8", "d>=9"];
+        let hm_names = ["hm0-24", "hm25-49", "hm50-74", "hm75+"];
+        eprintln!("--- Correction calibration (bound-aware loss) ---");
+        eprintln!("bucket        | samples | before | after | delta | |corr| | clipped");
+        for d in 0..3 {
+            for h in 0..4 {
+                let i = d * 4 + h;
+                let n = s.corr_audit_updates[i];
+                if n == 0 { continue; }
+                let before = s.corr_audit_loss_before[i] as f64 / n as f64;
+                let after = s.corr_audit_loss_after[i] as f64 / n as f64;
+                eprintln!("{:>5}/{:<7} | {:>7} | {:>6.1} | {:>5.1} | {:>+5.1} | {:>6.1} | {:>6.2}%",
+                    depth_names[d], hm_names[h], n, before, after, after - before,
+                    s.corr_audit_abs[i] as f64 / n as f64,
+                    s.corr_audit_clipped[i] as f64 * 100.0 / n as f64);
+            }
+        }
+        eprintln!("RFP threshold flips by halfmove bucket:");
+        for h in 0..4 {
+            eprintln!("  {:<7}: correction enabled {} cuts, suppressed {} cuts",
+                hm_names[h], s.corr_audit_rfp_flip_on[h], s.corr_audit_rfp_flip_off[h]);
+        }
     }
 
     // Eval-path decomposition — supports the "evals/node" investigation.
@@ -7763,6 +7836,24 @@ mod tests {
         assert_eq!(apply_halfmove_scale(-(MATE_SCORE - 5), 99), -(MATE_SCORE - 5));
     }
 
+    #[test]
+    fn corr_audit_uses_bound_aware_loss_and_stable_buckets() {
+        // Exact score: ordinary absolute error.
+        assert_eq!(corr_bound_loss(80, 100, 0, 200), 20);
+        assert_eq!(corr_bound_loss(120, 100, 0, 200), 20);
+        // Lower bound: over-prediction is not known to be wrong.
+        assert_eq!(corr_bound_loss(80, 100, 0, 100), 20);
+        assert_eq!(corr_bound_loss(120, 100, 0, 100), 0);
+        // Upper bound: under-prediction is not known to be wrong.
+        assert_eq!(corr_bound_loss(120, 100, 100, 200), 20);
+        assert_eq!(corr_bound_loss(80, 100, 100, 200), 0);
+
+        assert_eq!(corr_audit_bucket(4, 24), 0);
+        assert_eq!(corr_audit_bucket(5, 25), 5);
+        assert_eq!(corr_audit_bucket(9, 50), 10);
+        assert_eq!(corr_audit_bucket(20, 100), 11);
+    }
+
     /// Regression guard against corrhist fortress drift.
     /// Correction history can self-reinforce into a phantom ±0.45 in
     /// low-material locked/fortress positions (opposite-coloured bishops,
@@ -7932,15 +8023,14 @@ mod tests {
         assert_eq!(e, -500, "zero err must not change negative entry either");
     }
 
-    /// Read/write index symmetry: for every correction-history table,
+    /// Read/write index symmetry for the position-keyed material tables:
     /// corrected_eval reads the slot that update_correction_history
     /// writes for the same position.
     ///
     /// Tested two ways:
     /// 1. Direct entry check — after one update, the per-table slots
     ///    indexed by the test position must be non-zero, while a
-    ///    reference position's slots remain zero. Independent of
-    ///    `CORR_HIST_ERR_MAX_10X` / `CORR_HIST_GRAIN_T` defaults.
+    ///    reference position's slots remain zero. Independent of tuning values.
     /// 2. corrected_eval drift — after enough updates to escape
     ///    integer-division flooring, corrected_eval(test_pos) must
     ///    rise above raw, while corrected_eval(reference_pos) must
@@ -7989,15 +8079,12 @@ mod tests {
         assert!(info.np_corr[stm][BLACK as usize][black_np_idx] != 0,
             "black np_corr slot must be written");
 
-        // Apply repeatedly to escape integer-division flooring at
-        // current default grain (CORR_HIST_GRAIN_T=11). Each call
-        // bumps each slot by the gravity-clamped bonus; ~30 iterations
-        // is enough to push entries near steady-state given the small
-        // err clamp (CORR_HIST_ERR_MAX_10X=10, effective 1).
+        // Apply repeatedly to escape integer-division flooring. Use the
+        // current corrected value as the baseline, matching production's
+        // residual-training contract.
         for _ in 0..50 {
-            // `raw` as baseline is valid here only while the tables are zeroed;
-            // see the note at the first call site in this module's tests.
-            update_correction_history(&mut info, &board, raw + 400, raw, 20, 0);
+            let baseline = corrected_eval(&info, &board, raw, 0);
+            update_correction_history(&mut info, &board, raw + 400, baseline, 20, 0);
         }
 
         // === Part 2: corrected_eval drift ===
