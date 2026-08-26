@@ -5977,7 +5977,7 @@ fn negamax(
         // depth<3 / move<3, but if the table is ever populated differently
         // this would start reducing the TT move. Mirrors the capture-LMR
         // gate at line ~3768 for symmetry.
-        if !in_check && !is_cap && !is_promo && !is_endgame_skip
+        if !is_cap && !is_promo && !is_endgame_skip
             && move_count > 1 && mv != tt_move
             && FEAT_LMR.load(Ordering::Relaxed) {
             let d = (depth as usize).min(63);
@@ -6020,6 +6020,15 @@ fn negamax(
 
                 // Reduce less when the position is improving
                 if improving {
+                    reduction -= LMR_SCALE;
+                }
+
+                // Evasions are eligible for LMR, but retain the same one-ply
+                // protection that Coda already gives moves which give check.
+                // In-check nodes have no usable static evaluation and usually
+                // have a narrow move set, so applying the full ordinary quiet
+                // reduction is unnecessarily aggressive.
+                if in_check {
                     reduction -= LMR_SCALE;
                 }
 
@@ -6068,9 +6077,11 @@ fn negamax(
                 // (d) Quiet expectation gap: eval far below alpha → this node is
                 //     underperforming its window, reduce late quiets more (and
                 //     slightly less when eval already exceeds alpha). Continuous,
-                //     ~0.32 centi/cp at default. static_eval is valid here (the
-                //     quiet-LMR block is gated on !in_check).
-                reduction += tp(&LMR_EXPECT_MULT) * (alpha - static_eval).clamp(-65, 91) / 128;
+                //     ~0.32 centi/cp at default. In-check static_eval is the
+                //     -INFINITY sentinel, so this term must remain disabled there.
+                if !in_check {
+                    reduction += tp(&LMR_EXPECT_MULT) * (alpha - static_eval).clamp(-65, 91) / 128;
+                }
 
                 // cutoff_count: the child ply keeps failing high under
                 // this node — refutations come easy down there, so late moves
@@ -6151,7 +6162,7 @@ fn negamax(
         }
 
         // LMR for captures: use separate capture LMR table with capture history adjustments
-        if !in_check && is_cap && !is_promo && move_count > 1 && mv != tt_move && !is_endgame_skip && FEAT_LMR.load(Ordering::Relaxed) {
+        if is_cap && !is_promo && move_count > 1 && mv != tt_move && !is_endgame_skip && FEAT_LMR.load(Ordering::Relaxed) {
             // Only reduce at non-PV nodes (zero window search)
             if beta - alpha == 1 {
                 let d = (depth as usize).min(63);
@@ -6176,6 +6187,13 @@ fn negamax(
 
                     // Reduce less for captures that give check
                     if gives_check {
+                        reduction -= LMR_SCALE;
+                    }
+
+                    // Capturing evasions get the same one-ply protection as
+                    // quiet evasions; only genuinely late captures remain
+                    // reduced after the floor below.
+                    if in_check {
                         reduction -= LMR_SCALE;
                     }
 
