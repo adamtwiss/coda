@@ -5773,7 +5773,13 @@ fn negamax(
                     return 0;
                 }
 
-                if singular_score >= singular_beta && singular_beta >= beta {
+                // The verification is only half-depth, so use its fail-high
+                // as a whole-node multi-cut at expected cut nodes, where a
+                // refutation is the node's prior. At all/PV-like nodes keep
+                // searching and let the competitive-result negative extension
+                // shape the TT move instead of trusting a reduced proof to
+                // terminate the node.
+                if singular_score >= singular_beta && singular_beta >= beta && cut_node {
                     // Multi-cut: alternatives are also good enough — prune the whole node.
                     // Return singular_score (SF pattern) — tighter score
                     // for downstream TT propagation than singular_beta floor.
