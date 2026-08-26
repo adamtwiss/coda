@@ -848,7 +848,7 @@ fn main() {
                     let mut board = Board::from_fen(fen);
                     acc.force_recompute(&net, &board);
                     if tstack.active {
-                        tstack.ensure_computed(&net.threat_weights, net.num_threat_features, &board);
+                        tstack.ensure_computed(&net.threat_weights, net.num_threat_features, &mut board);
                     }
                     let legal = generate_legal_moves(&board);
                     if legal.len == 0 { continue; }
@@ -1617,7 +1617,7 @@ fn run_check_net(net_path: &str) {
     println!();
 
     let eval_fen = |fen: &str| -> i32 {
-        let board = Board::from_fen(fen);
+        let mut board = Board::from_fen(fen);
         let h = net.hidden_size;
         let mut acc = NNUEAccumulator::new(h);
         // Full recompute for both perspectives
@@ -1631,7 +1631,7 @@ fn run_check_net(net_path: &str) {
         if net.has_threats {
             let mut ts = crate::threat_accum::ThreatStack::new(h);
             ts.active = true;
-            ts.ensure_computed(&net.threat_weights, net.num_threat_features, &board);
+            ts.ensure_computed(&net.threat_weights, net.num_threat_features, &mut board);
             net.forward_with_threats(&acc, board.side_to_move, piece_count, &ts)
         } else {
             net.forward(&acc, board.side_to_move, piece_count)
@@ -2693,12 +2693,12 @@ fn run_eval_fens(input: &str, output: &str, nnue_path: &Option<String>) {
         let line = line.expect("read error");
         let fen = line.split('\t').next().unwrap_or("").trim();
         if fen.is_empty() || fen.starts_with('#') { continue; }
-        let board = board::Board::from_fen(fen);
+        let mut board = board::Board::from_fen(fen);
 
         let mut ts = crate::threat_accum::ThreatStack::new(net.hidden_size);
         ts.active = net.has_threats;
         if ts.active {
-            ts.ensure_computed(&net.threat_weights, net.num_threat_features, &board);
+            ts.ensure_computed(&net.threat_weights, net.num_threat_features, &mut board);
         }
         // Each FEN is an unrelated board: full recompute, same as eval-dist.
         acc.force_recompute(net, &board);
@@ -2908,7 +2908,7 @@ fn run_eval_dist(input: &str, n: usize, nnue_path: &Option<String>, csv: &Option
             Ok(f) => f,
             Err(_) => continue,
         };
-        let board = board::Board::from_fen(&fen);
+        let mut board = board::Board::from_fen(&fen);
 
         let score = if let (Some(net), Some(acc)) = (&info.nnue_net, &mut info.nnue_acc) {
             // Build a real ThreatStack for v9 nets — without this,
@@ -2916,7 +2916,7 @@ fn run_eval_dist(input: &str, n: usize, nnue_path: &Option<String>, csv: &Option
             let mut ts = crate::threat_accum::ThreatStack::new(net.hidden_size);
             ts.active = net.has_threats;
             if ts.active {
-                ts.ensure_computed(&net.threat_weights, net.num_threat_features, &board);
+                ts.ensure_computed(&net.threat_weights, net.num_threat_features, &mut board);
             }
             // CRITICAL: the accumulator is reused across positions; each FEN
             // is an unrelated board, so the cached acc is stale. Without a

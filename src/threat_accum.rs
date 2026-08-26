@@ -266,7 +266,7 @@ impl ThreatStack {
     /// `self.index`) to just before `from_ply`, then forward again re-emitting.
     /// The scratch state is a 128-byte copy, so the live board — which the NNUE
     /// accumulator stack and the Zobrist keys both alias — is never touched.
-    fn materialize_deltas(&mut self, board: &crate::board::Board, from_ply: usize) -> bool {
+    fn materialize_deltas(&mut self, board: &mut crate::board::Board, from_ply: usize) -> bool {
         let to_ply = self.index;
         if from_ply > to_ply {
             return true;
@@ -287,35 +287,44 @@ impl ThreatStack {
             return true;
         }
 
-        let mut st = crate::threats::PieceState::from_board(board);
-        for p in (from_ply..=to_ply).rev() {
-            let e = &self.stack[p];
-            if e.mv != NO_MOVE {
-                crate::threats::undo_move_state(&mut st, e.moved_color, e.mv, e.captured);
-            }
-        }
-
+        // Rewind the LIVE board's piece arrays, generate, then roll forward
+        // again. Working in place rather than on a copy is the whole point: a
+        // scratch copy is written and then immediately read back byte-by-byte
+        // by generation, and that cost ~51% per generation — enough to cancel
+        // the 54.7% of generations this scheme removes. Only pieces, colours
+        // and the mailbox are touched, and the same moves are undone and
+        // redone, so the board is byte-identical on return. `panic = "abort"`
+        // means there is no unwind path that could observe it mid-rewind.
         let mut scratch = std::mem::take(&mut self.scratch);
         let mut ok = true;
-        for p in from_ply..=to_ply {
-            let (mv, captured, color, valid) = {
+        {
+            let mut st = board.piece_state_mut();
+            for p in (from_ply..=to_ply).rev() {
                 let e = &self.stack[p];
-                (e.mv, e.captured, e.moved_color, e.deltas_valid)
-            };
-            if mv == NO_MOVE {
-                continue;
+                if e.mv != NO_MOVE {
+                    crate::threats::undo_move_state(&mut st, e.moved_color, e.mv, e.captured);
+                }
             }
-            // Always replayed, because even an entry whose deltas are already
-            // cached has to advance `st` past its move. Regenerating a cached
-            // entry's deltas and discarding them only happens on a partially
-            // covered span, which is rare and at most a ply or two wide.
-            crate::threats::replay_move_deltas(&mut st, color, mv, captured, &mut scratch);
-            if !valid {
-                let e = &mut self.stack[p];
-                e.delta.copy_from_slice(&scratch);
-                e.deltas_valid = true;
-                if e.delta.overflowed() {
-                    ok = false;
+            for p in from_ply..=to_ply {
+                let (mv, captured, color, valid) = {
+                    let e = &self.stack[p];
+                    (e.mv, e.captured, e.moved_color, e.deltas_valid)
+                };
+                if mv == NO_MOVE {
+                    continue;
+                }
+                // Always replayed, because even an entry whose deltas are
+                // already cached has to roll the board forward past its move.
+                // Regenerating a cached entry and discarding it only happens on
+                // a partially covered span, which is rare and a ply or two wide.
+                crate::threats::replay_move_deltas(&mut st, color, mv, captured, &mut scratch);
+                if !valid {
+                    let e = &mut self.stack[p];
+                    e.delta.copy_from_slice(&scratch);
+                    e.deltas_valid = true;
+                    if e.delta.overflowed() {
+                        ok = false;
+                    }
                 }
             }
         }
@@ -611,7 +620,7 @@ impl ThreatStack {
     /// Standard lazy evaluate: ensure both perspectives are materialised.
     #[inline]
     pub fn ensure_computed(&mut self, net_weights: &[i8], num_features: usize,
-                          board: &crate::board::Board) {
+                          board: &mut crate::board::Board) {
         if !self.active { return; }
 
         // Experiment (CODA_THREAT_REFRESH_ALWAYS): bypass the walkback/replay
@@ -778,7 +787,7 @@ mod incremental_tests {
             assert!(ok, "{}: move {} illegal at ply {}", name, uci, ply);
 
             absorb_deltas(&mut incr, &mut board);
-            incr.ensure_computed(&weights, nf, &board);
+            incr.ensure_computed(&weights, nf, &mut board);
 
             refs.refresh(&weights, nf, &board, WHITE);
             refs.refresh(&weights, nf, &board, BLACK);
@@ -1098,7 +1107,19 @@ mod incremental_tests {
                     // contain.
                     incr.absorb_deltas(&board);
 
-                    incr.ensure_computed(&weights, nf, &board);
+                    // Lazy generation rewinds the LIVE board's piece arrays and
+                    // rolls them forward again, so "the board comes back
+                    // byte-identical" is a real invariant with a real failure
+                    // mode. Assert it directly: without this, a mis-restored
+                    // board would only show up later as a confusing accumulator
+                    // divergence somewhere further down the game.
+                    let snap = (board.pieces, board.colors, board.mailbox);
+                    incr.ensure_computed(&weights, nf, &mut board);
+                    assert!(
+                        snap == (board.pieces, board.colors, board.mailbox),
+                        "ensure_computed did not restore the board: fen_idx={} game={} ply={} eager={}",
+                        fen_idx, game, ply, eager,
+                    );
                     refs.refresh(&weights, nf, &board, WHITE);
                     refs.refresh(&weights, nf, &board, BLACK);
 
@@ -1179,7 +1200,7 @@ mod incremental_tests {
         }
 
         // Scratch check: enumerate from scratch into a local buffer, compare.
-        fn verify(incr: &mut ThreatStack, board: &Board, weights: &[i8], nf: usize,
+        fn verify(incr: &mut ThreatStack, board: &mut Board, weights: &[i8], nf: usize,
                   tag: &str, seed: u32, step: usize, gap_hist: &mut [u64; 32]) {
             // Record the replay gap this ensure_computed will take (per pov,
             // record the max) BEFORE it runs, for coverage reporting.
@@ -1292,13 +1313,13 @@ mod incremental_tests {
                     }
                     // Verify only on ~1/4 of steps so replay gaps build up.
                     if next_u32(&mut rng) % 4 == 0 {
-                        verify(&mut incr, &board, &weights, nf,
+                        verify(&mut incr, &mut board, &weights, nf,
                                &format!("fen{} walk{}", fen_idx, walk), seed, step,
                                &mut gap_hist);
                     }
                 }
                 // Final verification at wherever the walk ended.
-                verify(&mut incr, &board, &weights, nf,
+                verify(&mut incr, &mut board, &weights, nf,
                        &format!("fen{} walk{} (final)", fen_idx, walk), seed, STEPS,
                        &mut gap_hist);
             }

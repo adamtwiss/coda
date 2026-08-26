@@ -1670,7 +1670,7 @@ impl SearchInfo {
     /// saturation tiebreak. `pub(crate)` so the UCI `eval` command reports
     /// this same number instead of re-deriving a raw net output that drifts
     /// every time a term is added here.
-    pub(crate) fn eval(&mut self, board: &Board) -> i32 {
+    pub(crate) fn eval(&mut self, board: &mut Board) -> i32 {
         // Ensure threat accumulator is computed before eval
         if self.threat_stack.active {
             if let Some(ref net) = self.nnue_net {

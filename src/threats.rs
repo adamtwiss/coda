@@ -1173,6 +1173,32 @@ impl PieceState {
         Self { pieces: b.pieces, colors: b.colors, mailbox: b.mailbox }
     }
 
+    /// Borrow as the mutable view the replay routines operate on.
+    #[inline]
+    pub fn as_mut(&mut self) -> PieceStateMut<'_> {
+        PieceStateMut {
+            pieces: &mut self.pieces,
+            colors: &mut self.colors,
+            mailbox: &mut self.mailbox,
+        }
+    }
+}
+
+/// Mutable view over piece state, so the replay routines have ONE
+/// implementation regardless of where the state lives.
+///
+/// Production points this straight at the live `Board`, which matters: an owned
+/// scratch copy is written and then immediately read back byte-by-byte by
+/// generation, and that write-then-narrow-read pattern cost ~51% per generation
+/// against the board's own long-lived arrays. Tests point it at an owned
+/// `PieceState` so they can diff against the board without touching it.
+pub struct PieceStateMut<'a> {
+    pub pieces: &'a mut [Bitboard; 6],
+    pub colors: &'a mut [Bitboard; 2],
+    pub mailbox: &'a mut [u8; 64],
+}
+
+impl PieceStateMut<'_> {
     #[inline]
     pub fn occ(&self) -> Bitboard { self.colors[0] | self.colors[1] }
 
@@ -1226,7 +1252,7 @@ fn castle_rook_squares(us: Color, from: u8, to: u8) -> (u8, u8) {
 /// it walks the fuzz corpus asserting this function reproduces `make_move`'s
 /// deltas exactly, so the two cannot silently diverge.
 pub fn replay_move_deltas(
-    st: &mut PieceState,
+    st: &mut PieceStateMut,
     us: Color,
     mv: Move,
     captured: u8,
@@ -1242,32 +1268,32 @@ pub fn replay_move_deltas(
     if flags == FLAG_EN_PASSANT {
         let cap_sq = if us == WHITE { to.wrapping_sub(8) } else { to.wrapping_add(8) };
         st.remove(them, PAWN, cap_sq);
-        push_threats_on_change(out, &st.pieces, &st.colors, &st.mailbox,
+        push_threats_on_change(out, st.pieces, st.colors, st.mailbox,
                                st.occ(), them, PAWN, cap_sq as u32, false);
     } else if captured != NO_PIECE_TYPE {
         st.remove(them, captured, to);
-        push_threats_on_change(out, &st.pieces, &st.colors, &st.mailbox,
+        push_threats_on_change(out, st.pieces, st.colors, st.mailbox,
                                st.occ(), them, captured, to as u32, false);
     }
 
     st.shift(us, pt, from, to);
-    push_threats_on_move(out, &st.pieces, &st.colors, &st.mailbox,
+    push_threats_on_move(out, st.pieces, st.colors, st.mailbox,
                          st.occ(), us, pt, from as u32, to as u32);
 
     if is_promotion(mv) {
         let promo_pt = promotion_piece_type(mv);
         st.remove(us, pt, to);
         st.put(us, promo_pt, to);
-        push_threats_on_change(out, &st.pieces, &st.colors, &st.mailbox,
+        push_threats_on_change(out, st.pieces, st.colors, st.mailbox,
                                st.occ(), us, pt, to as u32, false);
-        push_threats_on_change(out, &st.pieces, &st.colors, &st.mailbox,
+        push_threats_on_change(out, st.pieces, st.colors, st.mailbox,
                                st.occ(), us, promo_pt, to as u32, true);
     }
 
     if flags == FLAG_CASTLE {
         let (rook_from, rook_to) = castle_rook_squares(us, from, to);
         st.shift(us, ROOK, rook_from, rook_to);
-        push_threats_on_move(out, &st.pieces, &st.colors, &st.mailbox,
+        push_threats_on_move(out, st.pieces, st.colors, st.mailbox,
                              st.occ(), us, ROOK, rook_from as u32, rook_to as u32);
     }
 }
@@ -1279,7 +1305,7 @@ pub fn replay_move_deltas(
 /// `UndoInfo` already carries `mv` and `captured` for every ply on the current
 /// path, so any ancestor's piece state can be recovered by walking back from
 /// the live board.
-pub fn undo_move_state(st: &mut PieceState, us: Color, mv: Move, captured: u8) {
+pub fn undo_move_state(st: &mut PieceStateMut, us: Color, mv: Move, captured: u8) {
     let from = move_from(mv);
     let to = move_to(mv);
     let flags = move_flags(mv);
@@ -3005,14 +3031,14 @@ mod tests {
 
                     // 1. inverse is exact
                     let mut walked = post;
-                    undo_move_state(&mut walked, us, mv, captured);
+                    undo_move_state(&mut walked.as_mut(), us, mv, captured);
                     assert_eq!(walked.pieces, pre.pieces, "pieces mismatch after undo, fen {fen_idx} game {game} mv {mv:#06x}");
                     assert_eq!(walked.colors, pre.colors, "colors mismatch after undo, fen {fen_idx} game {game} mv {mv:#06x}");
                     assert_eq!(walked.mailbox, pre.mailbox, "mailbox mismatch after undo, fen {fen_idx} game {game} mv {mv:#06x}");
 
                     // 2. forward replay from the recovered state == eager deltas
                     let mut lazy = Vec::new();
-                    replay_move_deltas(&mut walked, us, mv, captured, &mut lazy);
+                    replay_move_deltas(&mut walked.as_mut(), us, mv, captured, &mut lazy);
                     assert_eq!(lazy.len(), eager.len(),
                         "delta COUNT differs (lazy {} vs eager {}), fen {fen_idx} game {game} mv {mv:#06x}",
                         lazy.len(), eager.len());

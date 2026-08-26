@@ -1403,7 +1403,7 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>) {
                 // returns the halfmove-INDEPENDENT score and callers apply
                 // `apply_halfmove_scale` at the point of use, so this matches
                 // what search stores and compares.
-                let score = info.eval(&board);
+                let score = info.eval(&mut board);
                 // Clean, parseable static-eval line (white POV, pawns) —
                 // matches the common `eval` output format so external
                 // tooling can parse it uniformly across engines. `score`

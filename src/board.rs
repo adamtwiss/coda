@@ -185,6 +185,21 @@ impl Board {
         self.mailbox[sq as usize] = NO_PIECE_TYPE;
     }
 
+    /// Mutable view of just the piece state, for the threat-delta replay.
+    ///
+    /// Deliberately narrow: it exposes the three arrays threat generation reads
+    /// and nothing else, so an in-place replay cannot disturb the hashes, the
+    /// castling rights or the ep square. The replay undoes and redoes the same
+    /// moves, so these arrays are byte-identical by the time it returns.
+    #[inline]
+    pub fn piece_state_mut(&mut self) -> crate::threats::PieceStateMut<'_> {
+        crate::threats::PieceStateMut {
+            pieces: &mut self.pieces,
+            colors: &mut self.colors,
+            mailbox: &mut self.mailbox,
+        }
+    }
+
     /// Put a piece on the board with hash update.
     #[inline]
     fn put_piece(&mut self, color: Color, pt: u8, sq: u8) {
