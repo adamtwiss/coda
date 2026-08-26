@@ -2281,6 +2281,17 @@ fn lmr_reduction(depth: i32, moves: i32) -> i32 {
     LMR_TABLE[d][m].load(Ordering::Relaxed)
 }
 
+/// Depth used to verify singularity after excluding the TT move.
+///
+/// Half depth is the established shape, but the depth-4 SE boundary would
+/// otherwise collapse to a one-ply probe.  Keep that useful coverage while
+/// requiring at least two plies before the result can drive extension or
+/// multi-cut decisions.
+#[inline]
+fn singular_verification_depth(depth: i32) -> i32 {
+    ((depth - 1) / 2).max(2)
+}
+
 #[inline(always)]
 fn root_move_index(mv: Move) -> usize {
     let promotion_bucket = if is_promotion(mv) {
@@ -5763,7 +5774,7 @@ fn negamax(
                     tp10(&SE_XRAY_BLOCKER_MARGIN_10X)
                 } else { 0 };
                 let singular_beta = tt_score_local - depth - xray_bonus;
-                let singular_depth = (depth - 1) / 2;
+                let singular_depth = singular_verification_depth(depth);
 
                 info.excluded_move[ply_u] = tt_move;
                 let singular_score = negamax(board, info, singular_beta - 1, singular_beta, singular_depth, ply, false);
@@ -7767,6 +7778,15 @@ pub(crate) fn test_net_path() -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn singular_verification_has_two_ply_floor() {
+        assert_eq!(singular_verification_depth(4), 2);
+        assert_eq!(singular_verification_depth(5), 2);
+        assert_eq!(singular_verification_depth(6), 2);
+        assert_eq!(singular_verification_depth(7), 3);
+        assert_eq!(singular_verification_depth(8), 3);
+    }
 
     #[test]
     fn root_move_index_distinguishes_promotions() {
