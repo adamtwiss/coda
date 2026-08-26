@@ -2999,7 +2999,8 @@ pub(crate) fn search_helper(board: &mut Board, info: &mut SearchInfo, _limits: &
         crate::threat_accum::REFRESH_MODE.store(pmax > 0 && pieces <= pmax, Ordering::Relaxed);
     }
     board.generate_threat_deltas = info.nnue_net.as_ref().is_some_and(|n| n.has_threats)
-        && !crate::threat_accum::refresh_mode();
+        && !crate::threat_accum::refresh_mode()
+        && crate::threat_accum::eager_generation();
     if info.threat_stack.active {
         info.threat_stack.reset();
         if let Some(ref net) = info.nnue_net {
@@ -3188,7 +3189,8 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
         crate::threat_accum::REFRESH_MODE.store(pmax > 0 && pieces <= pmax, Ordering::Relaxed);
     }
     board.generate_threat_deltas = info.nnue_net.as_ref().is_some_and(|n| n.has_threats)
-        && !crate::threat_accum::refresh_mode();
+        && !crate::threat_accum::refresh_mode()
+        && crate::threat_accum::eager_generation();
 
     // Initialize root position threat accumulator
     if info.threat_stack.active {

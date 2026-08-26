@@ -24,6 +24,20 @@ pub fn refresh_always() -> bool {
     *V.get_or_init(|| std::env::var("CODA_THREAT_REFRESH_ALWAYS").is_ok())
 }
 
+/// Generate threat deltas eagerly inside `make_move` (env
+/// `CODA_EAGER_THREAT_DELTAS`, read once) instead of on first replay.
+///
+/// Lazy is the default: 54.7% of eagerly generated deltas were never consumed,
+/// because most children are cut or pruned before anything asks for their
+/// accumulator. The two modes must produce byte-identical accumulators, so this
+/// exists to A/B them — bench node counts have to match exactly either way, and
+/// a difference is a bug in the lazy path rather than a tuning question.
+#[inline]
+pub fn eager_generation() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("CODA_EAGER_THREAT_DELTAS").is_ok())
+}
+
 /// Per-search threat-REFRESH mode: no per-move delta generation, accumulator
 /// re-enumerates instead of replaying. Set once at search setup from the root
 /// piece count (see `THREAT_REFRESH_PIECE_MAX`) and read by both sides of the
@@ -143,6 +157,18 @@ pub struct ThreatEntry {
     pub moved_pt: u8,
     /// Color that moved (for per-perspective king mirror check)
     pub moved_color: u8,
+    /// Piece type captured by `mv` (NO_PIECE_TYPE if none). Recorded so the
+    /// stack can walk its own piece state backwards without consulting
+    /// `Board::undo_stack` — that keeps the walk-back independent of how the
+    /// search's undo stack is indexed, and makes null moves fall out for free
+    /// (they carry `mv == NO_MOVE` and are simply skipped).
+    pub captured: u8,
+    /// Whether `delta` holds this ply's deltas yet. Distinct from "empty":
+    /// under lazy generation an entry starts with no deltas and acquires them
+    /// on first replay. Caching them here is what makes lazy generation a win —
+    /// regenerating per replay rather than per move would save ~11% of the
+    /// generation work instead of ~55%.
+    pub deltas_valid: bool,
     /// Diagnostic (profile-threats only): whether this generation instance's
     /// deltas were ever replayed. Sized into struct padding; unused in prod.
     pub consumed: bool,
@@ -163,6 +189,8 @@ impl ThreatEntry {
             mv: NO_MOVE,
             moved_pt: NO_PIECE_TYPE,
             moved_color: WHITE,
+            captured: NO_PIECE_TYPE,
+            deltas_valid: false,
             consumed: false,
         }
     }
@@ -173,6 +201,9 @@ pub struct ThreatStack {
     stack: Vec<ThreatEntry>,
     index: usize,
     hidden_size: usize,
+    /// Reusable buffer for lazily regenerated deltas — avoids an allocation
+    /// per materialisation.
+    scratch: Vec<RawThreatDelta>,
     /// Whether threat features are active (net has threats)
     pub active: bool,
 }
@@ -183,7 +214,8 @@ impl ThreatStack {
         for _ in 0..MAX_PLY {
             stack.push(ThreatEntry::new());
         }
-        Self { stack, index: 0, hidden_size, active: false }
+        Self { stack, index: 0, hidden_size, active: false,
+               scratch: Vec::with_capacity(MAX_THREAT_DELTAS) }
     }
 
     #[inline]
@@ -201,16 +233,94 @@ impl ThreatStack {
     pub fn absorb_deltas(&mut self, board: &crate::board::Board) {
         #[cfg(feature = "profile-threats")]
         crate::threats::apply_stats::record_generated(board.threat_deltas.len());
+        let eager = board.generate_threat_deltas;
         let entry = self.current_mut();
-        entry.delta.copy_from_slice(&board.threat_deltas);
 
+        // Move metadata is recorded either way: under lazy generation it is
+        // what lets `materialize_deltas` walk the piece state back to this ply.
         if let Some(undo) = board.undo_stack.last() {
             entry.mv = undo.mv;
+            entry.captured = undo.captured;
             if undo.mv != NO_MOVE {
                 entry.moved_pt = board.mailbox[move_to(undo.mv) as usize];
                 entry.moved_color = flip_color(board.side_to_move);
             }
         }
+
+        if eager {
+            entry.delta.copy_from_slice(&board.threat_deltas);
+            entry.deltas_valid = true;
+        } else {
+            entry.deltas_valid = false;
+        }
+    }
+
+    /// Give every entry in `from_ply..=self.index` its deltas, regenerating any
+    /// that lazy generation left absent.
+    ///
+    /// Returns false if a regenerated entry overflowed its delta capacity, in
+    /// which case the caller must refresh instead of replaying — the same
+    /// contract `can_update`'s overflow check enforces for eager deltas.
+    ///
+    /// Walks the piece state backwards from the LIVE board (which sits at
+    /// `self.index`) to just before `from_ply`, then forward again re-emitting.
+    /// The scratch state is a 128-byte copy, so the live board — which the NNUE
+    /// accumulator stack and the Zobrist keys both alias — is never touched.
+    fn materialize_deltas(&mut self, board: &crate::board::Board, from_ply: usize) -> bool {
+        let to_ply = self.index;
+        if from_ply > to_ply {
+            return true;
+        }
+
+        // Fast path: the span is already covered, either because generation was
+        // eager or because an earlier replay over these plies already paid for
+        // it. This is the cache that makes lazy generation worth doing.
+        let mut needed = false;
+        for p in from_ply..=to_ply {
+            let e = &self.stack[p];
+            if e.mv != NO_MOVE && !e.deltas_valid {
+                needed = true;
+                break;
+            }
+        }
+        if !needed {
+            return true;
+        }
+
+        let mut st = crate::threats::PieceState::from_board(board);
+        for p in (from_ply..=to_ply).rev() {
+            let e = &self.stack[p];
+            if e.mv != NO_MOVE {
+                crate::threats::undo_move_state(&mut st, e.moved_color, e.mv, e.captured);
+            }
+        }
+
+        let mut scratch = std::mem::take(&mut self.scratch);
+        let mut ok = true;
+        for p in from_ply..=to_ply {
+            let (mv, captured, color, valid) = {
+                let e = &self.stack[p];
+                (e.mv, e.captured, e.moved_color, e.deltas_valid)
+            };
+            if mv == NO_MOVE {
+                continue;
+            }
+            // Always replayed, because even an entry whose deltas are already
+            // cached has to advance `st` past its move. Regenerating a cached
+            // entry's deltas and discarding them only happens on a partially
+            // covered span, which is rare and at most a ply or two wide.
+            crate::threats::replay_move_deltas(&mut st, color, mv, captured, &mut scratch);
+            if !valid {
+                let e = &mut self.stack[p];
+                e.delta.copy_from_slice(&scratch);
+                e.deltas_valid = true;
+                if e.delta.overflowed() {
+                    ok = false;
+                }
+            }
+        }
+        self.scratch = scratch;
+        ok
     }
 
     /// Push: increment index, reset flags, clear deltas.
@@ -223,6 +333,7 @@ impl ThreatStack {
         let entry = &mut self.stack[self.index];
         entry.accurate = [false; 2];
         entry.delta.clear();
+        entry.deltas_valid = false;
         entry.mv = mv;
         entry.moved_pt = moved_pt;
         #[cfg(feature = "profile-threats")]
@@ -335,7 +446,10 @@ impl ThreatStack {
             // whenever the prior ply was accurate — the common case.
             let entry = &self.stack[i + 1];
             if entry.mv != NO_MOVE {
-                if entry.delta.overflowed() {
+                // Under lazy generation overflow is unknown until the deltas
+                // are built, so an absent entry is treated as fine here and
+                // re-checked by `materialize_deltas`.
+                if entry.deltas_valid && entry.delta.overflowed() {
                     #[cfg(feature = "profile-threats")]
                     crate::threats::apply_stats::record_refresh_cause(2);
                     return None;
@@ -521,7 +635,11 @@ impl ThreatStack {
             let white_ancestor = self.can_update(WHITE);
             let black_ancestor = self.can_update(BLACK);
             if let (Some(w), Some(b)) = (white_ancestor, black_ancestor) {
-                if w == b {
+                // On overflow fall through to the per-perspective loop rather
+                // than replaying. `materialize_deltas` leaves the offending
+                // entry marked valid-and-overflowed, so the `can_update` below
+                // now returns None for it and both perspectives refresh.
+                if w == b && self.materialize_deltas(board, w + 1) {
                     self.update_dual(w, net_weights, num_features, board);
                     return;
                 }
@@ -534,7 +652,13 @@ impl ThreatStack {
             }
 
             match self.can_update(pov) {
-                Some(ancestor) => self.update(ancestor, net_weights, num_features, board, pov),
+                Some(ancestor) => {
+                    if self.materialize_deltas(board, ancestor + 1) {
+                        self.update(ancestor, net_weights, num_features, board, pov);
+                    } else {
+                        self.refresh(net_weights, num_features, board, pov);
+                    }
+                }
                 None => self.refresh(net_weights, num_features, board, pov),
             }
         }
@@ -888,10 +1012,19 @@ mod incremental_tests {
     /// regression.
     #[test]
     fn fuzz_random_games() {
-        run_fuzz_random_games();
+        run_fuzz_random_games(true);
     }
 
-    fn run_fuzz_random_games() {
+    /// Same fuzz, driving the LAZY generation path that production now uses by
+    /// default: `make_move` emits nothing and the deltas are rebuilt on first
+    /// replay from the stack's own move metadata. Without this the fuzz would
+    /// only ever prove the eager path, which is no longer the one that ships.
+    #[test]
+    fn fuzz_random_games_lazy_generation() {
+        run_fuzz_random_games(false);
+    }
+
+    fn run_fuzz_random_games(eager: bool) {
         crate::init();
         let _space = crate::threats::FEATURE_SPACE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let nf = num_threat_features();
@@ -929,7 +1062,7 @@ mod incremental_tests {
 
                 let mut board = Board::new();
                 board.set_fen(fen);
-                board.generate_threat_deltas = true;
+                board.generate_threat_deltas = eager;
 
                 let mut incr = ThreatStack::new(H);
                 incr.active = true;
@@ -956,21 +1089,14 @@ mod incremental_tests {
                     assert!(ok, "fuzz {} game {} ply {}: move {} illegal?",
                         fen_idx, game, ply, crate::types::move_to_uci(mv));
 
-                    // Absorb deltas into incremental stack.
-                    {
-                        let entry = incr.current_mut();
-                        entry.delta.clear();
-                        for d in board.threat_deltas.iter() { entry.delta.push(*d); }
-                        let ul = board.undo_stack.len();
-                        if ul > 0 {
-                            let u = &board.undo_stack[ul - 1];
-                            entry.mv = u.mv;
-                            if u.mv != NO_MOVE {
-                                entry.moved_pt = board.mailbox[move_to(u.mv) as usize];
-                                entry.moved_color = crate::types::flip_color(board.side_to_move);
-                            }
-                        }
-                    }
+                    // Use the production absorb rather than reimplementing it.
+                    // This block used to hand-roll the same field assignments,
+                    // and when `captured` and `deltas_valid` were added for lazy
+                    // generation the copy silently went stale — the walk-back
+                    // then mis-inverted every capture. A duplicated absorb is
+                    // exactly the drift this fuzz is supposed to catch, not
+                    // contain.
+                    incr.absorb_deltas(&board);
 
                     incr.ensure_computed(&weights, nf, &board);
                     refs.refresh(&weights, nf, &board, WHITE);
@@ -1015,11 +1141,19 @@ mod incremental_tests {
     /// occur constantly.
     #[test]
     fn fuzz_random_walk_with_pops_and_lazy_gaps() {
-        run_fuzz_walk_with_pops();
+        run_fuzz_walk_with_pops(true);
     }
 
+    /// The pops/gaps walk against LAZY generation. This is the sharpest test of
+    /// the lazy path: `materialize_deltas` walks the piece state back from the
+    /// live board across a replay span, so pushes, pops and multi-ply gaps are
+    /// precisely where a mis-stepped walk-back would show up.
+    #[test]
+    fn fuzz_random_walk_with_pops_and_lazy_gaps_lazy_generation() {
+        run_fuzz_walk_with_pops(false);
+    }
 
-    fn run_fuzz_walk_with_pops() {
+    fn run_fuzz_walk_with_pops(eager: bool) {
         crate::init();
         let _space = crate::threats::FEATURE_SPACE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let nf = num_threat_features();
@@ -1108,7 +1242,7 @@ mod incremental_tests {
 
                 let mut board = Board::new();
                 board.set_fen(fen);
-                board.generate_threat_deltas = true;
+                board.generate_threat_deltas = eager;
 
                 let mut incr = ThreatStack::new(H);
                 incr.active = true;
