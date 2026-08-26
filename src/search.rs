@@ -475,7 +475,27 @@ tunables!(
     // STRICTER singularity test → FEWER extensions on x-ray-blocker TT moves,
     // not more. This reads backwards but is correct: SPSA drives the value UP
     // away from the 0 floor, so do NOT "fix" the sign.
-    (SE_XRAY_BLOCKER_MARGIN_10X, 46, 0, 400, 20.0, true),
+    // NON-CORE, and this is not a judgement call: the parameter is PROVABLY
+    // INERT at every value in its range. Its only consumer gates on
+    // `our_xray_blockers`, which is computed as 0 whenever
+    // DISCOVERED_ATTACK_BONUS is 0 -- and that has been 0 since SPSA #660 drove
+    // it there in the v9 era. Measured 2026-08-26: bench is bit-identical at
+    // 2521318 with this set to 0, 46 and 400, while a control
+    // (DEXT_MARGIN_PV=400) moves bench to 2112498.
+    //
+    // It was flagged core, so every core sweep has been spending gradient
+    // budget on a parameter that cannot affect the search. Per
+    // docs/loose_spsa_knobs_2026-05-16.md that is not merely wasted: SPSA
+    // averages the loss change across ALL parameters per iteration, so an inert
+    // knob injects noise into the gradient seen by every useful knob. A recent
+    // core tune moved it +101.7% (23 -> 46), which is pure noise by
+    // construction.
+    //
+    // Left in place rather than deleted because the SE half of the xray feature
+    // has never been tested live -- only the movepicker half has (that is
+    // try/discovered-attack-on, H0 at about -5.8 Elo). Decoupling the two so
+    // this one can actually fire is a separate, untested experiment.
+    (SE_XRAY_BLOCKER_MARGIN_10X, 46, 0, 400, 20.0, false),
     // Continuation-history weight in quiet move ordering. Range runs to 0 so
     // SPSA can disable the term entirely rather than pinning at a floor.
     (CONT_HIST_MULT_10X, 20, 0, 80, 15.0, true),
