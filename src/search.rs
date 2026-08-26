@@ -5826,8 +5826,13 @@ fn negamax(
                     singular_extension = -3;
                     info.stats.negative_ext += 1;
                 } else if cut_node {
-                    // Cut node with competitive alternatives — moderate reduce
-                    singular_extension = -2;
+                    // Cut node with competitive alternatives. A fail-soft
+                    // verification score that also reaches the node's real
+                    // beta is stronger evidence than merely clearing the
+                    // lower singular threshold: an alternative has already
+                    // produced the cutoff this node expects. Reduce the TT
+                    // move one extra ply only in that stronger subset.
+                    singular_extension = if singular_score >= beta { -3 } else { -2 };
                     info.stats.negative_ext += 1;
                 } else {
                     // All-node with competitive alternatives — mild reduce
