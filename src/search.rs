@@ -155,6 +155,12 @@ tunables!(
     // interact with the LMR history terms — retune the pair together.
     (FUT_BASE, 77, 0, 200, 9.0, true),
     (FUT_PER_DEPTH, 101, 40, 250, 10.5, true),
+    // Strong-history exemption for quiet futility: a quiet whose main history
+    // exceeds this is never futility-pruned. It was the hardcoded literal 12000
+    // sitting inside the gate at search.rs while every other term around it was
+    // SPSA-tunable -- so SPSA has been optimising a formula with one frozen
+    // input. Exposing it costs nothing and is behaviour-identical at 12000.
+    (FUT_HIST_EXEMPT, 12000, 2000, 16384, 900.0, true),
     (FUT_LMR_DEPTH, 14, 6, 24, 2.0, true),
     (SEE_QUIET_MULT, 23, 5, 80, 3.75, true),
     // Low-increment TM multiplier ceiling. The factor product
@@ -507,7 +513,7 @@ tunables!(
     // can be lowered without over-pruning them. Dropping the base alone,
     // without the history term, cost +17% bench nodes.
     (SEE_CAP_MULT, 101, 40, 250, 12.0, true),
-    (SEE_CAP_HIST, 8, 0, 40, 2.0, false),
+    (SEE_CAP_HIST, 8, 0, 40, 2.0, true),
     (BAD_NOISY_DEPTH_10X, 63, 40, 150, 15.0, true),       // BNFP depth cap
     // NMP activation gate (2 sites). This can sit low because RFP runs FIRST:
     // shallow NMP then only sees nodes static pruning could not already cut,
@@ -5589,7 +5595,7 @@ fn negamax(
             let threats_adj = any_threat_count * tp(&FUT_THREATS_MARGIN);
             let futility_value = static_eval + tp(&FUT_BASE) + lmr_d * tp(&FUT_PER_DEPTH) + hist_adj + threats_adj;
             // Direct-check carve-out + strong-history exemption (Igel #410).
-            if futility_value <= alpha && main_hist < 12000 && !board.gives_direct_check(mv) {
+            if futility_value <= alpha && main_hist < tp(&FUT_HIST_EXEMPT) && !board.gives_direct_check(mv) {
                 trace_gate!(info, board.hash, ply, mv, "futility", depth, move_count);
                 info.stats.futility_prunes += 1;
                 skip_quiets = true;
