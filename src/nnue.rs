@@ -1633,6 +1633,162 @@ unsafe fn simd512_l1_int8_dot_sparse_vnni(packed: &[u8], weights: &[i8], nnz_ind
     _mm512_reduce_add_epi32(_mm512_add_epi32(s0, s1))
 }
 
+/// Largest `l1` the dual-L1 activation is written for. `l1_out` is 128 floats
+/// and dual writes `2 * l1` of them, so `l1` cannot exceed this anyway.
+const DUAL_L1_MAX: usize = 64;
+
+/// Dequantising half of the dual-L1 activation:
+/// `crelu[i] = hv[i] / qa_l1`, `screlu[i] = hv[i]^2 / qa_l1^2`.
+///
+/// Split out and hand-vectorised because this is the expensive half. `qa_l1`
+/// is a runtime value, so both of those are genuine IEEE divisions — nothing
+/// the compiler can strength-reduce — and scalar they issue one at a time, two
+/// `vdivss` per neuron. Hand-vectorising rather than nudging the autovectoriser
+/// is deliberate: written against a runtime `l1` it cannot prove the two output
+/// halves disjoint, and even when handed provably disjoint slices its decision
+/// moved with unrelated code under `codegen-units = 16` — it vectorised on one
+/// tree and not on the next. Writing the intrinsics removes the choice.
+///
+/// Bit-identical to the scalar form: `cvtepi32_ps` rounds to nearest-even
+/// exactly as `as f32` does, `mullo_epi32` keeps the low 32 bits exactly as
+/// `i32 * i32` does in release, and `div_ps` is the same IEEE division. The
+/// caller passes activations already clamped to `[0, qa_l1]`, so the square
+/// neither wraps nor rounds for any realistic scale — it would take
+/// `qa_l1 > 46340` to wrap an `i32` and `qa_l1 > 4095` for the square to leave
+/// the exactly-representable f32 range. Covered by
+/// `dual_l1_dequant_matches_scalar`.
+#[inline]
+fn dual_l1_dequant(
+    has_avx512: bool,
+    has_avx2: bool,
+    hv: &[i32],
+    qa_l1_f: f32,
+    qa_l1_sq: f32,
+    crelu: &mut [f32],
+    screlu: &mut [f32],
+) {
+    let n = hv.len();
+    // Real assert, not debug_assert: the SIMD kernels below write `n` lanes
+    // through raw pointers, so this is the bound that keeps them in range.
+    assert!(crelu.len() >= n && screlu.len() >= n,
+            "dual_l1_dequant outputs too small: n={} crelu={} screlu={}",
+            n, crelu.len(), screlu.len());
+
+    #[cfg(target_arch = "x86_64")]
+    {
+        if has_avx512 && n.is_multiple_of(16) {
+            unsafe { dual_l1_dequant_avx512(hv, qa_l1_f, qa_l1_sq, crelu, screlu) };
+            return;
+        }
+        if has_avx2 && n.is_multiple_of(8) {
+            unsafe { dual_l1_dequant_avx2(hv, qa_l1_f, qa_l1_sq, crelu, screlu) };
+            return;
+        }
+    }
+    // aarch64 is a first-class target and always has NEON, so there is no
+    // runtime check to make — but the scalar loop below would otherwise be the
+    // ARM path, and it is the same two-divisions-per-neuron shape that made
+    // this worth splitting out on x86 in the first place.
+    #[cfg(target_arch = "aarch64")]
+    {
+        let _ = (has_avx512, has_avx2);
+        if n.is_multiple_of(4) {
+            unsafe { dual_l1_dequant_neon(hv, qa_l1_f, qa_l1_sq, crelu, screlu) };
+            return;
+        }
+    }
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    let _ = (has_avx512, has_avx2);
+
+    for i in 0..n {
+        crelu[i] = hv[i] as f32 / qa_l1_f;
+        screlu[i] = (hv[i] * hv[i]) as f32 / qa_l1_sq;
+    }
+}
+
+/// NEON sibling of [`dual_l1_dequant_avx512`], 4 neurons per step. `vdivq_f32`
+/// is a true IEEE divide on aarch64 (not the reciprocal-estimate `vrecpe`
+/// sequence), and `vcvtq_f32_s32` rounds to nearest-even under the default
+/// FPCR, so the same bit-identity argument holds here as on x86.
+#[cfg(target_arch = "aarch64")]
+unsafe fn dual_l1_dequant_neon(
+    hv: &[i32],
+    qa_l1_f: f32,
+    qa_l1_sq: f32,
+    crelu: &mut [f32],
+    screlu: &mut [f32],
+) {
+    let dq = vdupq_n_f32(qa_l1_f);
+    let dq2 = vdupq_n_f32(qa_l1_sq);
+    let n = hv.len();
+    let src = hv.as_ptr();
+    let cp = crelu.as_mut_ptr();
+    let sp = screlu.as_mut_ptr();
+    let mut i = 0;
+    while i + 4 <= n {
+        let h = vld1q_s32(src.add(i));
+        let sq = vmulq_s32(h, h);
+        vst1q_f32(cp.add(i), vdivq_f32(vcvtq_f32_s32(h), dq));
+        vst1q_f32(sp.add(i), vdivq_f32(vcvtq_f32_s32(sq), dq2));
+        i += 4;
+    }
+}
+
+/// AVX-512 dual-L1 dequantisation, 16 neurons per step. Requires
+/// `hv.len()` to be a multiple of 16 and both outputs to be at least that long.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f")]
+unsafe fn dual_l1_dequant_avx512(
+    hv: &[i32],
+    qa_l1_f: f32,
+    qa_l1_sq: f32,
+    crelu: &mut [f32],
+    screlu: &mut [f32],
+) {
+    use std::arch::x86_64::*;
+    let dq = _mm512_set1_ps(qa_l1_f);
+    let dq2 = _mm512_set1_ps(qa_l1_sq);
+    let n = hv.len();
+    let src = hv.as_ptr();
+    let cp = crelu.as_mut_ptr();
+    let sp = screlu.as_mut_ptr();
+    let mut i = 0;
+    while i + 16 <= n {
+        let h = _mm512_loadu_si512(src.add(i) as *const __m512i);
+        let sq = _mm512_mullo_epi32(h, h);
+        _mm512_storeu_ps(cp.add(i), _mm512_div_ps(_mm512_cvtepi32_ps(h), dq));
+        _mm512_storeu_ps(sp.add(i), _mm512_div_ps(_mm512_cvtepi32_ps(sq), dq2));
+        i += 16;
+    }
+}
+
+/// AVX-2 sibling of [`dual_l1_dequant_avx512`], 8 neurons per step.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn dual_l1_dequant_avx2(
+    hv: &[i32],
+    qa_l1_f: f32,
+    qa_l1_sq: f32,
+    crelu: &mut [f32],
+    screlu: &mut [f32],
+) {
+    use std::arch::x86_64::*;
+    let dq = _mm256_set1_ps(qa_l1_f);
+    let dq2 = _mm256_set1_ps(qa_l1_sq);
+    let n = hv.len();
+    let src = hv.as_ptr();
+    let cp = crelu.as_mut_ptr();
+    let sp = screlu.as_mut_ptr();
+    let mut i = 0;
+    while i + 8 <= n {
+        let h = _mm256_loadu_si256(src.add(i) as *const __m256i);
+        let sq = _mm256_mullo_epi32(h, h);
+        _mm256_storeu_ps(cp.add(i), _mm256_div_ps(_mm256_cvtepi32_ps(h), dq));
+        _mm256_storeu_ps(sp.add(i), _mm256_div_ps(_mm256_cvtepi32_ps(sq), dq2));
+        i += 8;
+    }
+}
+
 /// AVX-512 f32 L2 matmul for L2 == 32: two ZMM accumulators hold the full
 /// L2 row, one FMA pair per `l1_out[i]`. Replaces the generic loop that
 /// LLVM was vectorising with `VGATHERQPS` (13% of total cycles on v9,
@@ -3847,12 +4003,21 @@ impl NNUENet {
         debug_assert!(l1_out_count <= L1_OUT_BUF, "l1_out_count {} exceeds L1_OUT_BUF {}", l1_out_count, L1_OUT_BUF);
         let mut l1_out = [0.0f32; L1_OUT_BUF];
         if self.dual_l1 {
-            // Dual L1 activation: CReLU(L1) concat SCReLU(L1)
+            // Dual L1 activation: CReLU(L1) concat SCReLU(L1).
+            //
+            // Two stages. The integer stage below is the original expression
+            // untouched — `pw_scale` is a constant, so it is a multiply-shift
+            // rather than a divide and costs little. The dequantising stage is
+            // the expensive one and is hand-vectorised; see `dual_l1_dequant`
+            // for why it is not left to the autovectoriser.
+            assert!(l1 <= DUAL_L1_MAX, "l1 {} exceeds DUAL_L1_MAX {}", l1, DUAL_L1_MAX);
+            let mut hv = [0i32; DUAL_L1_MAX];
             for i in 0..l1 {
-                let h_val = (hidden32[i] / pw_scale).clamp(0, qa_l1);
-                l1_out[i] = h_val as f32 / qa_l1_f;               // CReLU: [0, 1]
-                l1_out[l1 + i] = (h_val * h_val) as f32 / qa_l1_sq; // SCReLU: [0, 1]
+                hv[i] = (hidden32[i] / pw_scale).clamp(0, qa_l1);
             }
+            let (crelu, screlu) = l1_out.split_at_mut(l1);
+            dual_l1_dequant(self.has_avx512, self.has_avx2, &hv[..l1],
+                            qa_l1_f, qa_l1_sq, crelu, screlu);
         } else if self.crelu_hidden.load(std::sync::atomic::Ordering::Relaxed) {
             // Clipped ReLU variant (for nets trained with .crelu() on L1/L2 in Bullet)
             for i in 0..l1 {
@@ -6452,6 +6617,79 @@ mod tests {
 
                 let got = unsafe { simd512_l1_int8_dot_sparse_vnni(&packed, &weights, &nnz, nnz_count) };
                 assert_eq!(got, want, "sparse VNNI mismatch h={} density={} got={} want={}", h, density_pct, got, want);
+            }
+        }
+    }
+
+    /// Guards the bit-identity claim on `dual_l1_dequant`. This kernel replaced
+    /// a scalar loop in the hot forward path purely for speed, so "same answer"
+    /// is not a tolerance question — every lane must match the scalar
+    /// expression to the last bit, or evaluations silently drift and every
+    /// tuned search threshold drifts with them.
+    ///
+    /// Sweeps the whole `[0, qa_l1]` activation range the caller can produce,
+    /// across several scales and lengths, and compares raw bit patterns rather
+    /// than values so a signed-zero or NaN difference could not pass.
+    #[test]
+    fn dual_l1_dequant_matches_scalar() {
+        #[cfg(target_arch = "x86_64")]
+        let (has512, has2) = (
+            is_x86_feature_detected!("avx512f"),
+            is_x86_feature_detected!("avx2"),
+        );
+        // On aarch64 the NEON arm is unconditional, so the flags are inert and
+        // the loop below still compares the vector path against scalar.
+        #[cfg(not(target_arch = "x86_64"))]
+        let (has512, has2) = (false, false);
+
+        for &qa in &[1i32, 15, 64, 127, 255, 1023, 4095] {
+            let qa_f = qa as f32;
+            let qa_sq = qa_f * qa_f;
+            for &n in &[8usize, 16, 24, 32, 64] {
+                // Walk the clamped range so every length sees both endpoints
+                // and a spread of interior values, including the 0 that CReLU
+                // produces for every negative pre-activation.
+                for phase in 0..4 {
+                    let hv: Vec<i32> = (0..n)
+                        .map(|k| ((k as i64 * (qa as i64 + 1) / n as i64 + phase) as i32).clamp(0, qa))
+                        .collect();
+
+                    let mut c_ref = vec![0f32; n];
+                    let mut s_ref = vec![0f32; n];
+                    for i in 0..n {
+                        c_ref[i] = hv[i] as f32 / qa_f;
+                        s_ref[i] = (hv[i] * hv[i]) as f32 / qa_sq;
+                    }
+
+                    // Exercise each dispatch arm the runtime could pick, not
+                    // just whichever one this host happens to select.
+                    // On aarch64 every arm below routes to NEON (the flags are
+                    // inert there), so the "scalar" entry still exercises the
+                    // vector kernel — which is exactly what needs checking.
+                    for &(use512, use2, arm) in &[
+                        (has512, false, "avx512"),
+                        (false, has2, "avx2"),
+                        (false, false, "scalar/neon"),
+                    ] {
+                        if arm == "avx512" && !has512 { continue; }
+                        if arm == "avx2" && !has2 { continue; }
+                        let mut c = vec![0f32; n];
+                        let mut s = vec![0f32; n];
+                        super::dual_l1_dequant(use512, use2, &hv, qa_f, qa_sq, &mut c, &mut s);
+                        for i in 0..n {
+                            assert_eq!(
+                                c[i].to_bits(), c_ref[i].to_bits(),
+                                "{arm} CReLU mismatch qa={qa} n={n} phase={phase} i={i} hv={}",
+                                hv[i]
+                            );
+                            assert_eq!(
+                                s[i].to_bits(), s_ref[i].to_bits(),
+                                "{arm} SCReLU mismatch qa={qa} n={n} phase={phase} i={i} hv={}",
+                                hv[i]
+                            );
+                        }
+                    }
+                }
             }
         }
     }
