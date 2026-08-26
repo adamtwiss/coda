@@ -4431,6 +4431,14 @@ macro_rules! trace_node {
     };
 }
 
+/// The excluded-move search failed high at its own lower window, but that
+/// window is still below the outer node's beta. Ordinary search therefore
+/// resumes with competitive alternatives rather than returning a multi-cut.
+#[inline]
+fn se_verification_found_competition(singular_score: i32, singular_beta: i32, beta: i32) -> bool {
+    singular_score >= singular_beta && singular_beta < beta
+}
+
 /// Negamax alpha-beta search.
 /// Main negamax search with all pruning, extensions, and reductions.
 fn negamax(
@@ -5759,9 +5767,21 @@ fn negamax(
                 let singular_beta = tt_score_local - depth - xray_bonus;
                 let singular_depth = (depth - 1) / 2;
 
+                let cutoff_child_before = info.cutoff_count[ply_u + 1];
                 info.excluded_move[ply_u] = tt_move;
                 let singular_score = negamax(board, info, singular_beta - 1, singular_beta, singular_depth, ply, false);
                 info.excluded_move[ply_u] = NO_MOVE;
+
+                // A fail-high against the lower singular window is useful for
+                // classifying the TT move, but it is not a cutoff against the
+                // outer window. If normal search continues with competitive
+                // alternatives, do not let that artificial probe make LMR
+                // reduce the remaining outer moves more aggressively. Keep
+                // the state for true singular results, and multi-cut returns
+                // before it can be observed by resumed move search.
+                if se_verification_found_competition(singular_score, singular_beta, beta) {
+                    info.cutoff_count[ply_u + 1] = cutoff_child_before;
+                }
 
                 if info.stop.load(Ordering::Relaxed) {
                     return 0;
@@ -7761,6 +7781,22 @@ pub(crate) fn test_net_path() -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn se_competition_state_isolated_only_when_outer_search_resumes() {
+        // Alternatives fail high at the singular window, but not at the
+        // outer beta: the negative-extension path resumes ordinary search.
+        assert!(se_verification_found_competition(80, 80, 100));
+        assert!(se_verification_found_competition(95, 80, 100));
+
+        // A genuinely singular TT move did not find a competitive alternative.
+        assert!(!se_verification_found_competition(79, 80, 100));
+
+        // singular_beta >= outer beta is the multi-cut path; there is no
+        // resumed move search whose LMR state needs isolation.
+        assert!(!se_verification_found_competition(100, 100, 100));
+        assert!(!se_verification_found_competition(120, 110, 100));
+    }
 
     #[test]
     fn root_move_index_distinguishes_promotions() {
