@@ -6060,6 +6060,36 @@ fn finny_batch_apply(
     adds: &[usize],
     subs: &[usize],
 ) {
+    // Start every weight row moving before the kernel does anything.
+    //
+    // These are the COLDEST rows in the engine — 61% of their cache lines miss,
+    // against 30% for the threat rows — and until now this was the one hot
+    // weight-streaming kernel with no prefetching at all. The reason they are so
+    // cold is structural: the kernels are register-blocked, so they walk chunk N
+    // of every row before chunk N+1, and that interleaving keeps the hardware
+    // streamer from locking onto any single row. On top of that these rows are
+    // reached precisely BECAUSE the king bucket changed, so they sit in a region
+    // of the 25 MB table that has not been touched recently.
+    //
+    // Two lines per row is enough to cover the start of each burst; the L2
+    // streamer picks up the rest of the 1536-byte sequential run within a chunk.
+    // Capped at 24 rows to bound issue cost — 99.9% of diffs are under 20 rows
+    // (mean 5.6), so the cap effectively never binds. Same shape as the prefetch
+    // in `apply_threat_indices`, which measured that kernel out of a 16% stall.
+    //
+    // Prefetch is architecturally inert, so this cannot change results.
+    #[cfg(target_arch = "x86_64")]
+    {
+        use std::arch::x86_64::{_mm_prefetch, _MM_HINT_T0};
+        for &idx in adds.iter().chain(subs.iter()).take(24) {
+            unsafe {
+                let row = input_weights.as_ptr().add(idx * h) as *const i8;
+                _mm_prefetch(row, _MM_HINT_T0);
+                _mm_prefetch(row.add(64), _MM_HINT_T0);
+            }
+        }
+    }
+
     #[cfg(target_arch = "x86_64")]
     if net.has_avx512 && h.is_multiple_of(32) {
         unsafe { finny_batch_apply_avx512(acc, input_weights, h, adds, subs); }
