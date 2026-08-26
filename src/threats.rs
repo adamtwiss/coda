@@ -1156,6 +1156,158 @@ pub fn push_threats_on_move(
     push_threats_for_piece(deltas, pieces_bb, colors_bb, mailbox, occ_transit, white_bb, cp, piece_color, piece_type, to, true);
 }
 
+/// The slice of `Board` that threat generation reads: piece bitboards, colour
+/// bitboards, mailbox. 128 bytes, `Copy`, no hashes — deliberately NOT a Board,
+/// so a scratch replay can never disturb the live search state (the NNUE
+/// accumulator stack and the Zobrist keys both alias the real board).
+#[derive(Clone, Copy)]
+pub struct PieceState {
+    pub pieces: [Bitboard; 6],
+    pub colors: [Bitboard; 2],
+    pub mailbox: [u8; 64],
+}
+
+impl PieceState {
+    #[inline]
+    pub fn from_board(b: &crate::board::Board) -> Self {
+        Self { pieces: b.pieces, colors: b.colors, mailbox: b.mailbox }
+    }
+
+    #[inline]
+    pub fn occ(&self) -> Bitboard { self.colors[0] | self.colors[1] }
+
+    #[inline]
+    fn remove(&mut self, color: Color, pt: u8, sq: u8) {
+        let bb = 1u64 << sq;
+        self.pieces[pt as usize] ^= bb;
+        self.colors[color as usize] ^= bb;
+        self.mailbox[sq as usize] = NO_PIECE_TYPE;
+    }
+
+    #[inline]
+    fn put(&mut self, color: Color, pt: u8, sq: u8) {
+        let bb = 1u64 << sq;
+        self.pieces[pt as usize] |= bb;
+        self.colors[color as usize] |= bb;
+        self.mailbox[sq as usize] = pt;
+    }
+
+    #[inline]
+    fn shift(&mut self, color: Color, pt: u8, from: u8, to: u8) {
+        let from_to = (1u64 << from) | (1u64 << to);
+        self.pieces[pt as usize] ^= from_to;
+        self.colors[color as usize] ^= from_to;
+        self.mailbox[from as usize] = NO_PIECE_TYPE;
+        self.mailbox[to as usize] = pt;
+    }
+}
+
+/// Castling rook squares for `us`, given the king's `from`/`to`.
+#[inline]
+fn castle_rook_squares(us: Color, from: u8, to: u8) -> (u8, u8) {
+    if to > from {
+        if us == WHITE { (7, 5) } else { (63, 61) }
+    } else if us == WHITE { (0, 3) } else { (56, 59) }
+}
+
+/// Regenerate the threat deltas for `mv` from the PRE-move piece state,
+/// advancing `st` to the post-move state as a side effect.
+///
+/// This mirrors the mutation-and-emit sequence inside `Board::make_move`
+/// exactly, and it has to: each emit call observes a DIFFERENT intermediate
+/// state, so reordering them changes the deltas. In particular the promotion
+/// case applies BOTH mutations before either emit, so both emits see the
+/// post-promotion board.
+///
+/// The duplication of that sequence is deliberate — the alternative was routing
+/// `make_move`'s own mutations through this type, which would have put a scratch
+/// abstraction in the hottest path in the engine. The cost of duplicating is
+/// drift, and `lazy_deltas_match_eager_generation` is the guard against it:
+/// it walks the fuzz corpus asserting this function reproduces `make_move`'s
+/// deltas exactly, so the two cannot silently diverge.
+pub fn replay_move_deltas(
+    st: &mut PieceState,
+    us: Color,
+    mv: Move,
+    captured: u8,
+    out: &mut Vec<RawThreatDelta>,
+) {
+    out.clear();
+    let from = move_from(mv);
+    let to = move_to(mv);
+    let flags = move_flags(mv);
+    let them = flip_color(us);
+    let pt = st.mailbox[from as usize];
+
+    if flags == FLAG_EN_PASSANT {
+        let cap_sq = if us == WHITE { to.wrapping_sub(8) } else { to.wrapping_add(8) };
+        st.remove(them, PAWN, cap_sq);
+        push_threats_on_change(out, &st.pieces, &st.colors, &st.mailbox,
+                               st.occ(), them, PAWN, cap_sq as u32, false);
+    } else if captured != NO_PIECE_TYPE {
+        st.remove(them, captured, to);
+        push_threats_on_change(out, &st.pieces, &st.colors, &st.mailbox,
+                               st.occ(), them, captured, to as u32, false);
+    }
+
+    st.shift(us, pt, from, to);
+    push_threats_on_move(out, &st.pieces, &st.colors, &st.mailbox,
+                         st.occ(), us, pt, from as u32, to as u32);
+
+    if is_promotion(mv) {
+        let promo_pt = promotion_piece_type(mv);
+        st.remove(us, pt, to);
+        st.put(us, promo_pt, to);
+        push_threats_on_change(out, &st.pieces, &st.colors, &st.mailbox,
+                               st.occ(), us, pt, to as u32, false);
+        push_threats_on_change(out, &st.pieces, &st.colors, &st.mailbox,
+                               st.occ(), us, promo_pt, to as u32, true);
+    }
+
+    if flags == FLAG_CASTLE {
+        let (rook_from, rook_to) = castle_rook_squares(us, from, to);
+        st.shift(us, ROOK, rook_from, rook_to);
+        push_threats_on_move(out, &st.pieces, &st.colors, &st.mailbox,
+                             st.occ(), us, ROOK, rook_from as u32, rook_to as u32);
+    }
+}
+
+/// Step `st` BACKWARDS over `mv`, turning a post-move piece state into the
+/// pre-move one. Undoes in the reverse of `replay_move_deltas`'s order.
+///
+/// This is what makes lazy generation possible without snapshotting boards:
+/// `UndoInfo` already carries `mv` and `captured` for every ply on the current
+/// path, so any ancestor's piece state can be recovered by walking back from
+/// the live board.
+pub fn undo_move_state(st: &mut PieceState, us: Color, mv: Move, captured: u8) {
+    let from = move_from(mv);
+    let to = move_to(mv);
+    let flags = move_flags(mv);
+    let them = flip_color(us);
+
+    if flags == FLAG_CASTLE {
+        let (rook_from, rook_to) = castle_rook_squares(us, from, to);
+        st.shift(us, ROOK, rook_to, rook_from);
+    }
+
+    if is_promotion(mv) {
+        let promo_pt = promotion_piece_type(mv);
+        st.remove(us, promo_pt, to);
+        st.put(us, PAWN, to);
+    }
+
+    // Read AFTER undoing promotion, so this is the piece that originally moved.
+    let pt = st.mailbox[to as usize];
+    st.shift(us, pt, to, from);
+
+    if flags == FLAG_EN_PASSANT {
+        let cap_sq = if us == WHITE { to.wrapping_sub(8) } else { to.wrapping_add(8) };
+        st.put(them, PAWN, cap_sq);
+    } else if captured != NO_PIECE_TYPE {
+        st.put(them, captured, to);
+    }
+}
+
 /// Compute raw threat deltas when a piece appears or disappears.
 pub fn push_threats_on_change(
     deltas: &mut Vec<RawThreatDelta>,
@@ -2757,4 +2909,140 @@ mod tests {
         assert!(elapsed.as_secs() < 10, "Benchmark took too long: {:?}", elapsed);
     }
 
+    /// THE gate for lazy threat-delta generation. `replay_move_deltas`
+    /// duplicates the mutation-and-emit sequence inside `Board::make_move`, so
+    /// the two can drift apart silently — and a divergence would not crash, it
+    /// would quietly feed a wrong accumulator into every eval downstream.
+    ///
+    /// Walks random legal games from varied positions and, for every single
+    /// move, checks all three properties the lazy scheme depends on:
+    ///   1. `undo_move_state` turns the post-move piece state back into exactly
+    ///      the pre-move one (the inverse is exact);
+    ///   2. replaying forward from that recovered state reproduces `make_move`'s
+    ///      deltas EXACTLY — same values, same order, same length;
+    ///   3. replaying forward leaves the piece state where `make_move` left it.
+    ///
+    /// Property 2 is the one that matters. Order is asserted, not just the
+    /// multiset: each emit observes a different intermediate board, so an
+    /// ordering difference means the sequence was mirrored wrongly even if the
+    /// set happens to match on these positions.
+    #[test]
+    fn lazy_deltas_match_eager_generation() {
+        use crate::board::Board;
+        use crate::movegen::generate_legal_moves;
+        crate::init();
+        let _space = FEATURE_SPACE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        // Same corpus the threat-accumulator fuzz uses: opening, kiwipete,
+        // slider-heavy midgame, pawn endgame, and a promotion testbed.
+        const START_FENS: &[&str] = &[
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+            "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+            "r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 w - - 0 10",
+            "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",
+            "4k3/P6P/8/8/8/8/p6p/4K3 w - - 0 1",
+            // EP is immediately available here (exf6). Uniform random play
+            // essentially never reaches an en-passant position on its own —
+            // the first version of this test ran 5000+ moves without one — so
+            // the corpus seeds it directly as well as biasing toward it below.
+            "rnbqkbnr/ppp1p1pp/8/3pPp2/8/8/PPPP1PPP/RNBQKBNR w KQkq f6 0 3",
+            "rnbqkbnr/pppp1ppp/8/8/3PpP2/8/PPP1P1PP/RNBQKBNR b KQkq f3 0 3",
+        ];
+
+        fn next_u32(state: &mut u32) -> u32 {
+            let mut x = *state;
+            x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+            *state = x; x
+        }
+
+        let mut checked = 0usize;
+        let mut promos = 0usize;
+        let mut eps = 0usize;
+        let mut castles = 0usize;
+
+        for (fen_idx, fen) in START_FENS.iter().enumerate() {
+            for game in 0..20 {
+                let seed = 0x51ED_2701u32
+                    .wrapping_add((fen_idx as u32).wrapping_mul(1_000_003))
+                    .wrapping_add((game as u32).wrapping_mul(7919));
+                let mut rng = if seed == 0 { 1 } else { seed };
+
+                let mut board = Board::new();
+                board.set_fen(fen);
+                board.generate_threat_deltas = true;
+
+                for _ply in 0..120 {
+                    let legal = generate_legal_moves(&board);
+                    if legal.len == 0 { break; }
+                    // Bias one move in four toward a special move when one is
+                    // legal. Promotions, castles and EP are exactly the cases
+                    // where `replay_move_deltas` does something other than
+                    // "remove victim, shift piece", so leaving them to chance
+                    // would leave the interesting half of the function unproven.
+                    let mut special: Vec<Move> = Vec::new();
+                    for i in 0..legal.len {
+                        let m = legal.get(i);
+                        if is_promotion(m)
+                            || move_flags(m) == FLAG_EN_PASSANT
+                            || move_flags(m) == FLAG_CASTLE
+                        {
+                            special.push(m);
+                        }
+                    }
+                    let mv = if !special.is_empty() && next_u32(&mut rng) % 4 == 0 {
+                        special[(next_u32(&mut rng) as usize) % special.len()]
+                    } else {
+                        legal.get((next_u32(&mut rng) as usize) % legal.len)
+                    };
+
+                    let us = board.side_to_move;
+                    let pre = PieceState::from_board(&board);
+                    if !board.make_move(mv) { break; }
+
+                    let eager: Vec<RawThreatDelta> = board.threat_deltas.clone();
+                    let captured = board.undo_stack.last().unwrap().captured;
+                    let post = PieceState::from_board(&board);
+
+                    // 1. inverse is exact
+                    let mut walked = post;
+                    undo_move_state(&mut walked, us, mv, captured);
+                    assert_eq!(walked.pieces, pre.pieces, "pieces mismatch after undo, fen {fen_idx} game {game} mv {mv:#06x}");
+                    assert_eq!(walked.colors, pre.colors, "colors mismatch after undo, fen {fen_idx} game {game} mv {mv:#06x}");
+                    assert_eq!(walked.mailbox, pre.mailbox, "mailbox mismatch after undo, fen {fen_idx} game {game} mv {mv:#06x}");
+
+                    // 2. forward replay from the recovered state == eager deltas
+                    let mut lazy = Vec::new();
+                    replay_move_deltas(&mut walked, us, mv, captured, &mut lazy);
+                    assert_eq!(lazy.len(), eager.len(),
+                        "delta COUNT differs (lazy {} vs eager {}), fen {fen_idx} game {game} mv {mv:#06x}",
+                        lazy.len(), eager.len());
+                    for (i, (l, e)) in lazy.iter().zip(eager.iter()).enumerate() {
+                        assert_eq!(l.0, e.0,
+                            "delta {i} differs, fen {fen_idx} game {game} mv {mv:#06x}: \
+                             lazy(att={} from={} vic={} to={} add={}) \
+                             eager(att={} from={} vic={} to={} add={})",
+                            l.attacker_cp(), l.from_sq(), l.victim_cp(), l.to_sq(), l.add(),
+                            e.attacker_cp(), e.from_sq(), e.victim_cp(), e.to_sq(), e.add());
+                    }
+
+                    // 3. forward replay lands on the real post-move state
+                    assert_eq!(walked.pieces, post.pieces, "replay end-state pieces, fen {fen_idx} game {game}");
+                    assert_eq!(walked.mailbox, post.mailbox, "replay end-state mailbox, fen {fen_idx} game {game}");
+
+                    checked += 1;
+                    if is_promotion(mv) { promos += 1; }
+                    if move_flags(mv) == FLAG_EN_PASSANT { eps += 1; }
+                    if move_flags(mv) == FLAG_CASTLE { castles += 1; }
+                }
+            }
+        }
+
+        // The corpus must actually reach the special cases, or properties 1-3
+        // are only proven for quiet moves and plain captures.
+        assert!(checked > 5000, "too few moves checked: {checked}");
+        assert!(promos > 0, "corpus never promoted — promotion path unproven");
+        assert!(eps > 0, "corpus never played en passant — EP path unproven");
+        assert!(castles > 0, "corpus never castled — castling path unproven");
+        eprintln!("lazy==eager over {checked} moves ({promos} promotions, {eps} EP, {castles} castles)");
+    }
 }
