@@ -5666,12 +5666,32 @@ fn negamax(
             // The gives_direct_check carve sits inside the movecount test — only
             // pay the check-detection call when the count prune would actually
             // fire (node-count identical).
-            if move_count > lmp_limit && (depth >= 4 || !board.gives_direct_check(mv)) {
-                trace_gate!(info, board.hash, ply, mv, "lmp", depth, move_count);
-                info.stats.lmp_prunes += 1;
-                skip_quiets = true;
-                picker.skip_remaining_quiets();
-                continue;
+            //
+            // Two ways to stop, and the difference matters at depth<4. Setting
+            // `skip_quiets` + `skip_remaining_quiets()` jumps the picker
+            // straight to BadCaptures, discarding EVERY remaining quiet — check
+            // -giving ones included. That silently defeats the carve: quiets are
+            // ordered by history, not by whether they give check, so a
+            // late-ranked checking quiet is thrown away by whichever earlier
+            // non-checking quiet happened to trip the count first. The carve
+            // only ever protected the move that tripped the test.
+            //
+            // So at depth<4, where the carve is active, prune this move alone
+            // and keep scanning, giving every later quiet its own check test.
+            // At depth>=4 the carve is off and the bulk skip is exact, so keep
+            // it — that is where the picker saving is worth having.
+            if move_count > lmp_limit {
+                if depth >= 4 {
+                    trace_gate!(info, board.hash, ply, mv, "lmp", depth, move_count);
+                    info.stats.lmp_prunes += 1;
+                    skip_quiets = true;
+                    picker.skip_remaining_quiets();
+                    continue;
+                } else if !board.gives_direct_check(mv) {
+                    trace_gate!(info, board.hash, ply, mv, "lmp", depth, move_count);
+                    info.stats.lmp_prunes += 1;
+                    continue;
+                }
             }
         }
 
