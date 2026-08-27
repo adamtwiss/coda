@@ -464,7 +464,7 @@ tunables!(
     // Reduce later moves more once this node has already raised alpha N times
     // (alpha_raises reduction, a known LMR refinement). Fixed-point ×10: reduction += raises *
     // VALUE/10. Only fires at PV nodes (cut nodes break on the first fail-high
-    // before alpha is raised). Default 10 = +1.0 reduction per prior alpha-raise.
+    // before alpha is raised). Default 5 = +0.5 reduction per prior alpha-raise.
     (LMR_ALPHA_RAISE_10X, 5, 0, 40, 5.0, false),
     (FUT_THREATS_MARGIN, 52, 0, 200, 10.0, true),
     (DISCOVERED_ATTACK_BONUS, 0, 0, 30000, 1500.0, false),
@@ -2636,7 +2636,8 @@ pub fn compute_tm_budgets(
     // factors, and the inc_cover ceiling.
     //
     // Returns (opt, hard, max, soft_floor). soft_floor is kept at a small
-    // value (10ms) so the stockpile-prevention sleep (~line 2520) stays a
+    // value (10ms) so the stockpile-prevention sleep — the `soft_floor` wait
+    // at the end of the iterative-deepening loop — stays a
     // no-op for movetime-limited searches; the factor multiplier can pull
     // opt × multiplier well below any meaningful floor.
     let time_left = our_time.saturating_sub(overhead).max(1);
@@ -5997,8 +5998,9 @@ fn negamax(
         // Explicit `move_count > 1 && mv != tt_move` guards (defensive,
         // bench-neutral). Currently safe via LMR_TABLE zero-init at
         // depth<3 / move<3, but if the table is ever populated differently
-        // this would start reducing the TT move. Mirrors the capture-LMR
-        // gate at line ~3768 for symmetry.
+        // this would start reducing the TT move. Mirrors the guard
+        // on the `lmr_cap_reduction` block below. Named rather than
+        // line-numbered: the pointer that was here had rotted by ~2400 lines.
         if !in_check && !is_cap && !is_promo && !is_endgame_skip
             && move_count > 1 && mv != tt_move
             && FEAT_LMR.load(Ordering::Relaxed) {
@@ -6190,6 +6192,15 @@ fn negamax(
                     // SPSA to compress LMR_C_CAP below LMR_C_QUIET, because a
                     // binary fire gives it no other way to express the tactical
                     // capt_hist signal.
+                    //
+                    // NOTE (2026-08-27 audit): that asymmetry is now fixed, but
+                    // a LARGER discontinuity in the same parameter remains — the
+                    // `reduction >= LMR_SCALE` gate above. Unlike the quiet
+                    // table this one has no additive base, so at LMR_C_CAP=240
+                    // it sits below 1 ply for most of d<=8 / m<=5 and the whole
+                    // battery below is skipped there. Moving LMR_C_CAP shifts
+                    // both the base AND whether any of this runs at all. If the
+                    // compression persists, suspect the gate, not capt_hist.
                     if moved_piece != NO_PIECE && captured_pt != NO_PIECE_TYPE {
                         let ct = if flags == FLAG_EN_PASSANT { captured_type(PAWN) } else { captured_type(captured_pt) };
                         let capt_hist_val = info.history.capture[go_piece(moved_piece)][to as usize][ct] as i32;
