@@ -500,17 +500,31 @@ use crate::types::*;
 #[inline(always)]
 fn x86_simd_tier() -> u8 {
     use std::sync::OnceLock;
-    static TIER: OnceLock<u8> = OnceLock::new();
-    *TIER.get_or_init(|| {
-        let cap = crate::nnue::isa_max();
-        if cap >= 2 && is_x86_feature_detected!("avx512f") && is_x86_feature_detected!("avx512bw") {
-            2
-        } else if cap >= 1 && is_x86_feature_detected!("avx2") {
-            1
-        } else {
-            0
+    // Bypass the cache while a test override is active, for the same reason
+    // `isa_max` does: a tier sweep in one process cannot use a memoised value.
+    // `cfg(test)` — this function is on the hot path, so release builds keep
+    // the plain memoised read with no extra load or branch.
+    #[cfg(test)]
+    {
+        if crate::nnue::ISA_MAX_OVERRIDE.load(std::sync::atomic::Ordering::Relaxed) != 0 {
+            return compute_x86_simd_tier();
         }
-    })
+    }
+    static TIER: OnceLock<u8> = OnceLock::new();
+    *TIER.get_or_init(compute_x86_simd_tier)
+}
+
+#[cfg(target_arch = "x86_64")]
+#[inline]
+fn compute_x86_simd_tier() -> u8 {
+    let cap = crate::nnue::isa_max();
+    if cap >= 3 && is_x86_feature_detected!("avx512f") && is_x86_feature_detected!("avx512bw") {
+        2
+    } else if cap >= 1 && is_x86_feature_detected!("avx2") {
+        1
+    } else {
+        0
+    }
 }
 
 /// Piece interaction map: which attacker×victim pairs are tracked.

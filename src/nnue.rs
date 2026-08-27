@@ -2575,6 +2575,17 @@ unsafe fn neon_l1_int8_dot_x4_dotprod(
 /// mismatch is a real bug rather than a quirk of this switch.
 pub(crate) fn isa_max() -> u8 {
     use std::sync::OnceLock;
+    // In-process override, for tests that must evaluate the SAME net at several
+    // ISA tiers in one run. The env var is read once and memoised, which is
+    // right for production but useless to a tier sweep. 0 = inactive, so the
+    // normal path is untouched.
+    #[cfg(test)]
+    {
+        let ov = ISA_MAX_OVERRIDE.load(std::sync::atomic::Ordering::Relaxed);
+        if ov != 0 {
+            return ov;
+        }
+    }
     static C: OnceLock<u8> = OnceLock::new();
     *C.get_or_init(|| {
         std::env::var("CODA_ISA_MAX")
@@ -2583,6 +2594,16 @@ pub(crate) fn isa_max() -> u8 {
             .unwrap_or(u8::MAX)
     })
 }
+
+/// Test-only ISA ceiling override; 0 = inactive. See [`isa_max`].
+///
+/// `cfg(test)` so production pays nothing: `x86_simd_tier` consults this, and
+/// that sits inside `apply_threat_indices`, ~11% of runtime. The env var
+/// (`CODA_ISA_MAX`) stays available in real binaries for diagnostics — it is
+/// read once and memoised, which is why tests need this second door.
+#[cfg(test)]
+pub static ISA_MAX_OVERRIDE: std::sync::atomic::AtomicU8 =
+    std::sync::atomic::AtomicU8::new(0);
 
 /// Detect AVX2 support at runtime.
 fn detect_avx2() -> bool {
@@ -2600,7 +2621,7 @@ fn detect_avx2() -> bool {
 fn detect_avx512() -> bool {
     #[cfg(target_arch = "x86_64")]
     {
-        isa_max() >= 2
+        isa_max() >= 3
             && is_x86_feature_detected!("avx512f")
             && is_x86_feature_detected!("avx512bw")
     }
@@ -2616,7 +2637,7 @@ fn detect_avx512() -> bool {
 fn detect_avx512_vnni() -> bool {
     #[cfg(target_arch = "x86_64")]
     {
-        isa_max() >= 3
+        isa_max() >= 4
             && is_x86_feature_detected!("avx512f")
             && is_x86_feature_detected!("avx512bw")
             && is_x86_feature_detected!("avx512vnni")
@@ -6736,6 +6757,97 @@ mod tests {
             checked += 1;
         }
         eprintln!("output-dot: {checked} vectors bit-identical (avx2 == canonical)");
+    }
+
+    /// Every kernel the engine picks by CPU capability must compute the SAME
+    /// numbers. Nothing enforced that, and it cost us: from 2026-08-25 AVX-512
+    /// and AVX2 hosts searched differently, OpenBench workers reported "Wrong
+    /// Bench" against each other, and every mixed-fleet SPRT was quietly
+    /// averaging two engines.
+    ///
+    /// Why the existing tests missed it is the instructive part, and it shaped
+    /// this one:
+    ///
+    /// - They compared each SIMD kernel against a SCALAR reference with a
+    ///   TOLERANCE (`test_l2_fmadd_avx512_x32_matches_scalar` asserts
+    ///   `diff < 1e-4`). That is the right check for "is the algebra correct"
+    ///   and the wrong one for "will two hosts agree" — a sub-ULP difference
+    ///   sits inside 1e-4 and still flips a pruning decision three plies later.
+    /// - A first cut of this test swept STATIC evals over 5808 positions at
+    ///   every tier and passed, even on the net that was actively breaking the
+    ///   fleet. Static eval rebuilds the accumulator from scratch; search uses
+    ///   the INCREMENTAL update, the Finny refresh and the threat-delta replay,
+    ///   and the divergence lives in that machinery. A test that cannot catch
+    ///   the bug it was written for is worthless, so this runs a real search.
+    ///
+    /// Node counts are the assertion because they are exactly what the fleet
+    /// disagrees about, and any eval difference that changes a decision shows
+    /// up in them. Skips when no net loads, and says so rather than passing
+    /// quietly.
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn cross_isa_search_is_bit_identical() {
+        let _space = crate::threats::FEATURE_SPACE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::init();
+
+        // Highest tier this CPU can reach; sweeping past it just re-tests the
+        // same kernels, so the test only has teeth up to here.
+        let native_cap: u8 = if is_x86_feature_detected!("avx512f")
+            && is_x86_feature_detected!("avx512bw")
+            && is_x86_feature_detected!("avx512vnni") { 4 }
+            else if is_x86_feature_detected!("avx512f") && is_x86_feature_detected!("avx512bw") { 3 }
+            else if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("avxvnni") { 2 }
+            else if is_x86_feature_detected!("avx2") { 1 }
+            else { 0 };
+        if native_cap < 2 {
+            eprintln!("cross-ISA: CPU reaches only tier {native_cap}; nothing to compare, skipping");
+            return;
+        }
+
+        let net_path: Option<String> = std::env::var("CODA_TEST_NET").ok().or_else(|| {
+            let mut v: Vec<String> = std::fs::read_dir(".")
+                .map(|rd| rd.filter_map(|e| e.ok())
+                    .map(|f| f.file_name().to_string_lossy().to_string())
+                    .filter(|n| n.starts_with("net") && n.ends_with(".nnue"))
+                    .collect())
+                .unwrap_or_default();
+            v.sort();
+            v.into_iter().find(|p| NNUENet::load(p).is_ok())
+        });
+
+        // Depth 12, measured, not guessed: on the net that broke the fleet the
+        // divergence is invisible at 9, 10 and 11 and appears at 12. Shallower
+        // trees simply do not reach the pruning decisions the eval difference
+        // flips, so a cheaper depth would be a test that always passes.
+        //
+        // This is the most expensive test in the suite (~10s: four tiers x a
+        // full bench). It runs only on CPUs that reach tier 2+, so the AVX2
+        // fleet workers skip it entirely and pay nothing.
+        const DEPTH: i32 = 12;
+        let names = ["", "AVX2", "AVX2+AVX-VNNI", "AVX-512BW", "AVX-512 VNNI"];
+        let mut runs: Vec<(u8, u64)> = Vec::new();
+        for tier in 1..=native_cap {
+            ISA_MAX_OVERRIDE.store(tier, std::sync::atomic::Ordering::Relaxed);
+            let n = crate::search::bench_silent(DEPTH, net_path.as_deref());
+            runs.push((tier, n));
+        }
+        ISA_MAX_OVERRIDE.store(0, std::sync::atomic::Ordering::Relaxed);
+
+        let (bt, bn) = runs[0];
+        let bad: Vec<String> = runs.iter().skip(1).filter(|(_, n)| *n != bn)
+            .map(|(t, n)| format!("tier {} ({}) = {} nodes", t, names[*t as usize], n))
+            .collect();
+        assert!(
+            bad.is_empty(),
+            "ISA-dependent SEARCH: tier {} ({}) = {} nodes, but {}. Net {}, depth {}. \
+             The engine searches differently on different CPUs, so hosts disagree on \
+             bench and mixed-fleet SPRTs average two engines.",
+            bt, names[bt as usize], bn, bad.join("; "),
+            net_path.as_deref().unwrap_or("<embedded>"), DEPTH
+        );
+        eprintln!("cross-ISA: tiers {:?} all {} nodes at depth {} (net {})",
+                  runs.iter().map(|(t, _)| *t).collect::<Vec<_>>(), bn, DEPTH,
+                  net_path.as_deref().unwrap_or("<embedded>"));
     }
 
     /// AVX-512 L2 FMA kernel vs scalar reference. Covers the common v9
