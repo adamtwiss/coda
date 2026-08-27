@@ -6087,6 +6087,44 @@ fn finny_batch_apply(
     adds: &[usize],
     subs: &[usize],
 ) {
+    // Start the weight rows moving, into L2 rather than L1.
+    //
+    // These are the coldest rows the engine touches — 61% of their cache lines
+    // miss, against 30% for the threat rows — and this is 13.5% of ALL cache
+    // misses for 1.6% of cycles, the worst miss-per-cycle ratio in the engine.
+    // They are cold structurally: the kernels are register-blocked, so they walk
+    // chunk N of every row before chunk N+1, and that interleaving stops the
+    // hardware streamer locking onto any single row. On top of that the path is
+    // reached BECAUSE the king bucket changed, so the rows sit in a part of the
+    // 25 MB table that has not been touched recently.
+    //
+    // T1, not T0. The T0 version of this measured +1.15% on a single-threaded
+    // Zen 5 box and then LOST -0.73 Elo on the fleet (OB 3313). T0 pulls 2 KB
+    // rows into a 32 KB L1 — about 11.5 KB per refresh at the measured 5.6-row
+    // average — and the fleet runs six games per host on shared cache, so that
+    // eviction costs more than the latency it hides. T1 lands them in L2, which
+    // is where a row streamed once and discarded belongs: it still covers the
+    // DRAM/L3 latency, without evicting the accumulators and history tables
+    // that L1 is actually holding.
+    //
+    // Two lines per row is enough to start each burst; the L2 streamer covers
+    // the rest of the 1536-byte sequential run within a chunk. Capped at 24
+    // rows to bound issue cost — diffs average 5.6 rows and 99.9% are under 20,
+    // so the cap effectively never binds.
+    //
+    // Prefetch is architecturally inert, so this cannot change results.
+    #[cfg(target_arch = "x86_64")]
+    {
+        use std::arch::x86_64::{_mm_prefetch, _MM_HINT_T1};
+        for &idx in adds.iter().chain(subs.iter()).take(24) {
+            unsafe {
+                let row = input_weights.as_ptr().add(idx * h) as *const i8;
+                _mm_prefetch(row, _MM_HINT_T1);
+                _mm_prefetch(row.add(64), _MM_HINT_T1);
+            }
+        }
+    }
+
     #[cfg(target_arch = "x86_64")]
     if net.has_avx512 && h.is_multiple_of(32) {
         unsafe { finny_batch_apply_avx512(acc, input_weights, h, adds, subs); }
