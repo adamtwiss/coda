@@ -2301,6 +2301,13 @@ fn lmr_reduction(depth: i32, moves: i32) -> i32 {
     LMR_TABLE[d][m].load(Ordering::Relaxed)
 }
 
+/// Quiet move-loop pruning is unsafe while the node is proving a decisive
+/// win.  The win band includes Syzygy/TB scores as well as mate scores.
+#[inline]
+fn quiet_pruning_allowed(beta: i32) -> bool {
+    !is_win(beta)
+}
+
 #[inline(always)]
 fn root_move_index(mv: Move) -> usize {
     let promotion_bucket = if is_promotion(mv) {
@@ -5649,7 +5656,7 @@ fn negamax(
         if ply > 0 && !in_check && depth >= 1 && depth <= tp10(&LMP_DEPTH_10X)
             && !is_cap && !is_promo
             && !is_loss(best_score)
-            && beta < MATE_IN_MAX_PLY  // forced-win guard: don't count-prune quiets while proving a win
+            && quiet_pruning_allowed(beta)
             && FEAT_LMP.load(Ordering::Relaxed)
         {
             let mut lmp_limit = (tp10(&LMP_BASE_10X) + depth * depth) / (2 - improving as i32);
@@ -5707,7 +5714,7 @@ fn negamax(
         if ply > 0 && static_eval > -INFINITY && !in_check
             && !is_cap && !is_promo
             && !is_loss(best_score)
-            && beta < MATE_IN_MAX_PLY  // forced-win guard: don't futility-prune quiets while proving a win
+            && quiet_pruning_allowed(beta)
             && FEAT_FUTILITY.load(Ordering::Relaxed)
             && lmr_d <= tp(&FUT_LMR_DEPTH)
         {
@@ -5731,7 +5738,7 @@ fn negamax(
             && !is_cap && !is_promo
             && mv != tt_move
             && !is_loss(best_score)
-            && beta < MATE_IN_MAX_PLY  // forced-win guard: don't SEE-prune quiets while proving a win
+            && quiet_pruning_allowed(beta)
             && FEAT_SEE_PRUNE.load(Ordering::Relaxed)
         {
             let see_quiet_threshold = -tp(&SEE_QUIET_MULT) * lmr_d * lmr_d;
@@ -7787,6 +7794,14 @@ pub(crate) fn test_net_path() -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn quiet_pruning_guard_covers_tb_and_mate_wins() {
+        assert!(quiet_pruning_allowed(0));
+        assert!(quiet_pruning_allowed(TB_WIN - 201));
+        assert!(!quiet_pruning_allowed(TB_WIN));
+        assert!(!quiet_pruning_allowed(MATE_IN_MAX_PLY));
+    }
 
     #[test]
     fn root_move_index_distinguishes_promotions() {
