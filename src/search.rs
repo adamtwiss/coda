@@ -1962,6 +1962,17 @@ fn apply_halfmove_scale(score: i32, halfmove: u16) -> i32 {
     score * (200 - hm) / 200
 }
 
+/// The claimable 50-move draw does not override checkmate. At the rule-50
+/// horizon almost every position is an immediate draw; only an in-check node
+/// needs the rare legal-move test to distinguish mate from a claimable draw.
+#[inline]
+fn is_rule50_draw(board: &Board) -> bool {
+    if board.halfmove < 100 {
+        return false;
+    }
+    board.checkers() == 0 || generate_legal_moves(board).len != 0
+}
+
 /// TT-cutoff child-consistency verification (technique from SF, independently
 /// re-implemented). Before trusting a DEEP
 /// (depth >= 7) TT cutoff, make the TT move (board-only — no NNUE work),
@@ -4489,7 +4500,7 @@ fn negamax(
     // or repetition (only halfmove via the scale itself handles 50mr).
     if ply > 0 {
         let draw_score: i32 = 0;
-        if board.halfmove >= 100 {
+        if is_rule50_draw(board) {
             return draw_score;
         }
         if board.is_insufficient_material() {
@@ -6866,7 +6877,7 @@ fn quiescence_with_depth(
 
     // Draw detection: repetition and 50-move rule. No contempt term.
     let draw_score = 0;
-    if board.halfmove >= 100 {
+    if is_rule50_draw(board) {
         return draw_score;
     }
     // FIDE Art 5.2: insufficient material to mate (any side). Mirrors
@@ -7908,6 +7919,35 @@ mod tests {
         assert_eq!(apply_halfmove_scale(-INFINITY, 50), -INFINITY);
         assert_eq!(apply_halfmove_scale(MATE_SCORE - 5, 99), MATE_SCORE - 5);
         assert_eq!(apply_halfmove_scale(-(MATE_SCORE - 5), 99), -(MATE_SCORE - 5));
+    }
+
+    #[test]
+    fn rule50_draw_does_not_override_checkmate() {
+        crate::init();
+
+        let mut mate = Board::from_fen("7k/6Q1/5K2/8/8/8/8/8 b - - 100 1");
+        assert_ne!(mate.checkers(), 0);
+        assert_eq!(generate_legal_moves(&mate).len, 0);
+        assert!(!is_rule50_draw(&mate));
+        let mut info = SearchInfo::new(1);
+        assert_eq!(
+            quiescence(&mut mate, &mut info, -INFINITY, INFINITY, 1),
+            -MATE_SCORE + 1
+        );
+
+        let mut checked_with_escape =
+            Board::from_fen("7k/6Q1/8/8/8/8/8/K7 b - - 100 1");
+        assert_ne!(checked_with_escape.checkers(), 0);
+        assert_ne!(generate_legal_moves(&checked_with_escape).len, 0);
+        assert!(is_rule50_draw(&checked_with_escape));
+        assert_eq!(
+            quiescence(&mut checked_with_escape, &mut info, -INFINITY, INFINITY, 1),
+            0
+        );
+
+        let ordinary = Board::from_fen("7k/8/8/8/8/8/8/K7 w - - 100 1");
+        assert_eq!(ordinary.checkers(), 0);
+        assert!(is_rule50_draw(&ordinary));
     }
 
     /// Regression guard against corrhist fortress drift.
