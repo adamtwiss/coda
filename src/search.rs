@@ -7269,7 +7269,12 @@ fn quiescence_with_depth(
         if info.threat_stack.active { info.threat_stack.pop(); }
             continue;
         }
-        qs_move_count += 1;
+        // Promotions are exempt from the capture budget in both directions:
+        // they are never skipped by the cap and do not consume a slot that
+        // would otherwise belong to an ordinary capture.
+        if !is_promotion(mv) {
+            qs_move_count += 1;
+        }
         if info.threat_stack.active {
             info.threat_stack.absorb_deltas(board);
         }
