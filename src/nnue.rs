@@ -1900,6 +1900,50 @@ unsafe fn crelu_f32_avx2_x32(h2: &mut [f32]) {
 /// AVX-2 f32 dot product of 32 elements with bias. Replaces the scalar
 /// `for k { acc += h2[k] * out_w[k] }` fallback used on AVX-2 hosts —
 /// matches l2_fmadd_avx2_x32's lane structure (4 YMM = 32 floats).
+/// Output-layer dot product, THE canonical association.
+///
+/// Every platform must fold these 32 terms in exactly this order. They used to
+/// be folded three different ways — AVX-512 as `fma(a_lo, b_lo, a_hi * b_hi)`
+/// over 16 lanes then a tree reduce, AVX-2 as a sequential FMA chain over four
+/// 8-lane groups then an hadd-pair reduce, NEON as a 4-lane accumulator over
+/// eight groups then `vaddvq`. Float addition is not associative, so the three
+/// disagreed: AVX-512 vs AVX-2 differed on 61.5% of inputs by up to 3.8e-6.
+/// This is the LAST operation before the evaluation, so that reached the search
+/// directly, and once c463e76 added a material ramp keyed off a threshold it
+/// began flipping pruning decisions — AVX-512 and AVX-2 hosts searched
+/// different trees, disagreed on bench, and mixed-fleet SPRTs averaged two
+/// engines.
+///
+/// The shape is `dot_fmadd_avx2_x32`'s, written out: eight running lanes, one
+/// plain multiply then three fused multiply-adds, folded 8 -> 4 -> 2 -> 1.
+/// `mul_add` (not `a * b + c`) because the vector form fuses, and a fused
+/// multiply-add rounds ONCE where the separate form rounds twice.
+#[inline]
+fn dot_out_canonical(a: &[f32], b: &[f32], bias: f32) -> f32 {
+    if a.len() != 32 || b.len() != 32 {
+        // Off-shape nets: one order, still identical everywhere.
+        let mut acc = bias;
+        for k in 0..a.len().min(b.len()) {
+            acc = a[k].mul_add(b[k], acc);
+        }
+        return acc;
+    }
+    let mut p = [0.0f32; 8];
+    for j in 0..8 {
+        p[j] = a[j] * b[j];
+    }
+    for g in 1..4 {
+        for j in 0..8 {
+            p[j] = a[g * 8 + j].mul_add(b[g * 8 + j], p[j]);
+        }
+    }
+    let s0 = p[0] + p[4];
+    let s1 = p[1] + p[5];
+    let s2 = p[2] + p[6];
+    let s3 = p[3] + p[7];
+    bias + ((s0 + s1) + (s2 + s3))
+}
+
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2,fma")]
 unsafe fn dot_fmadd_avx2_x32(a: &[f32], b: &[f32], bias: f32) -> f32 {
@@ -1923,20 +1967,6 @@ unsafe fn dot_fmadd_avx2_x32(a: &[f32], b: &[f32], bias: f32) -> f32 {
     let s = _mm_hadd_ps(s, s);
     bias + _mm_cvtss_f32(s)
 }
-
-/// AVX-512 f32 horizontal dot product of `len` elements (len == 32).
-/// Replaces the scalar tail reduction in the output-weights dot.
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx512f")]
-unsafe fn dot_fmadd_avx512_x32(a: &[f32], b: &[f32], bias: f32) -> f32 {
-    let a_lo = _mm512_loadu_ps(a.as_ptr());
-    let a_hi = _mm512_loadu_ps(a.as_ptr().add(16));
-    let b_lo = _mm512_loadu_ps(b.as_ptr());
-    let b_hi = _mm512_loadu_ps(b.as_ptr().add(16));
-    let sum = _mm512_fmadd_ps(a_lo, b_lo, _mm512_mul_ps(a_hi, b_hi));
-    bias + _mm512_reduce_add_ps(sum)
-}
-
 /// Find non-zero 64-byte chunk indices in a packed u8 buffer (AVX-512).
 /// Returns the number of NNZ chunks. nnz_indices[0..count] contains byte offsets.
 #[cfg(target_arch = "x86_64")]
@@ -2025,21 +2055,6 @@ unsafe fn crelu_f32_neon_x32(h2: &mut [f32]) {
         vst1q_f32(p.add(off), vmaxq_f32(zeros, vminq_f32(ones, v)));
     }
 }
-
-/// NEON f32 dot product of 32 elements with bias. Mirror of
-/// `dot_fmadd_avx2_x32` — single fused-MAC accumulator, horizontal reduce.
-#[cfg(target_arch = "aarch64")]
-unsafe fn dot_fmadd_neon_x32(a: &[f32], b: &[f32], bias: f32) -> f32 {
-    let ap = a.as_ptr();
-    let bp = b.as_ptr();
-    let mut acc = vdupq_n_f32(0.0);
-    for k in 0..8 {
-        let off = k * 4;
-        acc = vfmaq_f32(acc, vld1q_f32(ap.add(off)), vld1q_f32(bp.add(off)));
-    }
-    bias + vaddvq_f32(acc)
-}
-
 /// Add a weight row to an accumulator (NEON, 8 × i16 per iteration).
 #[cfg(target_arch = "aarch64")]
 unsafe fn neon_acc_add(acc: &mut [i16], row: &[i16], h: usize) {
@@ -4147,32 +4162,23 @@ impl NNUENet {
             }
             let out_w = &self.out_weights_f[bucket * l2_pb..bucket * l2_pb + l2_pb];
             let bias = self.out_bias_f[bucket];
-            // Output dot — AVX-512 version for the L2=32 case, matches the
-            // L2 matmul's dimensionality so it stays on the hot path.
+            // Output dot. ONE association everywhere — see `dot_out_canonical`
+            // for why, and for what three of them cost us. The AVX-2 kernel is
+            // kept because it IS that association in vector form and going
+            // scalar on x86 measured +0.43%; every other path folds identically
+            // in `dot_out_canonical`. There is deliberately no AVX-512 or NEON
+            // specialisation: 32 multiply-adds once per evaluation are dwarfed
+            // by the ~16K-MAC L1 matmul feeding them, so a wider kernel buys
+            // nothing measurable and each new one is another chance to fold in
+            // a different order.
             #[cfg(target_arch = "x86_64")]
-            let out_f = if self.has_avx512 && l2 == 32 {
-                unsafe { dot_fmadd_avx512_x32(&h2[..32], &out_w[..32], bias) }
-            } else if self.has_avx2 && l2 == 32 {
+            let out_f = if self.has_avx2 && l2 == 32 {
                 unsafe { dot_fmadd_avx2_x32(&h2[..32], &out_w[..32], bias) }
             } else {
-                let mut acc = bias;
-                for k in 0..l2 { acc += h2[k] * out_w[k]; }
-                acc
+                dot_out_canonical(&h2[..l2], &out_w[..l2], bias)
             };
-            #[cfg(target_arch = "aarch64")]
-            let out_f = if self.has_neon && l2 == 32 {
-                unsafe { dot_fmadd_neon_x32(&h2[..32], &out_w[..32], bias) }
-            } else {
-                let mut acc = bias;
-                for k in 0..l2 { acc += h2[k] * out_w[k]; }
-                acc
-            };
-            #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-            let out_f = {
-                let mut acc = bias;
-                for k in 0..l2 { acc += h2[k] * out_w[k]; }
-                acc
-            };
+            #[cfg(not(target_arch = "x86_64"))]
+            let out_f = dot_out_canonical(&h2[..l2], &out_w[..l2], bias);
             return (out_f * EVAL_SCALE as f32) as i32;
         }
 
@@ -6694,6 +6700,44 @@ mod tests {
         }
     }
 
+    /// The vector output-dot must equal the canonical fold BIT FOR BIT.
+    ///
+    /// Not "within a tolerance". The tests this replaces compared each SIMD
+    /// kernel to a scalar reference with `diff < 1e-4`, which is the right
+    /// check for "is the algebra correct" and the wrong one for "will two hosts
+    /// agree" — a few ULP sits inside 1e-4 and still flips a pruning decision
+    /// three plies later. Two kernels both passed those tests while disagreeing
+    /// with EACH OTHER on 61.5% of inputs, which is how AVX-512 and AVX-2 hosts
+    /// ended up searching different trees. Compare bit patterns, and compare
+    /// the paths that actually run against each other.
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn output_dot_vector_matches_canonical_bitwise() {
+        if !is_x86_feature_detected!("avx2") || !is_x86_feature_detected!("fma") {
+            eprintln!("No AVX2+FMA, skipping output-dot equivalence");
+            return;
+        }
+        let mut r = rng(0x0d0e_0f10_1112_1314);
+        let mut checked = 0u32;
+        for trial in 0..20_000 {
+            // Mix of ordinary magnitudes and the near-cancelling cases where
+            // association order actually shows up.
+            let scale = if trial % 4 == 0 { 1e-3 } else if trial % 4 == 1 { 1e3 } else { 1.0 };
+            let a: Vec<f32> = (0..32).map(|_| ((r() % 4000) as f32 / 1000.0 - 2.0) * scale).collect();
+            let b: Vec<f32> = (0..32).map(|_| ((r() % 4000) as f32 / 1000.0 - 2.0) * scale).collect();
+            let bias = (r() % 200) as f32 / 100.0 - 1.0;
+            let v = unsafe { super::dot_fmadd_avx2_x32(&a, &b, bias) };
+            let c = super::dot_out_canonical(&a, &b, bias);
+            assert_eq!(
+                v.to_bits(), c.to_bits(),
+                "output dot differs at trial {trial}: avx2={v:e} canonical={c:e}                  (diff {:e}). Hosts taking different paths would evaluate                  differently and disagree on bench.",
+                (v - c).abs()
+            );
+            checked += 1;
+        }
+        eprintln!("output-dot: {checked} vectors bit-identical (avx2 == canonical)");
+    }
+
     /// AVX-512 L2 FMA kernel vs scalar reference. Covers the common v9
     /// L2=32 path — a broadcast-FMA fan-out that replaces the gather-heavy
     /// inner loop LLVM used to produce.
@@ -6770,39 +6814,6 @@ mod tests {
             }
         }
     }
-
-    /// AVX-512 output-weights dot vs scalar. Small dimensionality so the
-    /// tolerance is very tight.
-    #[test]
-    #[cfg(target_arch = "x86_64")]
-    fn test_dot_fmadd_avx512_x32_matches_scalar() {
-        crate::init();
-
-        if !is_x86_feature_detected!("avx512f") {
-            eprintln!("No AVX-512F, skipping output-dot FMA test");
-            return;
-        }
-
-        let mut r = rng(0xc0da_b00b_0000_0222);
-        for _trial in 0..8 {
-            let mut a = vec![0.0f32; 32];
-            let mut b = vec![0.0f32; 32];
-            for v in a.iter_mut() { *v = ((r() as i32 as f32) / 1e9).clamp(-5.0, 5.0); }
-            for v in b.iter_mut() { *v = ((r() as i32 as f32) / 1e9).clamp(-5.0, 5.0); }
-            let bias = ((r() as i32 as f32) / 1e9).clamp(-5.0, 5.0);
-
-            let mut scalar = bias;
-            for i in 0..32 { scalar += a[i] * b[i]; }
-
-            let simd = unsafe { dot_fmadd_avx512_x32(&a, &b, bias) };
-            let diff = (scalar - simd).abs();
-            assert!(
-                diff < 1e-3 || diff / scalar.abs().max(1.0) < 1e-5,
-                "dot_fmadd divergence: scalar={} simd={} diff={}", scalar, simd, diff
-            );
-        }
-    }
-
     /// Scalar reference for finny_batch_apply. Matches the dispatcher's
     /// fallback path byte-for-byte so NEON/AVX2 results can be compared.
     fn finny_batch_apply_scalar_ref(
@@ -7512,25 +7523,6 @@ mod tests {
             }
         }
     }
-
-    #[test]
-    #[cfg(target_arch = "aarch64")]
-    fn test_dot_fmadd_neon_x32_matches_scalar() {
-        let mut r = rng(0xc0da_b00b_0000_0a33);
-        for _trial in 0..8 {
-            let a: Vec<f32> = (0..32).map(|_| ((r() as i32 as f32) / 1e9).clamp(-5.0, 5.0)).collect();
-            let b: Vec<f32> = (0..32).map(|_| ((r() as i32 as f32) / 1e9).clamp(-5.0, 5.0)).collect();
-            let bias = ((r() as i32 as f32) / 1e9).clamp(-5.0, 5.0);
-
-            let mut scalar = bias;
-            for i in 0..32 { scalar += a[i] * b[i]; }
-            let neon = unsafe { dot_fmadd_neon_x32(&a, &b, bias) };
-            let diff = (scalar - neon).abs();
-            assert!(diff < 1e-3 || diff / scalar.abs().max(1.0) < 1e-5,
-                "dot_fmadd_neon divergence: scalar={} neon={} diff={}", scalar, neon, diff);
-        }
-    }
-
     /// aarch64 counterpart to sparse_l1's `fuzz_dense_avx2_l1_32_matches_scalar`.
     /// The x86 fuzz sweep only ever exercised x86 kernels — ARM got no
     /// equivalent density/seed coverage. This drives the full NEON int8 L1
