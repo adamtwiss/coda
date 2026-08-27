@@ -1242,6 +1242,12 @@ pub struct SearchInfo {
     static_evals: [i32; MAX_PLY + 1],
     /// LMR reduction applied at each ply (for hindsight reduction gating)
     reductions: [i32; MAX_PLY + 1],
+    /// One-shot request/report channel for an LMR child to tell its parent
+    /// that entry hindsight extended the reduced search. The request is
+    /// consumed on entry so same-ply verification searches cannot overwrite
+    /// the original child's answer.
+    lmr_hindsight_report_requested: [bool; MAX_PLY + 1],
+    lmr_hindsight_extended: [bool; MAX_PLY + 1],
     /// Excluded move for singular extension verification search (always NoMove when disabled)
     pub excluded_move: [Move; MAX_PLY + 1],
     /// Double extension counter — propagated from parent, capped to prevent search explosion
@@ -1354,6 +1360,8 @@ impl SearchInfo {
             nmp_min_ply: 0,
             static_evals: [0; MAX_PLY + 1],
             reductions: [0; MAX_PLY + 1],
+            lmr_hindsight_report_requested: [false; MAX_PLY + 1],
+            lmr_hindsight_extended: [false; MAX_PLY + 1],
             excluded_move: [NO_MOVE; MAX_PLY + 1],
             double_ext_count: [0; MAX_PLY + 1],
             cutoff_count: [0; MAX_PLY + 4],
@@ -2301,6 +2309,15 @@ fn lmr_reduction(depth: i32, moves: i32) -> i32 {
     LMR_TABLE[d][m].load(Ordering::Relaxed)
 }
 
+#[inline]
+fn lmr_depth_adjustment(score_adjustment: i32, child_hindsight_extended: bool) -> i32 {
+    if child_hindsight_extended {
+        score_adjustment.max(1)
+    } else {
+        score_adjustment
+    }
+}
+
 #[inline(always)]
 fn root_move_index(mv: Move) -> usize {
     let promotion_bucket = if is_promotion(mv) {
@@ -2991,6 +3008,8 @@ pub(crate) fn search_helper(board: &mut Board, info: &mut SearchInfo, _limits: &
     info.stats = PruneStats::default();
     info.static_evals = [0; MAX_PLY + 1];
     info.reductions = [0; MAX_PLY + 1];
+    info.lmr_hindsight_report_requested = [false; MAX_PLY + 1];
+    info.lmr_hindsight_extended = [false; MAX_PLY + 1];
     info.excluded_move = [NO_MOVE; MAX_PLY + 1];
     info.moved_piece_stack = [0; MAX_PLY + 1];
     info.double_ext_count = [0; MAX_PLY + 1];
@@ -3300,6 +3319,8 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     }
     info.ph_fl_extensions = 0;
     info.reductions = [0; MAX_PLY + 1];
+    info.lmr_hindsight_report_requested = [false; MAX_PLY + 1];
+    info.lmr_hindsight_extended = [false; MAX_PLY + 1];
     info.excluded_move = [NO_MOVE; MAX_PLY + 1];
     info.moved_piece_stack = [0; MAX_PLY + 1];
     info.double_ext_count = [0; MAX_PLY + 1];
@@ -4469,6 +4490,16 @@ fn negamax(
     cut_node: bool, // true at expected cut nodes (child of all-node, non-first child of PV)
 ) -> i32 {
     let ply_u = ply as usize;
+    let report_lmr_hindsight = if ply_u <= MAX_PLY {
+        let requested = info.lmr_hindsight_report_requested[ply_u];
+        info.lmr_hindsight_report_requested[ply_u] = false;
+        if requested {
+            info.lmr_hindsight_extended[ply_u] = false;
+        }
+        requested
+    } else {
+        false
+    };
 
     // Reset PV length FIRST — before any early return below — so the parent's
     // PV propagation reads `pv_len[ply_u+1] == 0` for nodes that take a
@@ -5128,6 +5159,9 @@ fn negamax(
         let eval_sum = info.static_evals[ply_u - 1] + static_eval;
         if eval_sum <= 0 {
             depth += 1;
+            if report_lmr_hindsight {
+                info.lmr_hindsight_extended[ply_u] = true;
+            }
         }
     }
 
@@ -6267,7 +6301,9 @@ fn negamax(
             // LMR: reduced depth, zero window
             trace_gate!(info, board.hash, ply, mv, "lmr_reduced", reduction, move_count);
             let lmr_depth = new_depth - reduction;
+            info.lmr_hindsight_report_requested[ply_u + 1] = true;
             let mut lmr_score = -negamax(board, info, -alpha - 1, -alpha, lmr_depth, ply + 1, true);
+            let child_hindsight_extended = info.lmr_hindsight_extended[ply_u + 1];
 
             // The reduction applies to the reduced search ONLY: zero the slot
             // before any re-search so children of the (near-)full-depth
@@ -6290,6 +6326,12 @@ fn negamax(
                 } else if lmr_score < best_score + 20 {
                     do_deeper_adj = -1;
                 }
+
+                // Clearing the reduction before re-search prevents stale
+                // hindsight state from firing again, but the reduced child may
+                // already have found the protective extension necessary. Keep
+                // that depth decision without restoring the reduction itself.
+                do_deeper_adj = lmr_depth_adjustment(do_deeper_adj, child_hindsight_extended);
 
                 // Mutate new_depth itself so the adjustment persists into the
                 // full-window PVS re-search below (SF/Obsidian/Alexandria/
@@ -7787,6 +7829,16 @@ pub(crate) fn test_net_path() -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lmr_research_preserves_child_hindsight_extension() {
+        assert_eq!(lmr_depth_adjustment(-1, false), -1);
+        assert_eq!(lmr_depth_adjustment(0, false), 0);
+        assert_eq!(lmr_depth_adjustment(1, false), 1);
+        assert_eq!(lmr_depth_adjustment(-1, true), 1);
+        assert_eq!(lmr_depth_adjustment(0, true), 1);
+        assert_eq!(lmr_depth_adjustment(1, true), 1);
+    }
 
     #[test]
     fn root_move_index_distinguishes_promotions() {
