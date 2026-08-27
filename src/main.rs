@@ -702,7 +702,16 @@ fn main() {
                         let clamped = value.max(min).min(max);
                         atomic.store(clamped, std::sync::atomic::Ordering::Relaxed);
                         eprintln!("--set {} = {} (clamped from {} into [{}, {}])", pname, clamped, value, min, max);
-                        if pname.starts_with("LMR_C") { lmr_c_changed = true; }
+                        // Must match uci.rs's setoption rebuild condition exactly.
+                        // init_lmr() reads LMR_C_QUIET, LMR_C_CAP and
+                        // LMR_BASE_CENTI; the first two are covered by the
+                        // prefix, the third is not. It was missing here while
+                        // uci.rs had it, so `bench --set LMR_BASE_CENTI=x`
+                        // stored the atomic and left the cached table untouched
+                        // -- the parameter looked dead when it is live.
+                        if pname.starts_with("LMR_C") || pname == "LMR_BASE_CENTI" {
+                            lmr_c_changed = true;
+                        }
                         matched = true;
                         break;
                     }
