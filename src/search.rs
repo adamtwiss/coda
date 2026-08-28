@@ -6193,6 +6193,29 @@ fn negamax(
                 let m = (move_count as usize).min(63);
                 reduction = lmr_cap_reduction(d as i32, m as i32); // CENTI-PLY
 
+                // Let independent node evidence combine with a sub-ply table
+                // value before the one-ply floor. Existing reductions retain
+                // their exact modifier order; this pre-pass only affects table
+                // values that would otherwise skip the whole battery.
+                let base_reduces = reduction >= LMR_SCALE;
+                if !base_reduces {
+                    if is_win(beta) {
+                        reduction += tp(&LMR_WINBETA_CENTI);
+                    }
+                    if tt_hit && tt_entry.flag != TT_FLAG_NONE {
+                        let tt_score_node = score_from_tt(tt_entry.score, ply, board.halfmove);
+                        if tt_score_node <= alpha {
+                            reduction += tp(&LMR_TTALPHA_CENTI);
+                        }
+                    }
+                    if info.cutoff_count[ply_u + 1] > 2 {
+                        reduction += tp(&LMR_CUTOFF_CNT_CENTI);
+                        if !is_pv && !cut_node {
+                            reduction += tp(&LMR_CUTOFF_ALLNODE_CENTI);
+                        }
+                    }
+                }
+
                 if reduction >= LMR_SCALE {
                     // Continuous capture history adjustment: `capt_hist /
                     // LMR_HIST_DIV_CAP`, mirroring quiet-LMR's `hist_score /
@@ -6226,10 +6249,10 @@ fn negamax(
                     // Correction battery (a)-(c) — applied to noisy
                     // moves too (computed before the quiet/noisy
                     // split). Same tunables as the quiet block.
-                    if is_win(beta) {
+                    if base_reduces && is_win(beta) {
                         reduction += tp(&LMR_WINBETA_CENTI);
                     }
-                    if tt_hit && tt_entry.flag != TT_FLAG_NONE {
+                    if base_reduces && tt_hit && tt_entry.flag != TT_FLAG_NONE {
                         let tt_score_node = score_from_tt(tt_entry.score, ply, board.halfmove);
                         if tt_score_node <= alpha {
                             reduction += tp(&LMR_TTALPHA_CENTI);
@@ -6239,7 +6262,7 @@ fn negamax(
                     // cutoff_count — applied before the
                     // quiet/noisy split, so captures get it too. Same
                     // tunables as the quiet block.
-                    if info.cutoff_count[ply_u + 1] > 2 {
+                    if base_reduces && info.cutoff_count[ply_u + 1] > 2 {
                         reduction += tp(&LMR_CUTOFF_CNT_CENTI);
                         if !is_pv && !cut_node {
                             reduction += tp(&LMR_CUTOFF_ALLNODE_CENTI);
