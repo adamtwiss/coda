@@ -5674,10 +5674,20 @@ fn negamax(
             if static_eval > -INFINITY && alpha - static_eval >= tp(&LMP_MARGIN_THRESH) {
                 lmp_limit = (lmp_limit * tp(&LMP_MARGIN_PCT) / 100).max(1);
             }
-            // The gives_direct_check carve sits inside the movecount test — only
-            // pay the check-detection call when the count prune would actually
-            // fire (node-count identical).
-            if move_count > lmp_limit && (depth >= 4 || !board.gives_direct_check(mv)) {
+            // No check carve-out. The carve (spare a check-giving quiet at
+            // depth<4) never did what it reads as: the prune sets `skip_quiets`
+            // and calls `skip_remaining_quiets()`, which discards ALL remaining
+            // quiets including checking ones. Since quiets are ordered by
+            // history rather than by check, "keep checking quiets until the
+            // first non-checking one" was an artifact of move order, not a
+            // policy.
+            //
+            // Bisect on how many checking quiets survive past the LMP limit:
+            // extending the carve to every quiet (#3330) measured -5.7 +-3.6
+            // and stopped at 9,586 games, so more is clearly worse. This tests
+            // the other end -- none -- which is also the simpler rule and drops
+            // the gives_direct_check call from the LMP path entirely.
+            if move_count > lmp_limit {
                 trace_gate!(info, board.hash, ply, mv, "lmp", depth, move_count);
                 info.stats.lmp_prunes += 1;
                 skip_quiets = true;
