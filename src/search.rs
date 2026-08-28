@@ -6193,7 +6193,7 @@ fn negamax(
                 let m = (move_count as usize).min(63);
                 reduction = lmr_cap_reduction(d as i32, m as i32); // CENTI-PLY
 
-                if reduction >= LMR_SCALE {
+                {
                     // Continuous capture history adjustment: `capt_hist /
                     // LMR_HIST_DIV_CAP`, mirroring quiet-LMR's `hist_score /
                     // LMR_HIST_DIV` and Obsidian's
@@ -6204,14 +6204,10 @@ fn negamax(
                     // binary fire gives it no other way to express the tactical
                     // capt_hist signal.
                     //
-                    // NOTE (2026-08-27 audit): that asymmetry is now fixed, but
-                    // a LARGER discontinuity in the same parameter remains — the
-                    // `reduction >= LMR_SCALE` gate above. Unlike the quiet
-                    // table this one has no additive base, so at LMR_C_CAP=240
-                    // it sits below 1 ply for most of d<=8 / m<=5 and the whole
-                    // battery below is skipped there. Moving LMR_C_CAP shifts
-                    // both the base AND whether any of this runs at all. If the
-                    // compression persists, suspect the gate, not capt_hist.
+                    // Apply the battery continuously before the final one-ply
+                    // floor. This lets independent sub-ply signals combine;
+                    // none can trigger a reduced search unless their sum
+                    // reaches a complete ply.
                     if moved_piece != NO_PIECE && captured_pt != NO_PIECE_TYPE {
                         let ct = if flags == FLAG_EN_PASSANT { captured_type(PAWN) } else { captured_type(captured_pt) };
                         let capt_hist_val = info.history.capture[go_piece(moved_piece)][to as usize][ct] as i32;
