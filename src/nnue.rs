@@ -3161,6 +3161,25 @@ impl NNUENet {
             for i in 0..total {
                 threat_weights[i] = bytes[i] as i8;
             }
+            // PROBE ONLY (perf/split-width-nps-probe): CODA_THREAT_WIDTH=<n>
+            // repacks each row to its first n columns, so the resident matrix
+            // and the per-row stream both shrink — the two effects the
+            // split-width design predicts. Evals are WRONG (the discarded
+            // columns were trained); this measures the speed ceiling only.
+            let tw = crate::threat_accum::probe_threat_width(hidden_size);
+            if tw < hidden_size {
+                let mut narrow: AlignedVec<i8> = AlignedVec::hugepage_zeros(num_threat_features * tw);
+                for f in 0..num_threat_features {
+                    let (src, dst) = (f * hidden_size, f * tw);
+                    for j in 0..tw { narrow[dst + j] = threat_weights[src + j]; }
+                }
+                narrow.advise_collapse();
+                threat_weights = narrow;
+                println!("info string PROBE threat width {} -> {} ({}MB -> {}MB) — EVALS INVALID",
+                    hidden_size, tw,
+                    num_threat_features * hidden_size / (1024*1024),
+                    num_threat_features * tw / (1024*1024));
+            }
             threat_weights.advise_collapse();
             println!("info string Loaded {} threat features ({}×{}, {}MB)",
                 num_threat_features, num_threat_features, hidden_size,
@@ -5341,6 +5360,7 @@ impl NNUEAccumulator {
         if !net.has_threats { return; }
         if self.stack[self.top].threat_accurate[0] && self.stack[self.top].threat_accurate[1] { return; }
         let h = self.hidden_size;
+        let tw = crate::threat_accum::probe_threat_width(h);
 
         // Profile: 90.5% incremental (chain=1.1), 9.5% full recompute.
         // Per-eval cost ~5µs weighted average.
@@ -5408,7 +5428,7 @@ impl NNUEAccumulator {
                 unsafe {
                     crate::threats::apply_threat_deltas(
                         curr_w, prev_w,
-                        &deltas, &net.threat_weights, h, net.num_threat_features,
+                        &deltas, &net.threat_weights, tw, net.num_threat_features,
                         WHITE, w_mirrored,
                     );
                 }
@@ -5416,7 +5436,7 @@ impl NNUEAccumulator {
                 unsafe {
                     crate::threats::apply_threat_deltas(
                         curr_b, prev_b,
-                        &deltas, &net.threat_weights, h, net.num_threat_features,
+                        &deltas, &net.threat_weights, tw, net.num_threat_features,
                         BLACK, b_mirrored,
                     );
                 }

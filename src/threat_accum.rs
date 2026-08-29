@@ -19,6 +19,17 @@ use crate::types::*;
 /// at every materialization. search.rs also consults this to skip
 /// `generate_threat_deltas`, so generation and replay stay consistent.
 #[inline]
+/// PROBE ONLY: `CODA_THREAT_WIDTH=<n>` narrows the threat projection to the
+/// first n FT channels. Read once. Ignored unless 0 < n < hidden_size.
+pub fn probe_threat_width(hidden_size: usize) -> usize {
+    static V: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
+    let w = *V.get_or_init(|| std::env::var("CODA_THREAT_WIDTH").ok().and_then(|v| v.parse().ok()));
+    match w {
+        Some(n) if n > 0 && n < hidden_size => n,
+        _ => hidden_size,
+    }
+}
+
 pub fn refresh_always() -> bool {
     static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *V.get_or_init(|| std::env::var("CODA_THREAT_REFRESH_ALWAYS").is_ok())
@@ -201,6 +212,14 @@ pub struct ThreatStack {
     stack: Vec<ThreatEntry>,
     index: usize,
     hidden_size: usize,
+    /// PROBE ONLY (perf/split-width-nps-probe): width of the FT slice that
+    /// threats project into. Defaults to `hidden_size` (today's behaviour).
+    /// When `CODA_THREAT_WIDTH` narrows it, threats occupy channels
+    /// `0..threat_width` and the tail stays zero — layout A of
+    /// docs/split_width_threat_design_2026-07-04.md. Evals are WRONG under a
+    /// narrowed width with a full-width-trained net; this exists only to price
+    /// the memory-traffic win before building the real format.
+    threat_width: usize,
     /// Reusable buffer for lazily regenerated deltas — avoids an allocation
     /// per materialisation.
     scratch: Vec<RawThreatDelta>,
@@ -214,7 +233,7 @@ impl ThreatStack {
         for _ in 0..MAX_PLY {
             stack.push(ThreatEntry::new());
         }
-        Self { stack, index: 0, hidden_size, active: false,
+        Self { stack, index: 0, hidden_size, threat_width: probe_threat_width(hidden_size), active: false,
                scratch: Vec::with_capacity(MAX_THREAT_DELTAS) }
     }
 
@@ -368,7 +387,7 @@ impl ThreatStack {
     /// Collects feature indices first, then applies with SIMD.
     pub fn refresh(&mut self, net_weights: &[i8], num_features: usize,
                    board: &crate::board::Board, pov: Color) {
-        let h = self.hidden_size;
+        let h = self.threat_width;
         let entry = &mut self.stack[self.index];
         let p = pov as usize;
         entry.values[p][..h].fill(0);
@@ -479,7 +498,7 @@ impl ThreatStack {
     /// Uses SIMD apply_threat_deltas for the inner loop (AVX2 register tiling).
     pub fn update(&mut self, ancestor: usize, net_weights: &[i8], num_features: usize,
                   board: &crate::board::Board, pov: Color) {
-        let h = self.hidden_size;
+        let h = self.threat_width;
         let p = pov as usize;
         let king_sq = (board.pieces[KING as usize] & board.colors[pov as usize]).trailing_zeros();
         let mirrored = (king_sq % 8) >= 4;
@@ -548,7 +567,7 @@ impl ThreatStack {
     /// SIMD accumulator apply remains per perspective.
     pub fn update_dual(&mut self, ancestor: usize, net_weights: &[i8], num_features: usize,
                        board: &crate::board::Board) {
-        let h = self.hidden_size;
+        let h = self.threat_width;
         let white_king_sq = (board.pieces[KING as usize] & board.colors[WHITE as usize]).trailing_zeros();
         let black_king_sq = (board.pieces[KING as usize] & board.colors[BLACK as usize]).trailing_zeros();
         let mirrored_w = (white_king_sq % 8) >= 4;
