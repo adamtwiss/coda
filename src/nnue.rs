@@ -3166,6 +3166,21 @@ impl NNUENet {
             // and the per-row stream both shrink — the two effects the
             // split-width design predicts. Evals are WRONG (the discarded
             // columns were trained); this measures the speed ceiling only.
+            // CODA_THREAT_ZERO_UPPER=<n>: zero threat columns n..hidden_size in
+            // place, keeping FULL width. Paired with CODA_THREAT_WIDTH=<n> this
+            // makes the two arms EVAL-IDENTICAL (the discarded columns are
+            // already zero), so the tree is identical and search NPS becomes a
+            // valid comparison — which eval-bench is not, its noise (+-4.6%)
+            // exceeding the whole cost of threat work (~1%).
+            if let Some(zu) = std::env::var("CODA_THREAT_ZERO_UPPER").ok().and_then(|v| v.parse::<usize>().ok()) {
+                if zu < hidden_size {
+                    for f in 0..num_threat_features {
+                        let base = f * hidden_size;
+                        for j in zu..hidden_size { threat_weights[base + j] = 0; }
+                    }
+                    println!("info string PROBE zeroed threat columns {}..{} (arms now eval-identical)", zu, hidden_size);
+                }
+            }
             let tw = crate::threat_accum::probe_threat_width(hidden_size);
             if tw < hidden_size {
                 let mut narrow: AlignedVec<i8> = AlignedVec::hugepage_zeros(num_threat_features * tw);
