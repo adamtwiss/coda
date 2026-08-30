@@ -4925,39 +4925,9 @@ fn negamax(
                             info.pv_len[ply_u] = 0;
                         }
 
-                        // History bonus for TT cutoff: reinforce move ordering.
-                        // Promotions count as NOISY here. Classifying non-capture
-                        // promotions as quiet (asymmetric with tt_move_noisy)
-                        // makes promo cutoffs write main-history bonuses into
-                        // from/to cells that genuine quiets then read.
-                        // Promos are ordered in the capture stage (MVV promo bonus
-                        // + capt-hist empty slot), so the capture branch below is
-                        // the one the read side actually consults.
-                        let tt_piece = board.piece_at(move_from(tt_move));
-                        let tt_is_cap = board.piece_type_at(move_to(tt_move)) != NO_PIECE_TYPE
-                            || move_flags(tt_move) == FLAG_EN_PASSANT
-                            || is_promotion(tt_move);
-                        if !tt_is_cap && tt_piece != NO_PIECE {
-                            let bonus = history_bonus(depth);
-                            History::update_history(
-                                info.history.main_entry(move_from(tt_move), move_to(tt_move), enemy_attacks),
-                                bonus,
-                            );
-                        } else if tt_is_cap && tt_piece != NO_PIECE {
-                            let bonus = capture_history_bonus(depth);
-                            let cpt_pt = board.piece_type_at(move_to(tt_move));
-                            let ct = if move_flags(tt_move) == FLAG_EN_PASSANT {
-                                captured_type(PAWN)
-                            } else if cpt_pt != NO_PIECE_TYPE {
-                                captured_type(cpt_pt)
-                            } else {
-                                0 // empty
-                            };
-                            History::update_cont_history(
-                                &mut info.history.capture[go_piece(tt_piece)][move_to(tt_move) as usize][ct],
-                                bonus,
-                            );
-                        }
+                        // Bounds collapse did not establish that the stored move
+                        // caused this node to fail high, so do not train history
+                        // from recycled and potentially stale attribution.
                     } else if ply_u <= MAX_PLY {
                         info.pv_len[ply_u] = 0;
                     }
