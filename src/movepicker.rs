@@ -230,6 +230,13 @@ pub struct MovePicker {
     bad_scores: [std::mem::MaybeUninit<i32>; 256],
     bad_len: usize,
     pub skip_quiet: bool,
+    /// QS mode (SF QCAPTURE shape): skip the SEE partition entirely — every
+    /// capture goes to the single picking stage ordered by MVV+captHist, and
+    /// the caller's per-move SEE gate is the only exchange evaluation. The
+    /// main search keeps the partition (its bad-capture stage is load-bearing
+    /// for move_count/LMR interactions); QS's is not, since QS filters
+    /// SEE-bad moves anyway.
+    no_see_partition: bool,
     threats: Threats, // enemy attack bitboard for threat-aware history
     // B1: our own pieces blocking a slider's attack on an enemy piece.
     // Moving one of these creates a discovered attack.
@@ -299,6 +306,7 @@ impl MovePicker {
             bad_scores: unsafe { std::mem::MaybeUninit::uninit().assume_init() },
             bad_len: 0,
             skip_quiet: false,
+            no_see_partition: false,
             threats,
             xray_blockers,
             checkers,
@@ -336,6 +344,7 @@ impl MovePicker {
             bad_scores: unsafe { std::mem::MaybeUninit::uninit().assume_init() },
             bad_len: 0,
             skip_quiet: true,
+            no_see_partition: true,
             threats: 0,
             xray_blockers: 0,
             // Real pin/check masks so the TTMove-stage is_legal check works.
@@ -396,6 +405,7 @@ impl MovePicker {
             bad_scores: unsafe { std::mem::MaybeUninit::uninit().assume_init() },
             bad_len: 0,
             skip_quiet: false,
+            no_see_partition: false,
             // Evasion history READS must use the same enemy_attacks key as
             // beta-cutoff WRITES. Hardcoding this to 0 hashes into a different
             // 4D history slot than the writes, making history written from
@@ -538,6 +548,14 @@ impl MovePicker {
             // forgiving threshold. Use captHist only (not MVV) to avoid inflation.
             let capt_hist = capt_hist_score_static(board, history, m);
             let cap_score = mvv_lva(board, m) + capt_hist;
+            if self.no_see_partition {
+                // SF QCAPTURE shape: no SEE here at all. Order by score; the
+                // caller's gate does the one exchange evaluation per move.
+                let idx = self.moves.len;
+                self.moves.push(m);
+                self.scores[idx].write(cap_score);
+                continue;
+            }
             let see_threshold = -capt_hist / 18;
             if !see_ge(board, m, see_threshold) {
                 // Bad capture. The 256 cap must stay generous: a smaller one
