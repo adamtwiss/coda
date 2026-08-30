@@ -5331,6 +5331,23 @@ fn negamax(
             info.moved_to_stack[ply_u] = 0;
         }
         let null_score = -negamax(board, info, -beta, -beta + 1, depth - r, ply + 1, !cut_node);
+        // A null-search reply only identifies a concrete threat when the TT
+        // move is a legal capture in the null position. Quiet replies merely
+        // name an empty destination square, and stale/illegal moves should not
+        // receive the large threat-escape ordering bonus in our real position.
+        let threat_reply_sq = if null_score < beta {
+            let entry = info.tt.probe(null_key);
+            let legal = entry.hit
+                && entry.best_move != NO_MOVE
+                && crate::movepicker::is_pseudo_legal(board, entry.best_move)
+                && board.is_legal(entry.best_move, board.pinned(), board.checkers());
+            let capture = legal
+                && (board.piece_type_at(move_to(entry.best_move)) != NO_PIECE_TYPE
+                    || move_flags(entry.best_move) == FLAG_EN_PASSANT);
+            capture.then(|| move_to(entry.best_move) as i32)
+        } else {
+            None
+        };
         if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
         if info.threat_stack.active { info.threat_stack.pop(); }
         board.unmake_null_move();
@@ -5374,11 +5391,8 @@ fn negamax(
                 return nmp_score;
             }
         } else {
-            // NMP failed low: extract opponent's best reply from TT for threat detection
-            let threat_entry = info.tt.probe(null_key);
-            if threat_entry.hit && threat_entry.best_move != NO_MOVE {
-                threat_sq = move_to(threat_entry.best_move) as i32;
-            }
+            // NMP failed low: prioritize escapes from the captured square.
+            if let Some(sq) = threat_reply_sq { threat_sq = sq; }
         }
     }
 
