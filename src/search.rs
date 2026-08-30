@@ -3049,6 +3049,7 @@ pub(crate) fn search_helper(board: &mut Board, info: &mut SearchInfo, _limits: &
     // when main sets the shared stop flag.
     let effective_max = info.max_depth.min(ROOT_DEPTH_MAX);
     let mut prev_score = 0i32;
+    let mut prev_prev_score = 0i32;
     // Cross-thread TM (concept from SF): track this helper's best-move changes between
     // completed iterations and publish into its own slot of the shared array.
     let mut prev_best = NO_MOVE;
@@ -3063,6 +3064,8 @@ pub(crate) fn search_helper(board: &mut Board, info: &mut SearchInfo, _limits: &
         if depth >= 4 && prev_score > -MATE_IN_MAX_PLY && prev_score < MATE_IN_MAX_PLY {
             let avg = prev_score;
             let mut delta = tp(&ASP_DELTA) + (avg as i64 * avg as i64 / tp(&ASP_SCORE_DIV) as i64) as i32;
+            // Score motion predicts expensive repeated aspiration failures.
+            delta += ((prev_score - prev_prev_score).abs() / 2).min(32);
             let mut alpha = (prev_score - delta).max(-INFINITY);
             let mut beta = (prev_score + delta).min(INFINITY);
             let mut asp_depth = depth;
@@ -3105,6 +3108,7 @@ pub(crate) fn search_helper(board: &mut Board, info: &mut SearchInfo, _limits: &
             info.thread_bmc[bmc_slot].fetch_add(1, Ordering::Release);
         }
         prev_best = best_move;
+        prev_prev_score = prev_score;
         prev_score = score;
         info.last_score = score;
         info.completed_depth = depth;
@@ -3435,6 +3439,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
 
     let mut best_move = NO_MOVE;
     let mut prev_score = 0i32;
+    let mut prev_prev_score = 0i32;
 
     // Stable PV snapshot. Updated only at the end of a *completed* iteration.
     // On a mid-iteration interrupt (should_stop fires inside negamax) we
@@ -3548,6 +3553,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             // Calm positions (avg~0): delta=13, winning (avg~500): delta=24, crushing (avg~1000): delta=55
             let avg = prev_score;
             let mut delta = tp(&ASP_DELTA) + (avg as i64 * avg as i64 / tp(&ASP_SCORE_DIV) as i64) as i32;
+            delta += ((prev_score - prev_prev_score).abs() / 2).min(32);
             let mut alpha = (prev_score - delta).max(-INFINITY);
             let mut beta = (prev_score + delta).min(INFINITY);
             let mut asp_depth = depth;
@@ -3738,6 +3744,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             }
         }
 
+        prev_prev_score = prev_score;
         prev_score = score;
         info.last_score = score;
         info.ponder_depth.store(depth as u64, std::sync::atomic::Ordering::Relaxed);
