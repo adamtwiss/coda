@@ -2312,6 +2312,15 @@ fn lmr_reduction(depth: i32, moves: i32) -> i32 {
     LMR_TABLE[d][m].load(Ordering::Relaxed)
 }
 
+/// Reduce a competitive TT move less when the excluded-move verification
+/// returned only the null-window boundary.  Such a result proves an
+/// alternative reaches `singular_beta`, but carries no fail-soft evidence
+/// that it exceeds that deliberately lowered threshold.
+#[inline]
+fn competitive_se_reduction(base: i32, singular_score: i32, singular_beta: i32) -> i32 {
+    base + (singular_score == singular_beta) as i32
+}
+
 #[inline(always)]
 fn root_move_index(mv: Move) -> usize {
     let promotion_bucket = if is_promotion(mv) {
@@ -5857,15 +5866,15 @@ fn negamax(
                 } else if tt_score_local >= beta {
                     // TT move fails high and alternatives competitive — strong reduce
                     // Consensus: -3 non-PV (SF/Obsidian)
-                    singular_extension = -3;
+                    singular_extension = competitive_se_reduction(-3, singular_score, singular_beta);
                     info.stats.negative_ext += 1;
                 } else if cut_node {
                     // Cut node with competitive alternatives — moderate reduce
-                    singular_extension = -2;
+                    singular_extension = competitive_se_reduction(-2, singular_score, singular_beta);
                     info.stats.negative_ext += 1;
                 } else {
                     // All-node with competitive alternatives — mild reduce
-                    singular_extension = -1;
+                    singular_extension = competitive_se_reduction(-1, singular_score, singular_beta);
                     info.stats.negative_ext += 1;
                 }
             }
@@ -7831,6 +7840,14 @@ pub(crate) fn test_net_path() -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn competitive_se_relaxes_only_boundary_fail_highs() {
+        assert_eq!(competitive_se_reduction(-3, 20, 20), -2);
+        assert_eq!(competitive_se_reduction(-2, 20, 20), -1);
+        assert_eq!(competitive_se_reduction(-1, 20, 20), 0);
+        assert_eq!(competitive_se_reduction(-3, 21, 20), -3);
+    }
 
     #[test]
     fn root_move_index_distinguishes_promotions() {
