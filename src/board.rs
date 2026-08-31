@@ -46,8 +46,14 @@ pub struct Board {
     /// Threat deltas accumulated during make_move (cleared on each make_move).
     /// Used by the NNUE threat accumulator for incremental updates.
     pub threat_deltas: Vec<crate::threats::RawThreatDelta>,
+    /// Pawn-pair deltas for the last move. Separate from `threat_deltas`
+    /// because `RawThreatDelta` is attacker/victim-shaped and a pawn-pair
+    /// change does not fit it without a kind-bit in a hot struct.
+    pub pawn_pair_deltas: Vec<crate::pawn_pair::PawnPairDelta>,
     /// Whether to generate threat deltas during make_move (set when threat net is loaded).
     pub generate_threat_deltas: bool,
+    /// Whether to generate pawn-pair deltas (net has a pawn-pair block).
+    pub generate_pawn_pair_deltas: bool,
 }
 
 /// Castling rook positions (from, to) indexed by castling flag bit.
@@ -129,7 +135,9 @@ impl Board {
             non_pawn_key: [0; 2],
             undo_stack: Vec::with_capacity(512),
             threat_deltas: Vec::with_capacity(128),
+            pawn_pair_deltas: Vec::with_capacity(crate::pawn_pair::MAX_PAWN_PAIR_DELTAS),
             generate_threat_deltas: false,
+            generate_pawn_pair_deltas: false,
         }
     }
 
@@ -947,6 +955,16 @@ impl Board {
         let gen_threats = self.generate_threat_deltas;
         if gen_threats { self.threat_deltas.clear(); }
 
+        // Pawn-pair deltas are derived from the pawn set BEFORE any mutation,
+        // so this must run ahead of the capture/move/promotion handling below.
+        // (Threat deltas are interleaved with the mutations instead, because
+        // each one needs the intermediate occupancy.)
+        if self.generate_pawn_pair_deltas {
+            crate::pawn_pair::push_pawn_pair_deltas(
+                &mut self.pawn_pair_deltas, self.pieces[PAWN as usize], &self.colors,
+                us, mv, captured, pt);
+        }
+
         // Handle captures
         if flags == FLAG_EN_PASSANT {
             let cap_sq = if us == WHITE { to.wrapping_sub(8) } else { to.wrapping_add(8) };
@@ -1134,6 +1152,7 @@ impl Board {
     /// Make a null move (just flip side, update EP).
     pub fn make_null_move(&mut self) {
         self.threat_deltas.clear(); // null move = no piece changes = no threat deltas
+        self.pawn_pair_deltas.clear(); // ... and no pawn-structure change either
         self.undo_stack.push(UndoInfo {
             mv: NO_MOVE,
             captured: NO_PIECE_TYPE,

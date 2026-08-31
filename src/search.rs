@@ -1694,7 +1694,8 @@ impl SearchInfo {
         // Ensure threat accumulator is computed before eval
         if self.threat_stack.active {
             if let Some(ref net) = self.nnue_net {
-                self.threat_stack.ensure_computed(&net.threat_weights, net.num_threat_features, board);
+                self.threat_stack.ensure_computed(&net.threat_weights, net.num_threat_features,
+                                                  net.num_pawn_pair_features, board);
             }
         }
         let score = if let (Some(net), Some(acc)) = (&self.nnue_net, &mut self.nnue_acc) {
@@ -3042,6 +3043,12 @@ pub(crate) fn search_helper(board: &mut Board, info: &mut SearchInfo, _limits: &
     board.generate_threat_deltas = info.nnue_net.as_ref().is_some_and(|n| n.has_threats)
         && !crate::threat_accum::refresh_mode()
         && crate::threat_accum::eager_generation();
+    // Same gate as threats: under lazy generation the accumulator's backward
+    // walk regenerates these instead (see materialize_deltas).
+    board.generate_pawn_pair_deltas =
+        info.nnue_net.as_ref().is_some_and(|n| n.num_pawn_pair_features > 0)
+        && !crate::threat_accum::refresh_mode()
+        && crate::threat_accum::eager_generation();
     if info.threat_stack.active {
         info.threat_stack.reset();
         if let Some(ref net) = info.nnue_net {
@@ -3230,6 +3237,12 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
         crate::threat_accum::REFRESH_MODE.store(pmax > 0 && pieces <= pmax, Ordering::Relaxed);
     }
     board.generate_threat_deltas = info.nnue_net.as_ref().is_some_and(|n| n.has_threats)
+        && !crate::threat_accum::refresh_mode()
+        && crate::threat_accum::eager_generation();
+    // Same gate as threats: under lazy generation the accumulator's backward
+    // walk regenerates these instead (see materialize_deltas).
+    board.generate_pawn_pair_deltas =
+        info.nnue_net.as_ref().is_some_and(|n| n.num_pawn_pair_features > 0)
         && !crate::threat_accum::refresh_mode()
         && crate::threat_accum::eager_generation();
 
