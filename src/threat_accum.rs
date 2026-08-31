@@ -1768,6 +1768,99 @@ mod incremental_tests {
     /// them shrinks the 50 MB weight matrix proportionally with near-
     /// zero Elo cost, improving cache residency on memory-constrained
     /// hardware.
+    /// Threat-feature activation frequency over a REAL position corpus, and
+    /// the weight mass each feature actually carries.
+    ///
+    /// `CODA_EPD=<file> cargo test --release measure_feature_usage_real -- --nocapture --ignored`
+    /// (optionally `CODA_NNUE=<net>` to also report weight-row norms).
+    ///
+    /// Why not reuse `measure_feature_sparsity`: that samples RANDOM self-play
+    /// from 5 start FENs, and its own caveat says "random self-play != real game
+    /// distribution ... a rare feature may actually be common in specific
+    /// material imbalances". Since the point is to decide which rows can be
+    /// DELETED, the sample has to look like real games or the answer is unsafe.
+    ///
+    /// It also separates two things the April run conflated:
+    ///   - never-fired AND zero weight-norm  -> effectively dead, safe to drop
+    ///   - never-fired BUT non-trivial norm  -> training thought it mattered;
+    ///     unseen here is a SAMPLING statement, not a structural one
+    #[test]
+    #[ignore]
+    fn measure_feature_usage_real() {
+        crate::init();
+        let _space = crate::threats::FEATURE_SPACE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let nf = num_threat_features();
+        let path = std::env::var("CODA_EPD").expect("set CODA_EPD=<file>");
+        let text = std::fs::read_to_string(&path).expect("read EPD");
+
+        let mut feature_hits: Vec<u32> = vec![0u32; nf];
+        let (mut positions, mut total_activations) = (0u64, 0u64);
+        for line in text.lines() {
+            let line = line.trim();
+            if line.is_empty() { continue; }
+            let mut board = Board::new();
+            board.set_fen(line);
+            for pov in [WHITE, BLACK] {
+                let occ = board.colors[0] | board.colors[1];
+                let kb = board.pieces[KING as usize] & board.colors[pov as usize];
+                if kb == 0 { continue; }
+                let mirrored = (kb.trailing_zeros() % 8) >= 4;
+                crate::threats::enumerate_threats(
+                    &board.pieces, &board.colors, &board.mailbox, occ, pov, mirrored,
+                    |idx| { if idx < nf { feature_hits[idx] = feature_hits[idx].saturating_add(1); total_activations += 1; } },
+                );
+            }
+            positions += 1;
+        }
+
+        // Optional: per-feature weight L1 norm from a real net, so "never fired"
+        // can be distinguished from "carries no weight".
+        let norms: Option<Vec<u64>> = std::env::var("CODA_NNUE").ok().and_then(|np| {
+            crate::nnue::NNUENet::load(&np).ok().map(|net| {
+                let h = net.hidden_size;
+                (0..nf).map(|f| {
+                    let row = &net.threat_weights[f * h..(f + 1) * h];
+                    row.iter().map(|&w| (w as i32).unsigned_abs() as u64).sum::<u64>()
+                }).collect()
+            })
+        });
+
+        let mut b = [0u64; 5];
+        for &h in &feature_hits {
+            let i = if h == 0 {0} else if h < 10 {1} else if h < 100 {2} else if h < 1000 {3} else {4};
+            b[i] += 1;
+        }
+        eprintln!("\ncorpus: {} positions from {}", positions, path);
+        eprintln!("total activations: {}  avg/POV-position: {:.1}",
+                  total_activations, total_activations as f64 / (positions as f64 * 2.0));
+        let names = ["0 (never)", "1-9", "10-99", "100-999", "1000+"];
+        for (i, n) in names.iter().enumerate() {
+            eprintln!("  {:<10} {:>7} features ({:.1}%)", n, b[i], 100.0 * b[i] as f64 / nf as f64);
+        }
+        let mut sorted: Vec<u32> = feature_hits.clone();
+        sorted.sort_unstable_by(|a, c| c.cmp(a));
+        let mut acc = 0u64;
+        for (rank, &h) in sorted.iter().enumerate() {
+            acc += h as u64;
+            for (pct, label) in [(50u64, "50%"), (90, "90%"), (99, "99%")] {
+                if acc * 100 >= total_activations * pct && (acc - h as u64) * 100 < total_activations * pct {
+                    eprintln!("  top {:>6} features cover {}", rank + 1, label);
+                }
+            }
+        }
+        if let Some(nrm) = norms {
+            let dead_zero = (0..nf).filter(|&i| feature_hits[i] == 0 && nrm[i] == 0).count();
+            let dead_wt   = (0..nf).filter(|&i| feature_hits[i] == 0 && nrm[i] > 0).count();
+            let tot: u64 = nrm.iter().sum();
+            let unseen_mass: u64 = (0..nf).filter(|&i| feature_hits[i] == 0).map(|i| nrm[i]).sum();
+            eprintln!("\nweight check (from CODA_NNUE):");
+            eprintln!("  never fired AND zero weight : {:>7}  <- structurally droppable", dead_zero);
+            eprintln!("  never fired BUT has weight  : {:>7}  <- unseen, NOT proven dead", dead_wt);
+            eprintln!("  share of total |w| held by never-fired features: {:.2}%",
+                      100.0 * unseen_mass as f64 / tot.max(1) as f64);
+        }
+    }
+
     #[test]
     #[ignore]
     fn measure_feature_sparsity() {
