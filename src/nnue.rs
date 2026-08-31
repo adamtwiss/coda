@@ -2900,6 +2900,11 @@ pub struct NNUENet {
     // v9 threat features
     pub threat_weights: AlignedVec<i8>,  // [num_threat_features × hidden_size] i8 weights, 64-B rows, hugepage-backed
     pub num_threat_features: usize,
+    /// Pawn-pair features (v11). These extend the THREAT feature space rather
+    /// than forming a third accumulator: pawn-pair feature `i` is threat-space
+    /// index `num_threat_features + i`, and its weights are appended to
+    /// `threat_weights`. Pack time is therefore unchanged. 0 when absent.
+    pub num_pawn_pair_features: usize,
     pub has_threats: bool,
     /// Number of king buckets in this net (16 for uniform/consensus).
     /// PSQ weight block is sized `num_king_buckets * 768 * hidden_size`.
@@ -3001,6 +3006,7 @@ impl NNUENet {
         let mut hl_crelu = false;
         let mut has_threats = false; // bit 6: threat features (v9+)
         let mut num_threat_features = 0usize;
+        let mut num_pawn_pair_features = 0usize;
         // extended_kb (bit 7) is only read inside the v7+ match arm; declared locally there.
         let mut num_king_buckets: usize = 16; // default (uniform/consensus)
         let mut kb_layout = KbLayout::Uniform;
@@ -3034,7 +3040,7 @@ impl NNUENet {
                 }
                 hidden_size = (h_numer / h_denom) as usize;
             }
-            7..=10 => {
+            7..=11 => {
                 let flags = read_u8(reader)?;
                 use_screlu = flags & 1 != 0;
                 use_pairwise = flags & 2 != 0;
@@ -3125,6 +3131,46 @@ impl NNUENet {
                                 WITH x-ray threat features, which Coda no longer \
                                 enumerates. Retrain with --xray 0.".to_string());
                 }
+                // v11 arch_flags2: a SECOND architecture-flags byte, not a
+                // ninth meaning for a bit in the first one. Bit 5 above already
+                // carries two context-dependent meanings, and that ambiguity is
+                // exactly what produced the --hl-crelu defect; we do not repeat
+                // it. Unlike training_flags (which records TRAINING-side config
+                // inference must match), this byte records ARCHITECTURE.
+                //   bit 0: has_pawn_pair — a u32 feature count follows
+                //   bits 1-7: reserved, must be zero
+                if version >= 11 {
+                    let arch_flags2 = read_u8(reader)?;
+                    if arch_flags2 & !1 != 0 {
+                        return Err(format!(
+                            "unknown arch_flags2 bits set (0x{:02x}); this net uses an \
+                             architecture feature this build does not implement",
+                            arch_flags2
+                        ));
+                    }
+                    if arch_flags2 & 1 != 0 {
+                        num_pawn_pair_features = read_u32(reader)? as usize;
+                        // The encoding is fixed by pawn_pair.rs, so a mismatch
+                        // means the net was exported by a different encoder —
+                        // reject loudly rather than index a shorter table.
+                        if num_pawn_pair_features != crate::pawn_pair::PAWN_PAIR_FEATURES {
+                            return Err(format!(
+                                "net declares {} pawn-pair features but this build \
+                                 enumerates {}; the encodings disagree",
+                                num_pawn_pair_features,
+                                crate::pawn_pair::PAWN_PAIR_FEATURES
+                            ));
+                        }
+                        // Pawn-pair indices live above the threat block in one
+                        // shared space, so the threat block must be present for
+                        // the offset to mean anything.
+                        if !has_threats {
+                            return Err("net has pawn-pair features but no threat \
+                                        features; pawn-pair extends the threat feature \
+                                        space and cannot stand alone".to_string());
+                        }
+                    }
+                }
                 hidden_size = ft_size;
             }
             _ => return Err(format!("unsupported NNUE version: {}", version)),
@@ -3176,9 +3222,17 @@ impl NNUENet {
         // AlignedVec (was a plain Vec<i8>): guarantees rows start 64-B-aligned
         // so each 1 KiB row spans exactly 16 cache lines, not a possible 17;
         // hugepage-backed like the PSQ matrix above.
+        //
+        // v11 appends the pawn-pair block immediately after the threat block,
+        // in the same array and at the same i8 quantisation scale. That scale
+        // is correct by construction rather than by convention: in the trainer
+        // both are columns of the same l0 matrix. Reading them as one run keeps
+        // pawn-pair index `i` addressable as `num_threat_features + i` with no
+        // extra indexing anywhere downstream.
         let mut threat_weights: AlignedVec<i8> = AlignedVec::zeros(0);
-        if has_threats && num_threat_features > 0 {
-            let total = num_threat_features * hidden_size;
+        let num_shared_features = num_threat_features + num_pawn_pair_features;
+        if has_threats && num_shared_features > 0 {
+            let total = num_shared_features * hidden_size;
             threat_weights = AlignedVec::hugepage_zeros(total);
             let mut bytes = vec![0u8; total];
             reader.read_exact(&mut bytes).map_err(|e| format!("read threat weights: {}", e))?;
@@ -3188,7 +3242,13 @@ impl NNUENet {
             threat_weights.advise_collapse();
             println!("info string Loaded {} threat features ({}×{}, {}MB)",
                 num_threat_features, num_threat_features, hidden_size,
-                total / (1024 * 1024));
+                (num_threat_features * hidden_size) / (1024 * 1024));
+            if num_pawn_pair_features > 0 {
+                println!("info string Loaded {} pawn-pair features ({}KB, sharing the \
+                          threat feature space)",
+                    num_pawn_pair_features,
+                    (num_pawn_pair_features * hidden_size) / 1024);
+            }
         }
 
         // Read L1 hidden layer weights (v7)
@@ -3418,6 +3478,7 @@ impl NNUENet {
 
         Ok(NNUENet {
             hidden_size,
+            num_pawn_pair_features,
             input_weights,
             input_biases,
             output_weights,
