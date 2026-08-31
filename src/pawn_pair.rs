@@ -281,44 +281,16 @@ pub fn push_pawn_pair_deltas(
     }
 }
 
-/// Apply pawn-pair deltas to one perspective's accumulator in place.
-///
-/// `pp_base` is the pawn-pair block's offset in the shared threat feature
-/// space, i.e. `num_threat_features`.
-pub fn apply_pawn_pair_deltas(
-    dst: &mut [i16],
-    deltas: &[PawnPairDelta],
-    weights: &[i8],
-    h: usize,
-    pp_base: usize,
-    pov: Color,
-    mirrored: bool,
-) {
-    for d in deltas {
-        let (mut a, mut b) = (d.a_sq(), d.b_sq());
-        if pov != WHITE {
-            a ^= 56;
-            b ^= 56;
-        }
-        if mirrored {
-            a ^= 7;
-            b ^= 7;
-        }
-        let Some(idx) = pair_feature(a, d.a_col() == pov, b, d.b_col() == pov) else {
-            continue;
-        };
-        let w = (pp_base + idx) * h;
-        debug_assert!(w + h <= weights.len(), "pawn-pair weight row out of range");
-        if d.add() {
-            for j in 0..h {
-                dst[j] += weights[w + j] as i16;
-            }
-        } else {
-            for j in 0..h {
-                dst[j] -= weights[w + j] as i16;
-            }
-        }
-    }
+/// Feature index for one delta from one perspective, or `None` when the pair
+/// is out of range. Used by the threat delta-apply kernels, which fold
+/// pawn-pair indices into the SAME add/sub lists as threat indices so both are
+/// applied in one SIMD pass.
+#[inline]
+pub fn pp_index_for(d: PawnPairDelta, pov: Color, mirrored: bool) -> Option<usize> {
+    let (mut a, mut b) = (d.a_sq(), d.b_sq());
+    if pov != WHITE { a ^= 56; b ^= 56; }
+    if mirrored { a ^= 7; b ^= 7; }
+    pair_feature(a, d.a_col() == pov, b, d.b_col() == pov)
 }
 
 #[cfg(test)]

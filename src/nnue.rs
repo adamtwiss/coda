@@ -5423,6 +5423,9 @@ impl NNUEAccumulator {
     /// forward applying per-ply deltas. Each ply's deltas were stored by
     /// store_threat_deltas() after make_move.
     pub fn recompute_threats_if_needed(&mut self, net: &NNUENet, board: &crate::board::Board) {
+        debug_assert_eq!(net.num_pawn_pair_features, 0,
+            "recompute_threats_if_needed does not carry pawn-pair deltas; the \
+             production path is ThreatStack::ensure_computed");
         if !net.has_threats { return; }
         if self.stack[self.top].threat_accurate[0] && self.stack[self.top].threat_accurate[1] { return; }
         let h = self.hidden_size;
@@ -5495,6 +5498,12 @@ impl NNUEAccumulator {
                         curr_w, prev_w,
                         &deltas, &net.threat_weights, h, net.num_threat_features,
                         WHITE, w_mirrored,
+                        // This accumulator's own threat stack is used only by
+                        // the eval-bench and mirror-consistency paths, which do
+                        // not carry pawn-pair deltas. The assert above keeps
+                        // that from becoming silently wrong if a v11 net is
+                        // ever routed here.
+                        &[], 0,
                     );
                 }
                 let (prev_b, curr_b) = self.threat.parent_and_current(src, ply, BLACK as usize);
@@ -5503,6 +5512,7 @@ impl NNUEAccumulator {
                         curr_b, prev_b,
                         &deltas, &net.threat_weights, h, net.num_threat_features,
                         BLACK, b_mirrored,
+                        &[], 0,
                     );
                 }
                 // Swap back
