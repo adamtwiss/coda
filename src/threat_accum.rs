@@ -81,6 +81,41 @@ pub const MAX_FT_SIZE: usize = 1024;
 /// both silently agreed on a truncated accumulator).
 pub const MAX_ACTIVE_THREAT_FEATURES: usize = 1024;
 
+/// Per-ply pawn-pair deltas. A separate list from `DeltaVec` because
+/// `RawThreatDelta` is attacker/victim-shaped; see pawn_pair.rs.
+#[derive(Clone, Copy)]
+pub struct PPDeltaVec {
+    data: [crate::pawn_pair::PawnPairDelta; crate::pawn_pair::MAX_PAWN_PAIR_DELTAS],
+    len: usize,
+}
+
+impl Default for PPDeltaVec {
+    fn default() -> Self { Self::new() }
+}
+
+impl PPDeltaVec {
+    pub const fn new() -> Self {
+        Self {
+            data: [crate::pawn_pair::PawnPairDelta::ZERO;
+                   crate::pawn_pair::MAX_PAWN_PAIR_DELTAS],
+            len: 0,
+        }
+    }
+    #[inline]
+    pub fn copy_from_slice(&mut self, src: &[crate::pawn_pair::PawnPairDelta]) {
+        // MAX_PAWN_PAIR_DELTAS is a proven bound (see pawn_pair.rs), not a
+        // heuristic, so a breach is a logic error rather than a rare position.
+        debug_assert!(src.len() <= self.data.len(),
+            "pawn-pair delta overflow: {} > {}", src.len(), self.data.len());
+        let n = src.len().min(self.data.len());
+        self.data[..n].copy_from_slice(&src[..n]);
+        self.len = n;
+    }
+    #[inline] pub fn as_slice(&self) -> &[crate::pawn_pair::PawnPairDelta] { &self.data[..self.len] }
+    #[inline] pub fn clear(&mut self) { self.len = 0; }
+    #[inline] pub fn is_empty(&self) -> bool { self.len == 0 }
+}
+
 /// Fixed-capacity array (no heap, like ArrayVec but simpler).
 /// Tracks overflow so callers can force full recompute instead of
 /// silently using incomplete deltas.
@@ -151,6 +186,9 @@ pub struct ThreatEntry {
     pub accurate: [bool; 2],
     /// Threat deltas for the move that produced this ply
     pub delta: DeltaVec,
+    /// Pawn-pair deltas for the same move. Shares `deltas_valid` with `delta`:
+    /// both are produced by the same eager/lazy machinery in one step.
+    pub pp_delta: PPDeltaVec,
     /// The move that produced this ply (for king mirror check)
     pub mv: Move,
     /// Piece type that moved (for king mirror detection)
@@ -186,6 +224,7 @@ impl ThreatEntry {
             values: [[0i16; MAX_FT_SIZE]; 2],
             accurate: [false; 2],
             delta: DeltaVec::new(),
+            pp_delta: PPDeltaVec::new(),
             mv: NO_MOVE,
             moved_pt: NO_PIECE_TYPE,
             moved_color: WHITE,
@@ -206,6 +245,13 @@ pub struct ThreatStack {
     scratch: Vec<RawThreatDelta>,
     /// Whether threat features are active (net has threats)
     pub active: bool,
+    /// Pawn-pair feature count (0 = net has no pawn-pair block). Carried here
+    /// rather than threaded through every refresh/update signature; the
+    /// pawn-pair block lives at offset `num_threat_features` in the same
+    /// weight array, so `num_features` doubles as its base.
+    pub pp_features: usize,
+    /// Reusable scratch for lazily regenerated pawn-pair deltas.
+    pp_scratch: Vec<crate::pawn_pair::PawnPairDelta>,
 }
 
 impl ThreatStack {
@@ -214,8 +260,9 @@ impl ThreatStack {
         for _ in 0..MAX_PLY {
             stack.push(ThreatEntry::new());
         }
-        Self { stack, index: 0, hidden_size, active: false,
-               scratch: Vec::with_capacity(MAX_THREAT_DELTAS) }
+        Self { stack, index: 0, hidden_size, active: false, pp_features: 0,
+               scratch: Vec::with_capacity(MAX_THREAT_DELTAS),
+               pp_scratch: Vec::with_capacity(crate::pawn_pair::MAX_PAWN_PAIR_DELTAS) }
     }
 
     #[inline]
@@ -249,6 +296,7 @@ impl ThreatStack {
 
         if eager {
             entry.delta.copy_from_slice(&board.threat_deltas);
+            entry.pp_delta.copy_from_slice(&board.pawn_pair_deltas);
             entry.deltas_valid = true;
         } else {
             entry.deltas_valid = false;
@@ -309,6 +357,19 @@ impl ThreatStack {
             // cached has to advance `st` past its move. Regenerating a cached
             // entry's deltas and discarding them only happens on a partially
             // covered span, which is rare and at most a ply or two wide.
+            // Pawn-pair deltas come from the state BEFORE the move, so they
+            // must be generated ahead of replay_move_deltas, which advances
+            // `st`. Same generator as the eager path, so the two agree by
+            // construction.
+            if self.pp_features > 0 && !valid {
+                let mut pp = std::mem::take(&mut self.pp_scratch);
+                crate::pawn_pair::push_pawn_pair_deltas(
+                    &mut pp, st.pieces[crate::types::PAWN as usize], &st.colors,
+                    color, mv, captured,
+                    st.mailbox[crate::types::move_from(mv) as usize]);
+                self.stack[p].pp_delta.copy_from_slice(&pp);
+                self.pp_scratch = pp;
+            }
             crate::threats::replay_move_deltas(&mut st, color, mv, captured, &mut scratch);
             if !valid {
                 let e = &mut self.stack[p];
@@ -333,6 +394,7 @@ impl ThreatStack {
         let entry = &mut self.stack[self.index];
         entry.accurate = [false; 2];
         entry.delta.clear();
+        entry.pp_delta.clear();
         entry.deltas_valid = false;
         entry.mv = mv;
         entry.moved_pt = moved_pt;
@@ -418,6 +480,24 @@ impl ThreatStack {
 
         #[cfg(feature = "profile-threats")]
         crate::threats::refresh_stats::record(n_indices, overflowed);
+
+        // Pawn-pair features occupy the shared feature space above the threat
+        // block, so their rows live in the SAME weight array and can simply be
+        // appended to the index list -- no second weight pass, and pack time
+        // stays untouched.
+        if self.pp_features > 0 {
+            crate::pawn_pair::enumerate_pawn_pairs(
+                board.pieces[crate::types::PAWN as usize], &board.colors, pov, mirrored,
+                |pp_idx| {
+                    if n_indices < MAX_ACTIVE_THREAT_FEATURES {
+                        unsafe { indices_ptr.add(n_indices).write(num_features + pp_idx); }
+                        n_indices += 1;
+                    } else {
+                        overflowed = true;
+                    }
+                },
+            );
+        }
 
         // Apply all weight rows with SIMD
         let indices = scratch_slice!(indices_ptr, n_indices);
@@ -518,7 +598,9 @@ impl ThreatStack {
             }
 
             if entry_mv == NO_MOVE || self.stack[ply].delta.is_empty() {
-                // Null move or no deltas: copy from previous
+                // Null move or no threat deltas: copy from previous. Pawn-pair
+                // deltas are applied below regardless -- a move can change the
+                // pawn structure while producing no threat delta.
                 let (prev, curr) = self.stack.split_at_mut(ply);
                 curr[0].values[p][..h].copy_from_slice(&prev[ply - 1].values[p][..h]);
             } else {
@@ -537,6 +619,14 @@ impl ThreatStack {
                 }
             }
 
+            if self.pp_features > 0 && !self.stack[ply].pp_delta.is_empty() {
+                let entry = &mut self.stack[ply];
+                let pp = entry.pp_delta;
+                crate::pawn_pair::apply_pawn_pair_deltas(
+                    &mut entry.values[p][..h], pp.as_slice(),
+                    net_weights, h, num_features, pov, mirrored);
+            }
+
             self.stack[ply].accurate[p] = true;
         }
     }
@@ -553,6 +643,7 @@ impl ThreatStack {
         let black_king_sq = (board.pieces[KING as usize] & board.colors[BLACK as usize]).trailing_zeros();
         let mirrored_w = (white_king_sq % 8) >= 4;
         let mirrored_b = (black_king_sq % 8) >= 4;
+        let pp = self.pp_features;
 
         #[cfg(feature = "profile-threats")]
         {
@@ -597,6 +688,16 @@ impl ThreatStack {
                 }
             }
 
+            if pp > 0 && !entry.pp_delta.is_empty() {
+                let ppd = entry.pp_delta;
+                crate::pawn_pair::apply_pawn_pair_deltas(
+                    &mut entry.values[WHITE as usize][..h], ppd.as_slice(),
+                    net_weights, h, num_features, WHITE, mirrored_w);
+                crate::pawn_pair::apply_pawn_pair_deltas(
+                    &mut entry.values[BLACK as usize][..h], ppd.as_slice(),
+                    net_weights, h, num_features, BLACK, mirrored_b);
+            }
+
             entry.accurate = [true, true];
         }
     }
@@ -610,9 +711,15 @@ impl ThreatStack {
     /// Ensure both perspectives are computed for the current position.
     /// Standard lazy evaluate: ensure both perspectives are materialised.
     #[inline]
+    /// `num_pp` is the net's pawn-pair feature count (0 if it has none). It is
+    /// a PARAMETER rather than a field set at construction because a missed
+    /// assignment would be silent -- the accumulator would simply omit the
+    /// pawn-pair contribution and evaluate a slightly wrong position on every
+    /// node. Passing it here makes the compiler check every production site.
     pub fn ensure_computed(&mut self, net_weights: &[i8], num_features: usize,
-                          board: &crate::board::Board) {
+                          num_pp: usize, board: &crate::board::Board) {
         if !self.active { return; }
+        self.pp_features = num_pp;
 
         // Experiment (CODA_THREAT_REFRESH_ALWAYS): bypass the walkback/replay
         // machinery and re-enumerate from the board every time. Paired with
@@ -741,22 +848,43 @@ mod incremental_tests {
 
     /// Run the scenario: play each UCI move, verifying after every ply
     /// that incremental == full-refresh for both perspectives.
-    fn run_scenario(name: &str, fen: &str, moves: &[&str]) {
+    /// Same scenario, but with the pawn-pair block active. Pawn-pair features
+    /// share the threat weight array above the threat block, so the only
+    /// changes are a longer weight vector and `pp_features` set on both stacks.
+    ///
+    /// Run BOTH generation modes. Eager builds the deltas in `make_move`; lazy
+    /// leaves them absent and makes `materialize_deltas` reconstruct them by
+    /// walking the piece state backwards. Those are two separate pieces of
+    /// code that must agree, and only the eager one is exercised by default.
+    fn run_scenario_pp(name: &str, fen: &str, moves: &[&str]) {
+        let pp = crate::pawn_pair::PAWN_PAIR_FEATURES;
+        run_scenario_inner(name, fen, moves, pp, true);
+        run_scenario_inner(name, fen, moves, pp, false);
+    }
+
+    fn run_scenario(name2: &str, fen: &str, moves: &[&str], pp: usize) {
+        run_scenario_inner(name2, fen, moves, pp, true);
+    }
+
+    fn run_scenario_inner(name: &str, fen: &str, moves: &[&str], pp: usize, eager: bool) {
         crate::init();
         let _space = crate::threats::FEATURE_SPACE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let nf = num_threat_features();
-        let weights = make_weights(nf);
+        let weights = make_weights(nf + pp);
 
         let mut board = Board::new();
         board.set_fen(fen);
-        board.generate_threat_deltas = true;
+        board.generate_threat_deltas = eager;
+        board.generate_pawn_pair_deltas = pp > 0 && eager;
 
         let mut incr = ThreatStack::new(H);
+        incr.pp_features = pp;
         incr.active = true;
         incr.refresh(&weights, nf, &board, WHITE);
         incr.refresh(&weights, nf, &board, BLACK);
 
         let mut refs = ThreatStack::new(H);
+        refs.pp_features = pp;
         refs.active = true;
         refs.refresh(&weights, nf, &board, WHITE);
         refs.refresh(&weights, nf, &board, BLACK);
@@ -778,7 +906,7 @@ mod incremental_tests {
             assert!(ok, "{}: move {} illegal at ply {}", name, uci, ply);
 
             absorb_deltas(&mut incr, &mut board);
-            incr.ensure_computed(&weights, nf, &board);
+            incr.ensure_computed(&weights, nf, pp, &board);
 
             refs.refresh(&weights, nf, &board, WHITE);
             refs.refresh(&weights, nf, &board, BLACK);
@@ -856,10 +984,60 @@ mod incremental_tests {
          &["a7a8q"]),
     ];
 
+    /// Pawn-structure-heavy scenarios, run with the pawn-pair block active.
+    /// These are the moves where the pawn SET changes shape: a capture that
+    /// removes a pawn, a promotion that removes one without adding one, and en
+    /// passant, where the captured pawn is not on the destination square.
+    const PP_SCENARIOS: &[(&str, &str, &[&str])] = &[
+        ("pp_pawn_storm",
+         "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+         &["e2e4", "d7d5", "e4d5", "c7c6", "d5c6", "b8c6", "d2d4", "e7e5", "d4e5"]),
+        ("pp_en_passant",
+         "rnbqkbnr/ppp1p1pp/8/3pPp2/8/8/PPPP1PPP/RNBQKBNR w KQkq f6 0 3",
+         &["e5f6", "e7f6", "d2d4", "c7c5", "d4c5"]),
+        ("pp_promotion",
+         "8/P6P/4k3/8/8/4K3/p6p/8 w - - 0 1",
+         &["a7a8q", "a2a1q", "h7h8n", "h2h1n"]),
+        // Forces the SINGLE-perspective `update` path, which the other
+        // scenarios never reach: they all take the dual fast path because both
+        // perspectives share an ancestor. Here the white king CAPTURES a pawn
+        // while crossing the d/e file boundary, so white's mirror flips (white
+        // refreshes) while black replays -- and the move changes the pawn set,
+        // so black's replay carries a non-empty pawn-pair delta list.
+        ("pp_king_crosses_mirror_taking_pawn",
+         "4k3/8/8/8/8/3P4/PPP1p3/3K4 w - - 0 1",
+         &["d1e2"]),
+        ("pp_doubled_and_phalanx",
+         "4k3/8/8/8/8/2PPP3/2P1P3/4K3 w - - 0 1",
+         &["c3c4", "e8d8", "d3d4", "d8c8", "e3e4"]),
+    ];
+
+    fn pp_scenario(name: &str) {
+        let (n, fen, moves) =
+            PP_SCENARIOS.iter().find(|s| s.0 == name).expect("unknown pp scenario");
+        run_scenario_pp(n, fen, moves);
+    }
+
+    /// With the pawn-pair block active, incremental replay must still equal a
+    /// full refresh at every ply. This is the end-to-end check over the whole
+    /// path -- delta generation in make_move, lazy regeneration in
+    /// materialize_deltas, and both the single and dual replay routines.
+    #[test]
+    fn pawn_pair_incremental_matches_refresh() {
+        for (n, _, _) in PP_SCENARIOS { pp_scenario(n); }
+    }
+
+    /// The same, with every existing threat scenario re-run with the block on:
+    /// pawn-pair must not disturb the threat path.
+    #[test]
+    fn pawn_pair_does_not_disturb_threat_scenarios() {
+        for (n, fen, moves) in SCENARIOS { run_scenario_pp(n, fen, moves); }
+    }
+
     fn scenario(name: &str) {
         let (n, fen, moves) =
             SCENARIOS.iter().find(|s| s.0 == name).expect("unknown scenario name");
-        run_scenario(n, fen, moves);
+        run_scenario(n, fen, moves, 0);
     }
 
     #[test]
@@ -1098,7 +1276,7 @@ mod incremental_tests {
                     // contain.
                     incr.absorb_deltas(&board);
 
-                    incr.ensure_computed(&weights, nf, &board);
+                    incr.ensure_computed(&weights, nf, 0, &board);
                     refs.refresh(&weights, nf, &board, WHITE);
                     refs.refresh(&weights, nf, &board, BLACK);
 
@@ -1193,7 +1371,7 @@ mod incremental_tests {
                     }
                 }
             }
-            incr.ensure_computed(weights, nf, board);
+            incr.ensure_computed(weights, nf, 0, board);
             let occ = board.colors[0] | board.colors[1];
             for pov in [WHITE, BLACK] {
                 let ksq = (board.pieces[KING as usize] & board.colors[pov as usize])

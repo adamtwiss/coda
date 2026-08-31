@@ -153,6 +153,10 @@ pub fn enumerate_pawn_pairs<F: FnMut(usize)>(
 pub struct PawnPairDelta(u32);
 
 impl PawnPairDelta {
+    /// Filler for fixed-size delta buffers. Never applied: buffers are read
+    /// only up to their recorded length.
+    pub const ZERO: Self = Self(0);
+
     #[inline]
     pub fn new(a_sq: u8, a_col: Color, b_sq: u8, b_col: Color, add: bool) -> Self {
         Self((a_sq as u32)

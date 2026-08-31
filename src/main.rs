@@ -863,7 +863,7 @@ fn main() {
                     let mut board = Board::from_fen(fen);
                     acc.force_recompute(&net, &board);
                     if tstack.active {
-                        tstack.ensure_computed(&net.threat_weights, net.num_threat_features, &board);
+                        tstack.ensure_computed(&net.threat_weights, net.num_threat_features, net.num_pawn_pair_features, &board);
                     }
                     let legal = generate_legal_moves(&board);
                     if legal.len == 0 { continue; }
@@ -901,6 +901,8 @@ fn main() {
                     let mut board = Board::from_fen(fen);
                     // v9 production path: threat deltas always on.
                     board.generate_threat_deltas = net.has_threats && !no_threat_deltas;
+                    board.generate_pawn_pair_deltas =
+                        net.num_pawn_pair_features > 0 && !no_threat_deltas;
                     let legal = generate_legal_moves(&board);
                     if legal.len == 0 { continue; }
                     move_corpus_positions += 1;
@@ -1646,7 +1648,7 @@ fn run_check_net(net_path: &str) {
         if net.has_threats {
             let mut ts = crate::threat_accum::ThreatStack::new(h);
             ts.active = true;
-            ts.ensure_computed(&net.threat_weights, net.num_threat_features, &board);
+            ts.ensure_computed(&net.threat_weights, net.num_threat_features, net.num_pawn_pair_features, &board);
             net.forward_with_threats(&acc, board.side_to_move, piece_count, &ts)
         } else {
             net.forward(&acc, board.side_to_move, piece_count)
@@ -2713,7 +2715,7 @@ fn run_eval_fens(input: &str, output: &str, nnue_path: &Option<String>) {
         let mut ts = crate::threat_accum::ThreatStack::new(net.hidden_size);
         ts.active = net.has_threats;
         if ts.active {
-            ts.ensure_computed(&net.threat_weights, net.num_threat_features, &board);
+            ts.ensure_computed(&net.threat_weights, net.num_threat_features, net.num_pawn_pair_features, &board);
         }
         // Each FEN is an unrelated board: full recompute, same as eval-dist.
         acc.force_recompute(net, &board);
@@ -2931,7 +2933,7 @@ fn run_eval_dist(input: &str, n: usize, nnue_path: &Option<String>, csv: &Option
             let mut ts = crate::threat_accum::ThreatStack::new(net.hidden_size);
             ts.active = net.has_threats;
             if ts.active {
-                ts.ensure_computed(&net.threat_weights, net.num_threat_features, &board);
+                ts.ensure_computed(&net.threat_weights, net.num_threat_features, net.num_pawn_pair_features, &board);
             }
             // CRITICAL: the accumulator is reused across positions; each FEN
             // is an unrelated board, so the cached acc is stale. Without a
