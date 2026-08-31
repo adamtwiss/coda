@@ -46,25 +46,50 @@ pub const PAWN_PAIR_COLOURS: usize = 4;
 /// Total pawn-pair input features.
 pub const PAWN_PAIR_FEATURES: usize = PAWN_PAIR_SHAPES * PAWN_PAIR_COLOURS;
 
-/// Shape index for a canonicalised pair, or `None` if the pair is not within
-/// one file. `lo` < `hi` as square indices; both must be pawn squares.
+/// Feature index in `0..PAWN_PAIR_FEATURES` for one pawn pair, or `None` when
+/// the pair is more than one file apart.
+///
+/// The two cases canonicalise on DIFFERENT keys, and that is the point:
+///
+/// * **same file** — order by rank, so `d` in `1..=5` names the gap.
+/// * **adjacent file** — order by FILE, so `d = rank(right) - rank(left)` keeps
+///   its SIGN and spans `-5..=5`.
+///
+/// Ordering the adjacent case by square index instead would force `d >= 0`
+/// (if the lower-index square had the higher rank it would not be the lower
+/// index), collapsing the two chain directions onto one shape and leaving 20
+/// of the 64 features unreachable. The direction is meaningful because the
+/// frame is already king-mirrored, so "leaning toward the king side" and
+/// "leaning away" are genuinely different structures.
 #[inline]
-fn shape_index(lo: u8, hi: u8) -> Option<usize> {
-    let (lf, lr) = ((lo % 8) as i32, (lo / 8) as i32);
-    let (hf, hr) = ((hi % 8) as i32, (hi / 8) as i32);
-    let fd = (hf - lf).abs();
-    if fd > 1 { return None; }
-    let d = hr - lr;
-    if fd == 0 {
-        // Same file: hi is strictly above lo, so d in 1..=5.
-        if !(1..=5).contains(&d) { return None; }
-        Some((d - 1) as usize)
-    } else {
-        // Adjacent file: d in -5..=5, offset to 0..=10 and placed after the
-        // five same-file shapes.
-        if !(-5..=5).contains(&d) { return None; }
-        Some(5 + (d + 5) as usize)
+fn pair_feature(sq_a: u8, a_mine: bool, sq_b: u8, b_mine: bool) -> Option<usize> {
+    let (fa, ra) = ((sq_a % 8) as i32, (sq_a / 8) as i32);
+    let (fb, rb) = ((sq_b % 8) as i32, (sq_b / 8) as i32);
+    if (fb - fa).abs() > 1 {
+        return None;
     }
+    let (shape, lo_mine, hi_mine) = if fa == fb {
+        let (d, lo_mine, hi_mine) = if ra < rb {
+            (rb - ra, a_mine, b_mine)
+        } else {
+            (ra - rb, b_mine, a_mine)
+        };
+        if !(1..=5).contains(&d) {
+            return None;
+        }
+        ((d - 1) as usize, lo_mine, hi_mine)
+    } else {
+        let (d, l_mine, r_mine) = if fa < fb {
+            (rb - ra, a_mine, b_mine)
+        } else {
+            (ra - rb, b_mine, a_mine)
+        };
+        if !(-5..=5).contains(&d) {
+            return None;
+        }
+        (5 + (d + 5) as usize, l_mine, r_mine)
+    };
+    Some(shape * PAWN_PAIR_COLOURS + (lo_mine as usize) * 2 + (hi_mine as usize))
 }
 
 /// Enumerate active pawn-pair features from `pov`'s perspective.
@@ -109,14 +134,8 @@ pub fn enumerate_pawn_pairs<F: FnMut(usize)>(
 
     for a in 0..n {
         for b in (a + 1)..n {
-            let (lo, hi, lo_mine, hi_mine) = if sqs[a] < sqs[b] {
-                (sqs[a], sqs[b], mine[a], mine[b])
-            } else {
-                (sqs[b], sqs[a], mine[b], mine[a])
-            };
-            if let Some(shape) = shape_index(lo, hi) {
-                let colour = (lo_mine as usize) * 2 + (hi_mine as usize);
-                callback(shape * PAWN_PAIR_COLOURS + colour);
+            if let Some(idx) = pair_feature(sqs[a], mine[a], sqs[b], mine[b]) {
+                callback(idx);
             }
         }
     }
@@ -200,6 +219,73 @@ mod tests {
         let a = feats("8/8/8/8/8/8/PP4P1/8 w - - 0 1", WHITE, false);
         let b = feats("8/8/8/8/8/8/1P4PP/8 w - - 0 1", WHITE, true);
         assert_eq!(a, b, "mirrored position under mirrored=true must match");
+    }
+
+    /// The two chain directions must be DIFFERENT features. Canonicalising
+    /// adjacent-file pairs by square index instead of by file collapses them
+    /// and leaves the 20 `d < 0` features permanently unreachable, which is
+    /// exactly the bug the feature-usage histogram caught.
+    #[test]
+    fn chain_directions_are_distinct() {
+        let up_right = feats("8/8/8/8/8/2P5/1P6/8 w - - 0 1", WHITE, false); // b2,c3
+        let up_left  = feats("8/8/8/8/8/1P6/2P5/8 w - - 0 1", WHITE, false); // c2,b3
+        assert_eq!(up_right.len(), 1);
+        assert_eq!(up_left.len(), 1);
+        assert_ne!(up_right[0], up_left[0],
+                   "a chain leaning right must differ from one leaning left");
+    }
+
+    /// Every one of the 16 shapes must be reachable. An unreachable shape is
+    /// 4 dead features x ft_size weights and a silently mis-specified block.
+    #[test]
+    fn all_shapes_reachable() {
+        let mut seen = [false; PAWN_PAIR_SHAPES];
+        // Walk every legal pawn-square pair directly through the encoder.
+        for a in 8u8..56 {
+            for b in 8u8..56 {
+                if a == b { continue; }
+                if let Some(idx) = pair_feature(a, true, b, true) {
+                    seen[idx / PAWN_PAIR_COLOURS] = true;
+                }
+            }
+        }
+        let dead: Vec<usize> = (0..PAWN_PAIR_SHAPES).filter(|&s| !seen[s]).collect();
+        assert!(dead.is_empty(), "unreachable shapes: {dead:?}");
+    }
+
+    /// Cross-check dump: writes `stm-indices | ntm-indices` per FEN so the
+    /// bullet trainer's enumeration can be diffed against this one. A silent
+    /// index mismatch between trainer and engine is the expensive failure
+    /// mode here, so it is checked mechanically rather than reasoned about.
+    /// Env-gated: `PP_DUMP_IN=<fens> PP_DUMP_OUT=<path> cargo test --release
+    /// pawn_pair::tests::dump_indices -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn dump_indices() {
+        use std::io::Write;
+        let inp = std::env::var("PP_DUMP_IN").expect("PP_DUMP_IN");
+        let outp = std::env::var("PP_DUMP_OUT").expect("PP_DUMP_OUT");
+        let text = std::fs::read_to_string(&inp).unwrap();
+        let mut out = std::fs::File::create(&outp).unwrap();
+        for fen in text.lines().filter(|l| !l.trim().is_empty()) {
+            let mut b = Board::new();
+            b.set_fen(fen);
+            let stm = b.side_to_move;
+            let ntm = 1 - stm;
+            let mut row: Vec<String> = Vec::new();
+            for pov in [stm, ntm] {
+                // Mirror is decided by the perspective's OWN king, after the
+                // vertical flip — same rule as `halfka_index`.
+                let ks = b.king_sq(pov) as usize ^ if pov != WHITE { 56 } else { 0 };
+                let mirrored = (ks & 7) >= 4;
+                let mut v = Vec::new();
+                enumerate_pawn_pairs(
+                    b.pieces[PAWN as usize], &b.colors, pov, mirrored, |i| v.push(i));
+                v.sort_unstable();
+                row.push(v.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(","));
+            }
+            writeln!(out, "{}|{}", row[0], row[1]).unwrap();
+        }
     }
 
     /// Same structure with colours swapped, viewed from the other POV, must
