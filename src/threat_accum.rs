@@ -597,34 +597,28 @@ impl ThreatStack {
                 crate::threats::apply_stats::record_first_consume();
             }
 
-            if entry_mv == NO_MOVE || self.stack[ply].delta.is_empty() {
-                // Null move or no threat deltas: copy from previous. Pawn-pair
-                // deltas are applied below regardless -- a move can change the
-                // pawn structure while producing no threat delta.
+            let nothing_to_do = (entry_mv == NO_MOVE || self.stack[ply].delta.is_empty())
+                && self.stack[ply].pp_delta.is_empty();
+            if nothing_to_do {
+                // Null move, or a move that touched neither threats nor pawn
+                // structure: copy from previous.
                 let (prev, curr) = self.stack.split_at_mut(ply);
                 curr[0].values[p][..h].copy_from_slice(&prev[ply - 1].values[p][..h]);
             } else {
-                // Use SIMD apply_threat_deltas (copies src + applies adds/subs)
+                // One SIMD pass covers both feature spaces: pawn-pair indices
+                // are folded into the same add/sub lists inside the kernel.
                 let (prev, curr) = self.stack.split_at_mut(ply);
-                let entry = &mut curr[0];
-                let local_deltas = entry.delta.as_slice();
+                let ThreatEntry { values, delta, pp_delta, .. } = &mut curr[0];
                 unsafe {
                     crate::threats::apply_threat_deltas(
-                        &mut entry.values[p][..h],
+                        &mut values[p][..h],
                         &prev[ply - 1].values[p][..h],
-                        local_deltas,
+                        delta.as_slice(),
                         net_weights, h, num_features,
                         pov, mirrored,
+                        pp_delta.as_slice(), num_features,
                     );
                 }
-            }
-
-            if self.pp_features > 0 && !self.stack[ply].pp_delta.is_empty() {
-                let entry = &mut self.stack[ply];
-                let pp = entry.pp_delta;
-                crate::pawn_pair::apply_pawn_pair_deltas(
-                    &mut entry.values[p][..h], pp.as_slice(),
-                    net_weights, h, num_features, pov, mirrored);
             }
 
             self.stack[ply].accurate[p] = true;
@@ -643,7 +637,6 @@ impl ThreatStack {
         let black_king_sq = (board.pieces[KING as usize] & board.colors[BLACK as usize]).trailing_zeros();
         let mirrored_w = (white_king_sq % 8) >= 4;
         let mirrored_b = (black_king_sq % 8) >= 4;
-        let pp = self.pp_features;
 
         #[cfg(feature = "profile-threats")]
         {
@@ -664,13 +657,14 @@ impl ThreatStack {
             let prev_entry = &prev[ply - 1];
             let entry = &mut curr[0];
 
-            if entry_mv == NO_MOVE || entry.delta.is_empty() {
+            if (entry_mv == NO_MOVE || entry.delta.is_empty()) && entry.pp_delta.is_empty() {
                 entry.values[WHITE as usize][..h]
                     .copy_from_slice(&prev_entry.values[WHITE as usize][..h]);
                 entry.values[BLACK as usize][..h]
                     .copy_from_slice(&prev_entry.values[BLACK as usize][..h]);
             } else {
                 let local_deltas = entry.delta.as_slice();
+                let pp_slice = entry.pp_delta.as_slice();
                 let (dst_w, dst_b) = {
                     let (w, b) = entry.values.split_at_mut(1);
                     (&mut w[0][..h], &mut b[0][..h])
@@ -684,18 +678,9 @@ impl ThreatStack {
                         local_deltas,
                         net_weights, h, num_features,
                         mirrored_w, mirrored_b,
+                        pp_slice, num_features,
                     );
                 }
-            }
-
-            if pp > 0 && !entry.pp_delta.is_empty() {
-                let ppd = entry.pp_delta;
-                crate::pawn_pair::apply_pawn_pair_deltas(
-                    &mut entry.values[WHITE as usize][..h], ppd.as_slice(),
-                    net_weights, h, num_features, WHITE, mirrored_w);
-                crate::pawn_pair::apply_pawn_pair_deltas(
-                    &mut entry.values[BLACK as usize][..h], ppd.as_slice(),
-                    net_weights, h, num_features, BLACK, mirrored_b);
             }
 
             entry.accurate = [true, true];
