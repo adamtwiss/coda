@@ -36,7 +36,8 @@
 //! changes only on pawn moves, captures, promotions and en passant, so the
 //! incremental update rate is far below the threat block's.
 
-use crate::types::{Color, WHITE};
+use crate::types::{Color, Move, WHITE, PAWN, FLAG_EN_PASSANT,
+                   move_from, move_to, move_flags, is_promotion, flip_color};
 use crate::bitboard::Bitboard;
 
 /// Geometric shapes: 5 same-file (d in 1..=5) + 11 adjacent-file (d in -5..=5).
@@ -136,6 +137,181 @@ pub fn enumerate_pawn_pairs<F: FnMut(usize)>(
         for b in (a + 1)..n {
             if let Some(idx) = pair_feature(sqs[a], mine[a], sqs[b], mine[b]) {
                 callback(idx);
+            }
+        }
+    }
+}
+
+/// One pawn-pair change: a pair of pawn squares with their colours, and
+/// whether the pair is being added or removed.
+///
+/// Stored in PHYSICAL squares and ABSOLUTE colours, exactly like
+/// `RawThreatDelta`, so one delta serves both perspectives — the transform and
+/// the ours/theirs decision happen at apply time. Packed into 15 bits:
+/// `a_sq(6) | b_sq(6) | a_col(1) | b_col(1) | add(1)`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct PawnPairDelta(u32);
+
+impl PawnPairDelta {
+    #[inline]
+    pub fn new(a_sq: u8, a_col: Color, b_sq: u8, b_col: Color, add: bool) -> Self {
+        Self((a_sq as u32)
+            | ((b_sq as u32) << 6)
+            | ((a_col as u32) << 12)
+            | ((b_col as u32) << 13)
+            | ((add as u32) << 14))
+    }
+    #[inline] pub fn a_sq(self) -> u8 { (self.0 & 63) as u8 }
+    #[inline] pub fn b_sq(self) -> u8 { ((self.0 >> 6) & 63) as u8 }
+    #[inline] pub fn a_col(self) -> Color { ((self.0 >> 12) & 1) as Color }
+    #[inline] pub fn b_col(self) -> Color { ((self.0 >> 13) & 1) as Color }
+    #[inline] pub fn add(self) -> bool { (self.0 >> 14) & 1 == 1 }
+}
+
+/// Upper bound on pawn-pair deltas from a single move.
+///
+/// A move removes at most two pawns (the mover and an captured pawn) and adds
+/// at most one. Squares within one file of a given square span three files of
+/// six pawn ranks, so each changed pawn pairs with at most 17 others:
+/// `3 * 17 = 51`. Rounded to 64.
+pub const MAX_PAWN_PAIR_DELTAS: usize = 64;
+
+/// True when two squares are at most one file apart. Both perspective
+/// transforms (`^56`, `^7`) preserve file DISTANCE, so filtering here is
+/// perspective-invariant and keeps the delta list short.
+#[inline]
+fn within_one_file(a: u8, b: u8) -> bool {
+    ((a % 8) as i32 - (b % 8) as i32).abs() <= 1
+}
+
+/// Emit the pawn-pair deltas for `mv`, given the pawn state BEFORE it.
+///
+/// Called from two places that must agree byte-for-byte: eagerly in
+/// `Board::make_move` before any piece mutation, and lazily from the
+/// accumulator's backward walk over `PieceState`. Sharing one generator is what
+/// makes those two paths identical by construction rather than by testing.
+///
+/// `pt` is the moving piece type, read from the pre-move mailbox.
+pub fn push_pawn_pair_deltas(
+    out: &mut Vec<PawnPairDelta>,
+    pawns_bb: Bitboard,
+    colors_bb: &[Bitboard; 2],
+    us: Color,
+    mv: Move,
+    captured: u8,
+    pt: u8,
+) {
+    out.clear();
+    let from = move_from(mv);
+    let to = move_to(mv);
+    let them = flip_color(us);
+    let is_ep = move_flags(mv) == FLAG_EN_PASSANT;
+
+    // Which pawns leave the pawn set, and which join it. A promotion removes
+    // the pawn from `from` and adds NOTHING — the piece that lands on `to` is
+    // no longer a pawn.
+    let mut removed: [(u8, Color); 2] = [(0, 0); 2];
+    let mut n_removed = 0usize;
+    if is_ep {
+        let cap_sq = if us == WHITE { to.wrapping_sub(8) } else { to.wrapping_add(8) };
+        removed[n_removed] = (cap_sq, them);
+        n_removed += 1;
+    } else if captured == PAWN {
+        removed[n_removed] = (to, them);
+        n_removed += 1;
+    }
+    if pt == PAWN {
+        removed[n_removed] = (from, us);
+        n_removed += 1;
+    }
+    let added: Option<(u8, Color)> =
+        if pt == PAWN && !is_promotion(mv) { Some((to, us)) } else { None };
+
+    if n_removed == 0 && added.is_none() {
+        return; // no pawn moved and no pawn was captured — the block is untouched
+    }
+
+    // Working set of pawn squares, mutated as pawns leave and join. Processing
+    // removals against a SHRINKING set is what keeps a pawn-takes-pawn move
+    // correct: the pair between the two departing pawns is emitted exactly
+    // once, when the first of them is removed.
+    let mut sq: [u8; 16] = [0; 16];
+    let mut col: [Color; 16] = [0; 16];
+    let mut n = 0usize;
+    let mut bb = pawns_bb;
+    while bb != 0 && n < sq.len() {
+        let s = bb.trailing_zeros() as u8;
+        bb &= bb - 1;
+        sq[n] = s;
+        col[n] = if (colors_bb[WHITE as usize] >> s) & 1 == 1 { WHITE } else { 1 - WHITE };
+        n += 1;
+    }
+
+    for k in 0..n_removed {
+        let (rs, rc) = removed[k];
+        // Drop `rs` from the working set first, so it cannot pair with itself
+        // and so a second removal does not re-emit the pair between the two.
+        let mut i = 0;
+        while i < n {
+            if sq[i] == rs {
+                sq[i] = sq[n - 1];
+                col[i] = col[n - 1];
+                n -= 1;
+                break;
+            }
+            i += 1;
+        }
+        for j in 0..n {
+            if within_one_file(rs, sq[j]) {
+                out.push(PawnPairDelta::new(rs, rc, sq[j], col[j], false));
+            }
+        }
+    }
+
+    if let Some((a_sq, a_col)) = added {
+        for j in 0..n {
+            if within_one_file(a_sq, sq[j]) {
+                out.push(PawnPairDelta::new(a_sq, a_col, sq[j], col[j], true));
+            }
+        }
+    }
+}
+
+/// Apply pawn-pair deltas to one perspective's accumulator in place.
+///
+/// `pp_base` is the pawn-pair block's offset in the shared threat feature
+/// space, i.e. `num_threat_features`.
+pub fn apply_pawn_pair_deltas(
+    dst: &mut [i16],
+    deltas: &[PawnPairDelta],
+    weights: &[i8],
+    h: usize,
+    pp_base: usize,
+    pov: Color,
+    mirrored: bool,
+) {
+    for d in deltas {
+        let (mut a, mut b) = (d.a_sq(), d.b_sq());
+        if pov != WHITE {
+            a ^= 56;
+            b ^= 56;
+        }
+        if mirrored {
+            a ^= 7;
+            b ^= 7;
+        }
+        let Some(idx) = pair_feature(a, d.a_col() == pov, b, d.b_col() == pov) else {
+            continue;
+        };
+        let w = (pp_base + idx) * h;
+        debug_assert!(w + h <= weights.len(), "pawn-pair weight row out of range");
+        if d.add() {
+            for j in 0..h {
+                dst[j] += weights[w + j] as i16;
+            }
+        } else {
+            for j in 0..h {
+                dst[j] -= weights[w + j] as i16;
             }
         }
     }
@@ -251,6 +427,134 @@ mod tests {
         }
         let dead: Vec<usize> = (0..PAWN_PAIR_SHAPES).filter(|&s| !seen[s]).collect();
         assert!(dead.is_empty(), "unreachable shapes: {dead:?}");
+    }
+
+    /// THE invariant: applying a move's deltas to the parent's feature
+    /// multiset must reproduce a full fresh enumeration, exactly, for both
+    /// perspectives. Everything else about the block can be right and this
+    /// still wrong, and the failure is silent — a net that evaluates a
+    /// slightly wrong position on most nodes.
+    ///
+    /// Modelled on `threats::lazy_deltas_match_eager_generation`, including
+    /// its corpus and its bias toward promotions/EP, which are exactly the
+    /// moves where the pawn SET changes in a way a naive "move one pawn" delta
+    /// would get wrong.
+    #[test]
+    fn deltas_reproduce_full_enumeration() {
+        use crate::movegen::generate_legal_moves;
+        use crate::types::{move_flags, is_promotion, FLAG_EN_PASSANT, Move};
+        crate::init();
+
+        const START_FENS: &[&str] = &[
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+            "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+            "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",
+            "4k3/P6P/8/8/8/8/p6p/4K3 w - - 0 1",
+            "rnbqkbnr/ppp1p1pp/8/3pPp2/8/8/PPPP1PPP/RNBQKBNR w KQkq f6 0 3",
+            "rnbqkbnr/pppp1ppp/8/8/3PpP2/8/PPP1P1PP/RNBQKBNR b KQkq f3 0 3",
+        ];
+
+        fn next_u32(state: &mut u32) -> u32 {
+            let mut x = *state;
+            x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+            *state = x; x
+        }
+        fn mirror_of(b: &Board, pov: Color) -> bool { (b.king_sq(pov) % 8) >= 4 }
+        fn counts(b: &Board, pov: Color) -> [i32; PAWN_PAIR_FEATURES] {
+            let mut c = [0i32; PAWN_PAIR_FEATURES];
+            enumerate_pawn_pairs(b.pieces[PAWN as usize], &b.colors, pov,
+                                 mirror_of(b, pov), |i| c[i] += 1);
+            c
+        }
+
+        let (mut checked, mut with_deltas, mut promos, mut eps, mut pawn_caps) = (0, 0, 0, 0, 0);
+        for (fen_idx, fen) in START_FENS.iter().enumerate() {
+            for game in 0..20 {
+                let seed = 0x9E37_79B9u32
+                    .wrapping_add((fen_idx as u32).wrapping_mul(1_000_003))
+                    .wrapping_add((game as u32).wrapping_mul(7919));
+                let mut rng = if seed == 0 { 1 } else { seed };
+                let mut board = Board::new();
+                board.set_fen(fen);
+
+                for _ply in 0..120 {
+                    let legal = generate_legal_moves(&board);
+                    if legal.len == 0 { break; }
+                    // Bias toward pawn moves: uniform play spends most of its
+                    // time on piece shuffles, where the delta list is empty and
+                    // the test proves nothing.
+                    let mut interesting: Vec<Move> = Vec::new();
+                    for i in 0..legal.len {
+                        let m = legal.get(i);
+                        let f = move_from(m);
+                        if board.mailbox[f as usize] == PAWN
+                            || board.mailbox[move_to(m) as usize] == PAWN
+                        {
+                            interesting.push(m);
+                        }
+                    }
+                    let mv = if !interesting.is_empty() && next_u32(&mut rng) % 4 != 0 {
+                        interesting[(next_u32(&mut rng) as usize) % interesting.len()]
+                    } else {
+                        legal.get((next_u32(&mut rng) as usize) % legal.len)
+                    };
+
+                    let us = board.side_to_move;
+                    let to = move_to(mv);
+                    let is_ep = move_flags(mv) == FLAG_EN_PASSANT;
+                    let captured = if is_ep { PAWN } else { board.mailbox[to as usize] };
+                    let pt = board.mailbox[move_from(mv) as usize];
+                    if is_promotion(mv) { promos += 1; }
+                    if is_ep { eps += 1; }
+                    if captured == PAWN { pawn_caps += 1; }
+
+                    let before: [[i32; PAWN_PAIR_FEATURES]; 2] =
+                        [counts(&board, WHITE), counts(&board, 1 - WHITE)];
+                    let mirror_before = [mirror_of(&board, WHITE), mirror_of(&board, 1 - WHITE)];
+
+                    let mut deltas = Vec::new();
+                    push_pawn_pair_deltas(&mut deltas, board.pieces[PAWN as usize],
+                                          &board.colors, us, mv, captured, pt);
+                    assert!(deltas.len() <= MAX_PAWN_PAIR_DELTAS,
+                        "delta overflow: {} > {}", deltas.len(), MAX_PAWN_PAIR_DELTAS);
+                    if !deltas.is_empty() { with_deltas += 1; }
+
+                    if !board.make_move(mv) { break; }
+
+                    for pov in [WHITE, 1 - WHITE] {
+                        let p = pov as usize;
+                        // A king crossing the file midline changes the mirror,
+                        // which invalidates deltas for that perspective — the
+                        // accumulator refreshes instead. Skip, as it would.
+                        if mirror_of(&board, pov) != mirror_before[p] { continue; }
+                        let mirrored = mirror_before[p];
+                        let mut got = before[p];
+                        for d in &deltas {
+                            let (mut a, mut b) = (d.a_sq(), d.b_sq());
+                            if pov != WHITE { a ^= 56; b ^= 56; }
+                            if mirrored { a ^= 7; b ^= 7; }
+                            if let Some(i) = pair_feature(a, d.a_col() == pov,
+                                                          b, d.b_col() == pov) {
+                                got[i] += if d.add() { 1 } else { -1 };
+                            }
+                        }
+                        let want = counts(&board, pov);
+                        assert_eq!(got, want,
+                            "delta replay != enumeration, fen {fen_idx} game {game} \
+                             pov {pov} mv {mv:#06x} pt {pt} captured {captured} ep {is_ep}");
+                        checked += 1;
+                    }
+                }
+            }
+        }
+        // The test is worthless if the interesting cases never occurred.
+        assert!(checked > 5000, "too few checks: {checked}");
+        assert!(with_deltas > 2000, "too few moves actually changed pawns: {with_deltas}");
+        assert!(promos > 20, "too few promotions: {promos}");
+        assert!(eps > 0, "no en-passant captures exercised");
+        assert!(pawn_caps > 100, "too few pawn captures: {pawn_caps}");
+        println!("pawn-pair deltas verified: {checked} checks, {with_deltas} changing moves, \
+                  {promos} promos, {eps} EP, {pawn_caps} pawn captures");
     }
 
     /// Cross-check dump: writes `stm-indices | ntm-indices` per FEN so the
