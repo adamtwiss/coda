@@ -54,6 +54,7 @@ pub mod nnue_export;
 pub mod bullet_convert;
 mod cuckoo;
 pub mod threats;
+pub mod pawn_pair;
 pub mod threat_accum;
 pub mod sparse_l1;
 pub mod nnue_simd;
