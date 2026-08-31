@@ -236,7 +236,16 @@ pub fn convert_v7(
     kb_count: usize,
     num_threats: usize,
     hl_crelu: bool,
+    pawn_pairs: bool,
 ) -> Result<(), String> {
+    // Pawn-pair features extend the THREAT feature space (see nnue.rs), so they
+    // occupy l0 columns immediately after the threat block and cannot exist
+    // without it.
+    let num_pawn_pairs = if pawn_pairs { crate::pawn_pair::PAWN_PAIR_FEATURES } else { 0 };
+    if pawn_pairs && num_threats == 0 {
+        return Err("--pawn-pairs requires --threats: pawn-pair features extend the \
+                    threat feature space and cannot stand alone".to_string());
+    }
     let psq_input_size = kb_count * PSQ_INPUTS_PER_BUCKET;
     let data = std::fs::read(input_path).map_err(|e| format!("read {}: {}", input_path, e))?;
     let data_len = strip_footer(&data);
@@ -264,7 +273,12 @@ pub fn convert_v7(
     // Direct: L1 input is 2*H
     let l1_mul = if use_pairwise { 1 } else { 2 };
     // Combined FT: (PSQ_inputs + threat_inputs) share one weight matrix, all i16
-    let total_ft_inputs = psq_input_size + num_threats;
+    // Including num_pawn_pairs here is what makes a FORGOTTEN --pawn-pairs a
+    // loud failure: `expected` below would be short by 64*h*2 bytes and the
+    // size check rejects the file. That check is the only thing standing
+    // between a mis-specified flag and a silently wrong net — the same failure
+    // shape as the --hl-crelu defect, which had no such guard.
+    let total_ft_inputs = psq_input_size + num_threats + num_pawn_pairs;
     let bytes_per_neuron = total_ft_inputs * 2 + 2 + l1_mul * bl1 * l1w_bytes_per;
     let h = if ft_size_override > 0 {
         ft_size_override
@@ -274,8 +288,8 @@ pub fn convert_v7(
         (data_len - fixed_bytes) / bytes_per_neuron
     };
 
-    println!("Input: {} bytes, FT={} L1={}{} L2={} threats={} kb={}/{:?} (bucketed: {}x{}, {}x{})",
-        data.len(), h, l1_size, if int8_l1 { "(i8)" } else { "" }, l2_size, num_threats,
+    println!("Input: {} bytes, FT={} L1={}{} L2={} threats={} pawn_pairs={} kb={}/{:?} (bucketed: {}x{}, {}x{})",
+        data.len(), h, l1_size, if int8_l1 { "(i8)" } else { "" }, l2_size, num_threats, num_pawn_pairs,
         kb_count, kb_layout, bl1, bl2, NNUE_OUTPUT_BUCKETS, l1_size);
 
     // Verify size
@@ -283,7 +297,12 @@ pub fn convert_v7(
     let expected = total_ft_inputs * h * 2 + h * 2 + l1_input * bl1 * l1w_bytes_per
         + l1b_bytes + l2_bytes + out_bytes;
     if expected != data_len {
-        return Err(format!("Size mismatch: expected {} bytes for FT={}, got {} (total_ft_inputs={})", expected, h, data_len, total_ft_inputs));
+        return Err(format!(
+            "Size mismatch: expected {} bytes for FT={}, got {} (total_ft_inputs={}). \
+             A difference of {} bytes is exactly one pawn-pair block, so check \
+             whether --pawn-pairs matches how the net was trained.",
+            expected, h, data_len, total_ft_inputs,
+            crate::pawn_pair::PAWN_PAIR_FEATURES * h * 2));
     }
 
     let mut offset = 0;
@@ -328,6 +347,32 @@ pub fn convert_v7(
         }
         if pct > 1.0 {
             eprintln!("WARNING: {:.2}% of threat weights clipped to i8 — consider i16 storage", pct);
+        }
+    }
+
+    // Pawn-pair weights: the next num_pawn_pairs rows of the same l0 matrix,
+    // quantised identically to the threat rows. Sharing the scale is correct by
+    // construction rather than by convention — in the trainer these are columns
+    // of one matrix — which is why they can share the threat accumulator.
+    let mut pawn_pair_weights = Vec::new();
+    if num_pawn_pairs > 0 {
+        pawn_pair_weights = vec![0i8; num_pawn_pairs * h];
+        let mut clipped = 0u64;
+        for i in 0..num_pawn_pairs * h {
+            let val_i16 = read_i16_le(&data, offset);
+            offset += 2;
+            if val_i16 < i8::MIN as i16 || val_i16 > i8::MAX as i16 { clipped += 1; }
+            pawn_pair_weights[i] = (val_i16 as i32).clamp(i8::MIN as i32, i8::MAX as i32) as i8;
+        }
+        let total = (num_pawn_pairs * h) as u64;
+        let pct = 100.0 * clipped as f64 / total as f64;
+        println!("Read {} pawn-pair weights ({}×{}, i16→i8 clamp, {:.4}% clipped)",
+            total, num_pawn_pairs, h, pct);
+        // A dense 64-feature block sees far more gradient per row than a sparse
+        // threat row, so its weights can be larger. Warn at the same 1% bar.
+        if pct > 1.0 {
+            eprintln!("WARNING: {:.2}% of pawn-pair weights clipped to i8 — scale \
+                       mismatch, will lose Elo", pct);
         }
     }
 
@@ -456,7 +501,10 @@ pub fn convert_v7(
     // metadata like xray_trained. v9 nets are still loadable (legacy xray_trained=true
     // assumed). Old Coda binaries that don't understand v10 will error on load, which
     // is the intended fail-loud behavior for format mismatch.
-    let version = if num_threats > 0 { 10u32 } else if dual_l1 { 8u32 } else { 7u32 };
+    // v11 adds an arch_flags2 byte (pawn-pair block). See nnue.rs for why it is
+    // a new byte rather than a ninth meaning for a bit in the first flags byte.
+    let version = if num_pawn_pairs > 0 { 11u32 }
+        else if num_threats > 0 { 10u32 } else if dual_l1 { 8u32 } else { 7u32 };
     let mut buf = Vec::new();
     write_u32_le(&mut buf, NNUE_MAGIC);
     write_u32_le(&mut buf, version);
@@ -515,12 +563,30 @@ pub fn convert_v7(
         buf.push(training_flags);
     }
 
+    // v11 arch_flags2 (ARCHITECTURE, not training config — that distinction is
+    // why this is not a reserved training_flags bit).
+    //   bit 0: has_pawn_pair, followed by a u32 feature count
+    //   bits 1-7: reserved (must be 0)
+    if version >= 11 {
+        let mut arch_flags2 = 0u8;
+        if num_pawn_pairs > 0 { arch_flags2 |= 1; }
+        buf.push(arch_flags2);
+        if num_pawn_pairs > 0 {
+            write_u32_le(&mut buf, num_pawn_pairs as u32);
+        }
+    }
+
     // Write weights — hidden layers have bucketed dimensions
     for &w in &input_weights { write_i16_le(&mut buf, w); }
     for &b in &input_biases { write_i16_le(&mut buf, b); }
     // Threat weights: i8 (written as raw bytes)
     if num_threats > 0 {
         for &w in &threat_weights { buf.push(w as u8); }
+    }
+    // Contiguous with the threat block: the loader reads both as one run so
+    // pawn-pair feature `i` is addressable as `num_threat_features + i`.
+    if num_pawn_pairs > 0 {
+        for &w in &pawn_pair_weights { buf.push(w as u8); }
     }
     for &w in &l1_weights { write_i16_le(&mut buf, w); } // [L1_input][BUCKETS*L1]
     for &b in &l1_biases { write_i16_le(&mut buf, b); }   // [BUCKETS*L1]
