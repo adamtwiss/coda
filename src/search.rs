@@ -6075,7 +6075,7 @@ fn negamax(
                 // have a narrow move set, so applying the full ordinary quiet
                 // reduction is unnecessarily aggressive.
                 if in_check {
-                    reduction -= LMR_SCALE;
+                    reduction -= LMR_SCALE / 2;
                 }
 
                 // Reduce more when TT move is a capture
@@ -6249,7 +6249,7 @@ fn negamax(
                     // quiet evasions; only genuinely late captures remain
                     // reduced after the floor below.
                     if in_check {
-                        reduction -= LMR_SCALE;
+                        reduction -= LMR_SCALE / 2;
                     }
 
                     // Correction battery (a)-(c) — applied to noisy
