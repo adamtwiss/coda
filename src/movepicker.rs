@@ -547,7 +547,15 @@ impl MovePicker {
             // Dynamic SEE threshold: captures with strong history get a more
             // forgiving threshold. Use captHist only (not MVV) to avoid inflation.
             let capt_hist = capt_hist_score_static(board, history, m);
-            let cap_score = mvv_lva(board, m) + capt_hist;
+            // Once QS stopped partitioning on SEE, capture history became its
+            // only learned ordering signal. Give it modestly more leverage in
+            // that flat stream; retain the calibrated main-search score.
+            let hist_score = if self.no_see_partition {
+                capt_hist * 3 / 2
+            } else {
+                capt_hist
+            };
+            let cap_score = mvv_lva(board, m) + hist_score;
             if self.no_see_partition {
                 // SF QCAPTURE shape: no SEE here at all. Order by score; the
                 // caller's gate does the one exchange evaluation per move.
