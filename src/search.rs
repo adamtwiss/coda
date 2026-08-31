@@ -7233,9 +7233,19 @@ fn quiescence_with_depth(
         return best_score;
     }
 
-    // Use main MovePicker in quiescence mode.
-    // This partitions captures into good (SEE>=0) and bad, and uses staged ordering.
-    let mut picker = MovePicker::new_quiescence(tt_move, &info.history, qs_checkers, qs_pinned);
+    // Capture-only QS must not import a quiet TT move from a deeper search.
+    // The TT bound remains usable above; only move ordering is restricted to
+    // the domain this node will otherwise generate and search.
+    let qs_tt_move = if tt_move != NO_MOVE
+        && (board.piece_type_at(move_to(tt_move)) != NO_PIECE_TYPE
+            || move_flags(tt_move) == FLAG_EN_PASSANT
+            || is_promotion(tt_move))
+    {
+        tt_move
+    } else {
+        NO_MOVE
+    };
+    let mut picker = MovePicker::new_quiescence(qs_tt_move, &info.history, qs_checkers, qs_pinned);
     let mut best_move = NO_MOVE;
     let mut qs_move_count = 0i32;
     let qs_max_caps = tp(&QS_MAX_CAPTURES);
