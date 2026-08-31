@@ -5451,7 +5451,7 @@ fn negamax(
         } else {
             NO_MOVE
         };
-        let mut pc_picker = QMovePicker::new(board, pc_tt_move, false, &info.history, pinned, checkers);
+        let mut pc_picker = QMovePicker::new(board, pc_tt_move, &info.history, pinned, checkers);
         loop {
             let mv = pc_picker.next(board);
             if mv == NO_MOVE { break; }

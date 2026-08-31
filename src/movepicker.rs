@@ -1177,9 +1177,9 @@ pub fn is_pseudo_legal(board: &Board, mv: Move) -> bool {
     true
 }
 
-/// Move picker for quiescence search.
-/// QS move picker: TT move first, then captures scored by MVV-LVA + captHist.
-/// When in_check, uses evasion mode (all moves, captures scored above quiets).
+/// Capture-only picker used by ProbCut: TT move first, then captures scored by
+/// the shared main-search capture scorer. Never runs in check — the old evasion
+/// mode was dead code and was removed (QS in-check uses MovePicker::new_evasion).
 pub struct QMovePicker {
     tt_move: Move,
     tt_stage: bool, // true = haven't tried TT move yet
@@ -1193,7 +1193,6 @@ pub struct QMovePicker {
     idx: usize,
     pinned: Bitboard,
     checkers: Bitboard,
-    in_check: bool,
 }
 
 impl QMovePicker {
@@ -1202,19 +1201,16 @@ impl QMovePicker {
     pub fn new(
         board: &Board,
         tt_move: Move,
-        in_check: bool,
         history: &History,
         // Passed in — the probcut block runs after the node-entry
         // pinned/checkers computation.
         pinned: Bitboard,
         checkers: Bitboard,
     ) -> Self {
-
-        let moves = if in_check {
-            generate_evasions(board, checkers, pinned)
-        } else {
-            generate_captures(board)
-        };
+        // Captures only. This picker's sole caller is ProbCut, which never
+        // runs in check — the old in_check/evasion branch here was dead code
+        // (QS in-check uses the full MovePicker::new_evasion, history-scored).
+        let moves = generate_captures(board);
         let mut picker = QMovePicker {
             tt_move: if tt_move != NO_MOVE && is_pseudo_legal(board, tt_move) { tt_move } else { NO_MOVE },
             tt_stage: true,
@@ -1225,7 +1221,6 @@ impl QMovePicker {
             idx: 0,
             pinned,
             checkers,
-            in_check,
         };
 
         // Score moves: MVV-LVA + captHist for captures
@@ -1250,22 +1245,20 @@ impl QMovePicker {
                 // use one capture scorer for both search and QS.
                 let mvv = mvv_lva(board, mv);
                 let capt_hist = capt_hist_score_static(board, history, mv);
-                if in_check {
-                    // Evasion captures use the same uncrossable band as the
-                    // main picker, so a hot quiet cannot outrank them.
-                    picker.scores[i].write((1 << 20) + mvv + capt_hist);
-                } else {
-                    picker.scores[i].write(mvv + capt_hist);
-                }
+                picker.scores[i].write(mvv + capt_hist);
             } else if is_promotion(mv) {
-                if in_check {
-                    let pt = promotion_piece_type(mv);
-                    picker.scores[i].write(if pt == QUEEN { 9000 } else { -1000 });
-                } else {
-                    picker.scores[i].write(see_value(promotion_piece_type(mv)));
-                }
+                // Non-capture promotion: kept on its ORIGINAL see_value scale,
+                // deliberately. This ranks it ~25x below the main picker's
+                // mvv_lva rank for the same move, which looks like forked-
+                // scorer drift -- but "fixing" it to the shared scale failed
+                // non-regression at -1.8 Elo (#3366, bundled with this
+                // deletion). ProbCut trying promotions ahead of captures
+                // evidently changes which cutoffs its verification certifies,
+                // for the worse. Intentional-by-evidence; do not unify without
+                // its own SPRT.
+                picker.scores[i].write(see_value(promotion_piece_type(mv)));
             } else {
-                // Quiet (only in evasion mode)
+                // Unreachable for generate_captures output; defensive score.
                 picker.scores[i].write(-1_000_000);
             }
         }
@@ -1306,17 +1299,8 @@ impl QMovePicker {
             // Skip TT move (already tried)
             if mv == self.tt_move { continue; }
 
-            // Not in check: only return captures/promotions
-            if !self.in_check {
-                let to = move_to(mv);
-                let flags = move_flags(mv);
-                let is_cap = board.piece_type_at(to) != NO_PIECE_TYPE
-                    || flags == FLAG_EN_PASSANT
-                    || is_promotion(mv);
-                if !is_cap {
-                    continue;
-                }
-            }
+            // Captures-only picker: everything generated is a capture or
+            // promotion, so no per-move class filter is needed.
 
             if board.is_legal(mv, self.pinned, self.checkers) {
                 return mv;
