@@ -786,6 +786,10 @@ pub static FEAT_4D_HISTORY: AtomicBool = AtomicBool::new(true); // threat-aware 
 // Diagnostic-only (env RFP_AUDIT=1): null-verify every RFP cutoff and count
 // false positives per depth. NOT a play feature — costs NPS; bench/EPD use.
 pub static RFP_AUDIT: AtomicBool = AtomicBool::new(false);
+// Diagnostic-only (env PROBCUT_AUDIT=1): record ProbCut's full admission /
+// verification funnel and full-depth-check a deterministic sample of its
+// predicted cutoffs. Off in production and ordinary benches.
+pub static PROBCUT_AUDIT: AtomicBool = AtomicBool::new(false);
 
 /// Disable all features (pure negamax + eval)
 pub fn disable_all_features() {
@@ -891,6 +895,47 @@ impl SearchLimits {
     }
 }
 
+const PROBCUT_AUDIT_DEPTHS: usize = 24;
+const PROBCUT_AUDIT_ROOT_DEPTHS: usize = 32;
+
+/// Diagnostic counters for ProbCut's candidate funnel. The first index on the
+/// depth tables is `improving` (0/1); the second is remaining depth, saturated
+/// into the last bucket.
+#[derive(Default)]
+pub struct ProbCutAuditStats {
+    /// First reason a node did not enter ProbCut:
+    /// in-check, root, PV, decisive beta, excluded search, below min depth,
+    /// TT ceiling, king pressure, or entered.
+    pub gate_first: [u64; 9],
+    pub entered: [[u64; PROBCUT_AUDIT_DEPTHS]; 2],
+    pub moves: [[u64; PROBCUT_AUDIT_DEPTHS]; 2],
+    pub see_pass: [[u64; PROBCUT_AUDIT_DEPTHS]; 2],
+    pub qs_pass: [[u64; PROBCUT_AUDIT_DEPTHS]; 2],
+    pub deep_try: [[u64; PROBCUT_AUDIT_DEPTHS]; 2],
+    pub cutoffs: [[u64; PROBCUT_AUDIT_DEPTHS]; 2],
+    pub qs_nodes: [[u64; PROBCUT_AUDIT_DEPTHS]; 2],
+    pub deep_nodes: [[u64; PROBCUT_AUDIT_DEPTHS]; 2],
+    pub shadow_try: [[u64; PROBCUT_AUDIT_DEPTHS]; 2],
+    pub shadow_reject: [[u64; PROBCUT_AUDIT_DEPTHS]; 2],
+    pub shadow_nodes: [[u64; PROBCUT_AUDIT_DEPTHS]; 2],
+    pub root_entered: [u64; PROBCUT_AUDIT_ROOT_DEPTHS],
+    pub root_cutoffs: [u64; PROBCUT_AUDIT_ROOT_DEPTHS],
+    /// Qsearch clearance relative to the active ProbCut margin:
+    /// <1/4, <1/2, <1, or >=1 margin. Each row is qsearch passes,
+    /// reduced-search passes, shadow checks, shadow rejections.
+    pub clearance: [[u64; 4]; 4],
+    /// Final cutoff source: TT move, promotion, other capture.
+    pub cutoff_source: [u64; 3],
+    /// Sampled confirmations and rejections by cutoff source. Columns are
+    /// confirmations, rejections.
+    pub shadow_source: [[u64; 2]; 3],
+    /// Sampled confirmations and rejections split by whether the raw SEE
+    /// threshold was clamped from <= 0. Rows are unclamped, clamped; columns
+    /// are confirmations, rejections.
+    pub shadow_see_clamp: [[u64; 2]; 2],
+    pub raw_see_nonpositive: u64,
+}
+
 /// Pruning counters for diagnostics.
 #[derive(Default)]
 pub struct PruneStats {
@@ -910,6 +955,7 @@ pub struct PruneStats {
     pub futility_prunes: u64,
     pub see_prunes: u64,
     pub probcut_cutoffs: u64,
+    pub probcut_audit: ProbCutAuditStats,
     pub lmr_searches: u64,
     pub singular_ext: u64,
     pub double_ext: u64,
@@ -1044,6 +1090,9 @@ pub struct SearchInfo {
     /// nested audits (each audited cutoff would otherwise spawn audits at
     /// every RFP cutoff inside its own verification, compounding cost).
     pub rfp_audit_active: bool,
+    /// True inside a sampled full-depth ProbCut confirmation. Nested ProbCut
+    /// is disabled there so the diagnostic label is not itself speculative.
+    pub probcut_audit_active: bool,
     pub tt: std::sync::Arc<TT>,  // shared across Lazy SMP threads
     pub history: Box<History>,
     pub stop: std::sync::Arc<AtomicBool>,  // shared stop flag
@@ -1374,6 +1423,7 @@ impl SearchInfo {
             syzygy: None,
             tb_probe_depth: 4,
             rfp_audit_active: false,
+            probcut_audit_active: false,
         }
     }
 
@@ -2393,6 +2443,10 @@ pub(crate) fn init_feature_flags() {
             RFP_AUDIT.store(true, Ordering::Relaxed);
             eprintln!("RFP_AUDIT enabled: null-verifying every RFP cutoff (diagnostic, slow)");
         }
+        if std::env::var("PROBCUT_AUDIT").is_ok() {
+            PROBCUT_AUDIT.store(true, Ordering::Relaxed);
+            eprintln!("PROBCUT_AUDIT enabled: recording funnel and sampling full-depth confirmations (diagnostic, slow)");
+        }
     });
 }
 
@@ -2513,6 +2567,7 @@ fn refresh_helper_common(helper: &mut SearchInfo, main: &SearchInfo) {
     // Per-search scalars a fresh helper had zeroed.
     helper.nmp_min_ply = 0;
     helper.rfp_audit_active = false;
+    helper.probcut_audit_active = false;
     helper.max_nodes = 0;
 }
 
@@ -4482,6 +4537,35 @@ macro_rules! trace_node {
 
 /// Negamax alpha-beta search.
 /// Main negamax search with all pruning, extensions, and reductions.
+#[inline]
+fn probcut_audit_depth_bucket(depth: i32) -> usize {
+    depth.max(0).min(PROBCUT_AUDIT_DEPTHS as i32 - 1) as usize
+}
+
+#[inline]
+fn probcut_audit_clearance_bucket(clearance: i32, margin: i32) -> usize {
+    let scaled = clearance.max(0).saturating_mul(4);
+    let margin = margin.max(1);
+    if scaled < margin {
+        0
+    } else if scaled < margin * 2 {
+        1
+    } else if scaled < margin * 4 {
+        2
+    } else {
+        3
+    }
+}
+
+#[inline]
+fn probcut_audit_sample(hash: u64, mv: Move) -> bool {
+    // The standard bench produces roughly 40k ProbCut cutoffs. A uniform 1/16
+    // Zobrist sample leaves about 2,500 depth-1 confirmations. Measurements
+    // show those confirmations are cheap enough to buy a useful source/margin
+    // breakdown while keeping the diagnostic run practical.
+    ((hash ^ mv as u64) & 15) == 0
+}
+
 fn negamax(
     board: &mut Board,
     info: &mut SearchInfo,
@@ -4807,7 +4891,10 @@ fn negamax(
             // SF/Obsidian/PlentyChess do: fail-lows accept at tt_depth>=depth
             // but fail-highs need tt_depth>=depth+1. A symmetric `>= depth` is
             // notably more permissive on fail-highs.
-            if tt_depth > depth - (tt_score <= beta) as i32 && FEAT_TT_CUTOFF.load(Ordering::Relaxed) {
+            if tt_depth > depth - (tt_score <= beta) as i32
+                && FEAT_TT_CUTOFF.load(Ordering::Relaxed)
+                && !info.probcut_audit_active
+            {
                 // Unified TT cutoff with node-type guard (Alexandria pattern):
                 // At non-PV nodes, accept TT cutoff when:
                 // - cut_node matches score direction (cut expects fail-high, all expects fail-low)
@@ -4986,6 +5073,7 @@ fn negamax(
                 && !is_decisive(tt_score)
                 && FEAT_TT_NEARMISS.load(Ordering::Relaxed)
                 && halfmove_ok
+                && !info.probcut_audit_active
             {
                 // TT near-miss cutoffs: accept entries 1 ply short with a score margin
                 let margin = 80;
@@ -5439,18 +5527,57 @@ fn negamax(
     } else {
         false
     };
+    let probcut_audit = PROBCUT_AUDIT.load(Ordering::Relaxed)
+        && FEAT_PROBCUT.load(Ordering::Relaxed)
+        && !info.probcut_audit_active;
+    if probcut_audit {
+        let first_gate = if in_check {
+            0
+        } else if ply == 0 {
+            1
+        } else if is_pv {
+            2
+        } else if beta.abs() >= MATE_IN_MAX_PLY {
+            3
+        } else if info.excluded_move[ply_u] != NO_MOVE {
+            4
+        } else if depth < probcut_min_depth {
+            5
+        } else if probcut_tt_noshot {
+            6
+        } else if king_zone_pressure >= tp10(&PROBCUT_KING_ZONE_MAX_10X) {
+            7
+        } else {
+            8
+        };
+        info.stats.probcut_audit.gate_first[first_gate] += 1;
+    }
     if !in_check && ply > 0 && !is_pv && depth >= probcut_min_depth
         && beta.abs() < MATE_IN_MAX_PLY  // skip for mate/TB scores
         && info.excluded_move[ply_u] == NO_MOVE  // skip during SE verification
         && !probcut_tt_noshot  // TT says no chance
         && king_zone_pressure < tp10(&PROBCUT_KING_ZONE_MAX_10X)  // A3: skip in high-threat positions
         && FEAT_PROBCUT.load(Ordering::Relaxed)
+        && !info.probcut_audit_active
     {
         // SEE threshold: only consider captures that gain enough material
-        let see_threshold = (probcut_beta - static_eval).max(0);
+        let raw_see_threshold = probcut_beta - static_eval;
+        let see_threshold = raw_see_threshold.max(0);
         // Improving-conditioned ProbCut depth (SF d6483505) —
         // bundled near-miss; tuned with the LMP/ProbCut margin cluster.
         let pc_depth = depth - 4 - improving as i32;
+        let pc_imp = improving as usize;
+        let pc_depth_bucket = probcut_audit_depth_bucket(depth);
+        let pc_root_bucket = info.root_depth.max(0)
+            .min(PROBCUT_AUDIT_ROOT_DEPTHS as i32 - 1) as usize;
+        let pc_parent_hash = board.hash;
+        if probcut_audit {
+            info.stats.probcut_audit.entered[pc_imp][pc_depth_bucket] += 1;
+            info.stats.probcut_audit.root_entered[pc_root_bucket] += 1;
+            if raw_see_threshold <= 0 {
+                info.stats.probcut_audit.raw_see_nonpositive += 1;
+            }
+        }
         let pc_tt_move = if tt_move_noisy
             && is_pseudo_legal(board, tt_move)
             && board.is_legal(tt_move, pinned, checkers)
@@ -5465,7 +5592,13 @@ fn negamax(
             let mv = pc_picker.next(board);
             if mv == NO_MOVE { break; }
 
+            if probcut_audit {
+                info.stats.probcut_audit.moves[pc_imp][pc_depth_bucket] += 1;
+            }
             if !see_ge(board, mv, see_threshold) { continue; }
+            if probcut_audit {
+                info.stats.probcut_audit.see_pass[pc_imp][pc_depth_bucket] += 1;
+            }
 
             let pc_moved_pt = board.piece_type_at(move_from(mv));
             // Colored mover, read before make_move — written to the cont-hist
@@ -5500,12 +5633,85 @@ fn negamax(
                 info.moved_to_stack[ply_u] = move_to(mv);
             }
 
-            // Cheap qsearch verification before expensive negamax (Stockfish pattern)
-            let mut score = -quiescence(board, info, -probcut_beta, -probcut_beta + 1, ply + 1);
+            // Cheap qsearch verification before expensive negamax.
+            let qs_nodes_before = info.nodes;
+            let qs_score = -quiescence(board, info, -probcut_beta, -probcut_beta + 1, ply + 1);
+            let mut score = qs_score;
+            let clearance_bucket = probcut_audit_clearance_bucket(
+                qs_score - probcut_beta,
+                probcut_beta - beta,
+            );
+            if probcut_audit {
+                info.stats.probcut_audit.qs_nodes[pc_imp][pc_depth_bucket] +=
+                    info.nodes.saturating_sub(qs_nodes_before);
+                if qs_score >= probcut_beta {
+                    info.stats.probcut_audit.qs_pass[pc_imp][pc_depth_bucket] += 1;
+                    info.stats.probcut_audit.clearance[0][clearance_bucket] += 1;
+                }
+            }
 
             // Only do deeper search if qsearch also beats probcut_beta
             if score >= probcut_beta && pc_depth > 0 {
+                let deep_nodes_before = info.nodes;
+                if probcut_audit {
+                    info.stats.probcut_audit.deep_try[pc_imp][pc_depth_bucket] += 1;
+                }
                 score = -negamax(board, info, -probcut_beta, -probcut_beta + 1, pc_depth, ply + 1, !cut_node);
+                if probcut_audit {
+                    info.stats.probcut_audit.deep_nodes[pc_imp][pc_depth_bucket] +=
+                        info.nodes.saturating_sub(deep_nodes_before);
+                }
+            }
+
+            if probcut_audit
+                && score >= probcut_beta
+                && !info.stop.load(Ordering::Relaxed)
+            {
+                info.stats.probcut_audit.cutoffs[pc_imp][pc_depth_bucket] += 1;
+                info.stats.probcut_audit.root_cutoffs[pc_root_bucket] += 1;
+                info.stats.probcut_audit.clearance[1][clearance_bucket] += 1;
+                let source = if mv == pc_tt_move {
+                    0
+                } else if is_promotion(mv) {
+                    1
+                } else {
+                    2
+                };
+                info.stats.probcut_audit.cutoff_source[source] += 1;
+
+                // A full-depth confirmation is deliberately sampled: doing it
+                // for every cutoff would add tens of thousands of depth-1
+                // searches to the standard bench. The original ProbCut result
+                // remains the production result; this search only labels it.
+                if probcut_audit_sample(pc_parent_hash, mv)
+                    && !info.stop.load(Ordering::Relaxed)
+                {
+                    info.stats.probcut_audit.shadow_try[pc_imp][pc_depth_bucket] += 1;
+                    info.stats.probcut_audit.clearance[2][clearance_bucket] += 1;
+                    info.stats.probcut_audit.shadow_source[source][0] += 1;
+                    let see_clamped = (raw_see_threshold <= 0) as usize;
+                    info.stats.probcut_audit.shadow_see_clamp[see_clamped][0] += 1;
+                    let shadow_nodes_before = info.nodes;
+                    info.probcut_audit_active = true;
+                    let shadow_score = -negamax(
+                        board,
+                        info,
+                        -beta,
+                        -beta + 1,
+                        depth - 1,
+                        ply + 1,
+                        !cut_node,
+                    );
+                    info.probcut_audit_active = false;
+                    info.stats.probcut_audit.shadow_nodes[pc_imp][pc_depth_bucket] +=
+                        info.nodes.saturating_sub(shadow_nodes_before);
+                    if !info.stop.load(Ordering::Relaxed) && shadow_score < beta {
+                        info.stats.probcut_audit.shadow_reject[pc_imp][pc_depth_bucket] += 1;
+                        info.stats.probcut_audit.clearance[3][clearance_bucket] += 1;
+                        info.stats.probcut_audit.shadow_source[source][1] += 1;
+                        info.stats.probcut_audit.shadow_see_clamp[see_clamped][1] += 1;
+                    }
+                }
             }
 
             board.unmake_move();
@@ -6981,7 +7187,7 @@ fn quiescence_with_depth(
         }
     }
 
-    if tt_hit && tt_entry.depth >= -1 {
+    if tt_hit && tt_entry.depth >= -1 && !info.probcut_audit_active {
         // 50mr mate/TB downgrade happens inside score_from_tt, so both the
         // cutoff conditions and the returned value use the sanitized score
         // (SF: ttValue is value_from_tt output everywhere).
@@ -7562,6 +7768,50 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
         total_stats.futility_prunes += info.stats.futility_prunes;
         total_stats.see_prunes += info.stats.see_prunes;
         total_stats.probcut_cutoffs += info.stats.probcut_cutoffs;
+        for i in 0..9 {
+            total_stats.probcut_audit.gate_first[i] += info.stats.probcut_audit.gate_first[i];
+        }
+        for imp in 0..2 {
+            for d in 0..PROBCUT_AUDIT_DEPTHS {
+                total_stats.probcut_audit.entered[imp][d] += info.stats.probcut_audit.entered[imp][d];
+                total_stats.probcut_audit.moves[imp][d] += info.stats.probcut_audit.moves[imp][d];
+                total_stats.probcut_audit.see_pass[imp][d] += info.stats.probcut_audit.see_pass[imp][d];
+                total_stats.probcut_audit.qs_pass[imp][d] += info.stats.probcut_audit.qs_pass[imp][d];
+                total_stats.probcut_audit.deep_try[imp][d] += info.stats.probcut_audit.deep_try[imp][d];
+                total_stats.probcut_audit.cutoffs[imp][d] += info.stats.probcut_audit.cutoffs[imp][d];
+                total_stats.probcut_audit.qs_nodes[imp][d] += info.stats.probcut_audit.qs_nodes[imp][d];
+                total_stats.probcut_audit.deep_nodes[imp][d] += info.stats.probcut_audit.deep_nodes[imp][d];
+                total_stats.probcut_audit.shadow_try[imp][d] += info.stats.probcut_audit.shadow_try[imp][d];
+                total_stats.probcut_audit.shadow_reject[imp][d] += info.stats.probcut_audit.shadow_reject[imp][d];
+                total_stats.probcut_audit.shadow_nodes[imp][d] += info.stats.probcut_audit.shadow_nodes[imp][d];
+            }
+        }
+        for d in 0..PROBCUT_AUDIT_ROOT_DEPTHS {
+            total_stats.probcut_audit.root_entered[d] += info.stats.probcut_audit.root_entered[d];
+            total_stats.probcut_audit.root_cutoffs[d] += info.stats.probcut_audit.root_cutoffs[d];
+        }
+        for row in 0..4 {
+            for bucket in 0..4 {
+                total_stats.probcut_audit.clearance[row][bucket] +=
+                    info.stats.probcut_audit.clearance[row][bucket];
+            }
+        }
+        for source in 0..3 {
+            total_stats.probcut_audit.cutoff_source[source] +=
+                info.stats.probcut_audit.cutoff_source[source];
+            for result in 0..2 {
+                total_stats.probcut_audit.shadow_source[source][result] +=
+                    info.stats.probcut_audit.shadow_source[source][result];
+            }
+        }
+        for clamped in 0..2 {
+            for result in 0..2 {
+                total_stats.probcut_audit.shadow_see_clamp[clamped][result] +=
+                    info.stats.probcut_audit.shadow_see_clamp[clamped][result];
+            }
+        }
+        total_stats.probcut_audit.raw_see_nonpositive +=
+            info.stats.probcut_audit.raw_see_nonpositive;
         total_stats.lmr_searches += info.stats.lmr_searches;
         total_stats.singular_ext += info.stats.singular_ext;
         total_stats.double_ext += info.stats.double_ext;
@@ -7772,6 +8022,72 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
         }
         eprintln!("TOTAL | {:>8} | {:>8} | {:>6.2}%", audit_total, fp_total,
             fp_total as f64 * 100.0 / audit_total as f64);
+    }
+
+    let pc_gate_total: u64 = s.probcut_audit.gate_first.iter().sum();
+    if pc_gate_total > 0 {
+        let pc = &s.probcut_audit;
+        let gate_names = [
+            "in-check", "root", "PV", "decisive-beta", "excluded",
+            "below-depth", "TT-ceiling", "king-pressure", "entered",
+        ];
+        eprintln!("--- ProbCut Audit (funnel + sampled depth-1 confirmation) ---");
+        eprintln!("first gate (mutually exclusive, {} nodes):", pc_gate_total);
+        for (i, name) in gate_names.iter().enumerate() {
+            eprintln!("  {:>13}: {:>10} ({:5.1}%)", name, pc.gate_first[i],
+                100.0 * pc.gate_first[i] as f64 / pc_gate_total as f64);
+        }
+        eprintln!("imp depth | entered moves SEEpass QSpass deeptry cut | qnodes deepnodes | shadow reject FP% shadownodes");
+        for imp in 0..2 {
+            for d in 0..PROBCUT_AUDIT_DEPTHS {
+                let entered = pc.entered[imp][d];
+                if entered == 0 { continue; }
+                let shadow = pc.shadow_try[imp][d];
+                let rejected = pc.shadow_reject[imp][d];
+                eprintln!(" {:>1} {:>5} | {:>7} {:>5} {:>7} {:>6} {:>7} {:>3} | {:>6} {:>9} | {:>6} {:>6} {:>4.1}% {:>11}",
+                    imp, d, entered, pc.moves[imp][d], pc.see_pass[imp][d],
+                    pc.qs_pass[imp][d], pc.deep_try[imp][d], pc.cutoffs[imp][d],
+                    pc.qs_nodes[imp][d], pc.deep_nodes[imp][d], shadow, rejected,
+                    if shadow > 0 { 100.0 * rejected as f64 / shadow as f64 } else { 0.0 },
+                    pc.shadow_nodes[imp][d]);
+            }
+        }
+        eprintln!("root-depth | entered cutoffs rate");
+        for d in 0..PROBCUT_AUDIT_ROOT_DEPTHS {
+            if pc.root_entered[d] == 0 { continue; }
+            eprintln!("{:>10} | {:>7} {:>7} {:>5.1}%", d, pc.root_entered[d],
+                pc.root_cutoffs[d],
+                100.0 * pc.root_cutoffs[d] as f64 / pc.root_entered[d] as f64);
+        }
+        let clearance_names = ["<1/4 margin", "1/4-1/2", "1/2-1", ">=1 margin"];
+        eprintln!("clearance | QSpass verified shadow rejected FP%");
+        for b in 0..4 {
+            let shadow = pc.clearance[2][b];
+            let rejected = pc.clearance[3][b];
+            eprintln!("{:>11} | {:>6} {:>8} {:>6} {:>8} {:>5.1}%",
+                clearance_names[b], pc.clearance[0][b], pc.clearance[1][b],
+                shadow, rejected,
+                if shadow > 0 { 100.0 * rejected as f64 / shadow as f64 } else { 0.0 });
+        }
+        eprintln!("cutoff source: TT={} promotion={} other-capture={}",
+            pc.cutoff_source[0], pc.cutoff_source[1], pc.cutoff_source[2]);
+        for (source, name) in ["TT", "promotion", "other-capture"].iter().enumerate() {
+            let sampled = pc.shadow_source[source][0];
+            let rejected = pc.shadow_source[source][1];
+            eprintln!("shadow source {:>13}: {:>5} sampled {:>4} rejected ({:4.1}%)",
+                name, sampled, rejected,
+                if sampled > 0 { 100.0 * rejected as f64 / sampled as f64 } else { 0.0 });
+        }
+        for (clamped, name) in ["raw SEE > 0", "raw SEE <= 0"].iter().enumerate() {
+            let sampled = pc.shadow_see_clamp[clamped][0];
+            let rejected = pc.shadow_see_clamp[clamped][1];
+            eprintln!("shadow SEE {:>12}: {:>5} sampled {:>4} rejected ({:4.1}%)",
+                name, sampled, rejected,
+                if sampled > 0 { 100.0 * rejected as f64 / sampled as f64 } else { 0.0 });
+        }
+        eprintln!("entered with raw SEE threshold <= 0: {} ({:.1}%)",
+            pc.raw_see_nonpositive,
+            100.0 * pc.raw_see_nonpositive as f64 / pc.gate_first[8].max(1) as f64);
     }
 
     // Eval-path decomposition — supports the "evals/node" investigation.
@@ -8366,6 +8682,31 @@ mod tests {
         PONDERHIT_CREDIT_PCT.store(saved, Ordering::Relaxed);
         // Fresh-binary default is the sentinel.
         assert_eq!(saved, -1, "shipping default must be the -1 sentinel");
+    }
+
+    #[test]
+    fn probcut_audit_buckets_are_stable() {
+        assert_eq!(probcut_audit_depth_bucket(-3), 0);
+        assert_eq!(probcut_audit_depth_bucket(7), 7);
+        assert_eq!(probcut_audit_depth_bucket(99), PROBCUT_AUDIT_DEPTHS - 1);
+
+        let margin = 200;
+        assert_eq!(probcut_audit_clearance_bucket(0, margin), 0);
+        assert_eq!(probcut_audit_clearance_bucket(49, margin), 0);
+        assert_eq!(probcut_audit_clearance_bucket(50, margin), 1);
+        assert_eq!(probcut_audit_clearance_bucket(99, margin), 1);
+        assert_eq!(probcut_audit_clearance_bucket(100, margin), 2);
+        assert_eq!(probcut_audit_clearance_bucket(199, margin), 2);
+        assert_eq!(probcut_audit_clearance_bucket(200, margin), 3);
+    }
+
+    #[test]
+    fn probcut_audit_sampling_is_one_in_sixteen() {
+        let mv = crate::types::make_move(8, 16, 0);
+        let sampled = (0u64..4096)
+            .filter(|&hash| probcut_audit_sample(hash, mv))
+            .count();
+        assert_eq!(sampled, 256);
     }
 
     /// Regression guard for the PV-print legality check. The pv_table can carry
