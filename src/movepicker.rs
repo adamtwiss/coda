@@ -27,7 +27,12 @@ pub type Threats = u64;
 pub struct History {
     /// Main history: [from_threatened][to_threatened][from][to]
     /// Threat-aware 4D indexing — separate history for moves escaping/entering threats.
-    pub main: [[[[i32; 64]; 64]; 2]; 2],
+    /// i16 storage: the gravity update keeps every entry within ±MAX_HISTORY
+    /// (16384), so i16 is exact, and it halves the table from 64 KB to 32 KB.
+    /// The 4D read in quiet scoring is scattered (threat bits × from × to), and
+    /// at 64 KB the table alone exceeded L1D; perf showed that read as the
+    /// hottest cache-miss site in `next_slow`.
+    pub main: [[[[i16; 64]; 64]; 2]; 2],
     /// Capture history: [piece 1-12][to][captured_type 0-6]
     /// piece uses 1-12 indexing (slot 0 unused).
     /// captured_type uses 0-6 scheme (0=empty, 1=pawn, ..., 6=king).
@@ -45,15 +50,15 @@ impl History {
         if crate::search::FEAT_4D_HISTORY.load(std::sync::atomic::Ordering::Relaxed) {
             let ft = ((threats >> from) & 1) as usize;
             let tt = ((threats >> to) & 1) as usize;
-            self.main[ft][tt][from as usize][to as usize]
+            self.main[ft][tt][from as usize][to as usize] as i32
         } else {
-            self.main[0][0][from as usize][to as usize]
+            self.main[0][0][from as usize][to as usize] as i32
         }
     }
 
     /// Get mutable reference to main history entry for a move given enemy threats.
     #[inline(always)]
-    pub fn main_entry(&mut self, from: u8, to: u8, threats: Threats) -> &mut i32 {
+    pub fn main_entry(&mut self, from: u8, to: u8, threats: Threats) -> &mut i16 {
         if crate::search::FEAT_4D_HISTORY.load(std::sync::atomic::Ordering::Relaxed) {
             let ft = ((threats >> from) & 1) as usize;
             let tt = ((threats >> to) & 1) as usize;
@@ -98,7 +103,7 @@ impl History {
         for t0 in self.main.iter_mut() {
             for t1 in t0.iter_mut() {
                 for row in t1.iter_mut() {
-                    for v in row.iter_mut() { *v = *v * factor / divisor; }
+                    for v in row.iter_mut() { *v = (*v as i32 * factor / divisor) as i16; }
                 }
             }
         }
@@ -116,10 +121,16 @@ impl History {
         }
     }
 
-    /// Update history with gravity (bonus capped, decayed toward zero).
-    pub fn update_history(entry: &mut i32, bonus: i32) {
+    /// Update main history with gravity (bonus capped, decayed toward zero).
+    /// Computed in i32 and stored as i16: with |entry| <= MAX_HISTORY and
+    /// |clamped| <= MAX_HISTORY the result is again within ±MAX_HISTORY, so
+    /// the narrowing is exact (no clamp needed, unlike `update_cont_history`).
+    pub fn update_history(entry: &mut i16, bonus: i32) {
         let clamped = bonus.clamp(-MAX_HISTORY, MAX_HISTORY);
-        *entry += clamped - *entry * clamped.abs() / MAX_HISTORY;
+        let val = *entry as i32;
+        let new_val = val + clamped - val * clamped.abs() / MAX_HISTORY;
+        debug_assert!(new_val.abs() <= MAX_HISTORY);
+        *entry = new_val as i16;
     }
 
     /// Update continuation history (i16 entries) with gravity.

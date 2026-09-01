@@ -113,17 +113,27 @@ pub fn evaluate_nnue(
 }
 
 /// Material-only value of a piece type (midgame, for SEE).
+///
+/// A flat table rather than a `match`: the match compiled to a jump table
+/// on `pt`, and with the piece type varying call to call (SEE exchange loop,
+/// MVV ordering) that indirect jump was one of the hottest mispredicting
+/// branches in the engine (LBR: ~5% of all mispredicts across `see_ge` and
+/// `next_slow`). A load from an 8-entry table is branch-free. The `& 7`
+/// makes the index provably in range so no bounds check is emitted;
+/// NO_PIECE_TYPE (6) and 7 map to 0, exactly as the old `_ => 0` arm did.
 pub const fn see_value(pt: u8) -> i32 {
     // Values aligned with consensus from top engines (Berserk, Obsidian,
     // Stormphrax). Old textbook values (100/320/330/500/900)
     // underestimated minor pieces by ~25% and rook/queen by ~20%.
-    match pt {
-        0 => 100,   // PAWN
-        1 => 420,   // KNIGHT (was 320)
-        2 => 420,   // BISHOP (was 330, N=B consensus)
-        3 => 640,   // ROOK (was 500)
-        4 => 1200,  // QUEEN (was 900)
-        5 => 20000, // KING
-        _ => 0,
-    }
+    const SEE_VALUES: [i32; 8] = [
+        100,   // PAWN
+        420,   // KNIGHT (was 320)
+        420,   // BISHOP (was 330, N=B consensus)
+        640,   // ROOK (was 500)
+        1200,  // QUEEN (was 900)
+        20000, // KING
+        0,     // NO_PIECE_TYPE
+        0,
+    ];
+    SEE_VALUES[(pt & 7) as usize]
 }
