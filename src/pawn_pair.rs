@@ -7,90 +7,99 @@
 //! Stockfish. The idea is his; the encoding below is derived from Coda's own
 //! board representation and was written without any other engine's source open.
 //!
-//! # Encoding (64 features)
+//! # Encoding (1,488 features)
 //!
-//! Pawns occupy ranks 2..7 only, so a file holds at most 6 pawn squares. For an
-//! unordered pair of pawns whose files differ by at most one, canonicalise so
-//! `a` is the lower square (smaller index) and describe the pair by its
-//! geometry plus which colours occupy the two squares:
+//! Every unordered pair of pawn SQUARES whose files differ by at most one gets
+//! its own learned weight, crossed with which colour occupies each square:
 //!
-//! * **same file** (`file_delta == 0`): rank difference `d` in `1..=5`
-//!   → 5 shapes. These are doubled pawns.
-//! * **adjacent file** (`file_delta == 1` after mirroring): rank difference
-//!   `d` in `-5..=5` → 11 shapes. `d == 0` is a phalanx; `|d| == 1` includes
-//!   the chain/attack relations; larger `|d|` are the loose/backward shapes.
+//! * 372 square pairs over ranks 2..7 within one file
+//! * x 4 colour combinations of `(colour at lower square, colour at upper
+//!   square)`, STM-relative
+//! * = **1,488 features**, 1.5 MB of int8 weights at ft=1024
 //!
-//! = **16 geometric shapes**, crossed with **4 colour pairings** of
-//! `(colour at the lower square, colour at the upper square)` → **64 features**.
-//!
-//! Four pairings rather than three: distinguishing (ours, theirs) from
-//! (theirs, ours) records which colour is *in front*, which is what separates a
-//! supported pawn from a blockaded one. Collapsing them to an unordered
-//! {ours, theirs} would merge those.
+//! Four colour combinations rather than three: separating (ours, theirs) from
+//! (theirs, ours) records which colour is IN FRONT, which is what distinguishes
+//! a supported pawn from a blockaded one.
 //!
 //! All indices are STM-relative and mirror with the rest of the net, so the
 //! block behaves like the existing feature spaces under `pov` / `mirrored`.
 //!
-//! Cost: 64 inputs is ~64 x ft_size extra FT weights — about 120 KB at
-//! ft=1024 against a 65 MB threat block, i.e. negligible. Pawn structure also
-//! changes only on pawn moves, captures, promotions and en passant, so the
-//! incremental update rate is far below the threat block's.
+//! Cost is set by the number of ACTIVE features, not the table size: about 18
+//! pairs are live in a typical position and a pawn move changes roughly four of
+//! them, so the per-node work is independent of how finely the pairs are
+//! indexed. Pawn structure also only changes on pawn moves, captures,
+//! promotions and en passant.
 
 use crate::types::{Color, Move, WHITE, PAWN, FLAG_EN_PASSANT,
                    move_from, move_to, move_flags, is_promotion, flip_color};
 use crate::bitboard::Bitboard;
 
-/// Geometric shapes: 5 same-file (d in 1..=5) + 11 adjacent-file (d in -5..=5).
-pub const PAWN_PAIR_SHAPES: usize = 16;
-/// (lower-square colour, upper-square colour), STM-relative.
+/// Colour combinations per square pair: (colour at the lower square, colour at
+/// the upper square), STM-relative.
 pub const PAWN_PAIR_COLOURS: usize = 4;
+
+/// Slot table: `PAIR_SLOT[a][b]` is the square-pair ordinal for pawn squares
+/// `a` and `b`, or -1 when the pair is not within one file (or either square
+/// cannot hold a pawn).
+///
+/// Built over ranks 2..7 only, so the table is dense over exactly the legal
+/// pawn placements.
+const PAIR_SLOT: [[i16; 64]; 64] = {
+    let mut t = [[-1i16; 64]; 64];
+    let mut n = 0i16;
+    let mut a = 8usize;
+    while a < 56 {
+        let mut b = a + 1;
+        while b < 56 {
+            let fa = (a % 8) as i32;
+            let fb = (b % 8) as i32;
+            let d = if fa > fb { fa - fb } else { fb - fa };
+            if d <= 1 {
+                t[a][b] = n;
+                t[b][a] = n;
+                n += 1;
+            }
+            b += 1;
+        }
+        a += 1;
+    }
+    t
+};
+
+/// Distinct square pairs within one file, over ranks 2..7.
+pub const PAWN_PAIR_SQUARE_PAIRS: usize = 372;
+
 /// Total pawn-pair input features.
-pub const PAWN_PAIR_FEATURES: usize = PAWN_PAIR_SHAPES * PAWN_PAIR_COLOURS;
+pub const PAWN_PAIR_FEATURES: usize = PAWN_PAIR_SQUARE_PAIRS * PAWN_PAIR_COLOURS;
 
 /// Feature index in `0..PAWN_PAIR_FEATURES` for one pawn pair, or `None` when
 /// the pair is more than one file apart.
 ///
-/// The two cases canonicalise on DIFFERENT keys, and that is the point:
+/// Indexed by the two pawns' ACTUAL SQUARES, not by the pair's relative shape.
+/// That distinction is the whole feature: an earlier version of this module
+/// encoded only shape (16 geometric relations x 4 colour pairings = 64
+/// features), which made a phalanx on rank 2 the same feature as one on rank 6.
+/// Measured, that block was always active, carried ~105cp of eval influence,
+/// and improved eval accuracy by nothing at all -- a dense always-on feature
+/// with no positional content is a learned bias channel. Square-indexing costs
+/// no extra work per node (the same pairs are active, only the weight table is
+/// larger) and is what the feature is supposed to be.
 ///
-/// * **same file** — order by rank, so `d` in `1..=5` names the gap.
-/// * **adjacent file** — order by FILE, so `d = rank(right) - rank(left)` keeps
-///   its SIGN and spans `-5..=5`.
-///
-/// Ordering the adjacent case by square index instead would force `d >= 0`
-/// (if the lower-index square had the higher rank it would not be the lower
-/// index), collapsing the two chain directions onto one shape and leaving 20
-/// of the 64 features unreachable. The direction is meaningful because the
-/// frame is already king-mirrored, so "leaning toward the king side" and
-/// "leaning away" are genuinely different structures.
+/// Ordering by square index needs no special case for the two-file geometry:
+/// (a2,b3) and (b2,a3) are different square pairs, so a chain leaning one way
+/// is naturally distinct from one leaning the other.
 #[inline]
 fn pair_feature(sq_a: u8, a_mine: bool, sq_b: u8, b_mine: bool) -> Option<usize> {
-    let (fa, ra) = ((sq_a % 8) as i32, (sq_a / 8) as i32);
-    let (fb, rb) = ((sq_b % 8) as i32, (sq_b / 8) as i32);
-    if (fb - fa).abs() > 1 {
+    let (lo, hi, lo_mine, hi_mine) = if sq_a < sq_b {
+        (sq_a, sq_b, a_mine, b_mine)
+    } else {
+        (sq_b, sq_a, b_mine, a_mine)
+    };
+    let slot = PAIR_SLOT[lo as usize][hi as usize];
+    if slot < 0 {
         return None;
     }
-    let (shape, lo_mine, hi_mine) = if fa == fb {
-        let (d, lo_mine, hi_mine) = if ra < rb {
-            (rb - ra, a_mine, b_mine)
-        } else {
-            (ra - rb, b_mine, a_mine)
-        };
-        if !(1..=5).contains(&d) {
-            return None;
-        }
-        ((d - 1) as usize, lo_mine, hi_mine)
-    } else {
-        let (d, l_mine, r_mine) = if fa < fb {
-            (rb - ra, a_mine, b_mine)
-        } else {
-            (ra - rb, b_mine, a_mine)
-        };
-        if !(-5..=5).contains(&d) {
-            return None;
-        }
-        (5 + (d + 5) as usize, l_mine, r_mine)
-    };
-    Some(shape * PAWN_PAIR_COLOURS + (lo_mine as usize) * 2 + (hi_mine as usize))
+    Some(slot as usize * PAWN_PAIR_COLOURS + (lo_mine as usize) * 2 + (hi_mine as usize))
 }
 
 /// Enumerate active pawn-pair features from `pov`'s perspective.
@@ -379,12 +388,12 @@ mod tests {
                    "a chain leaning right must differ from one leaning left");
     }
 
-    /// Every one of the 16 shapes must be reachable. An unreachable shape is
-    /// 4 dead features x ft_size weights and a silently mis-specified block.
+    /// Every square-pair slot must be reachable, and the declared count must
+    /// match what the table actually builds. A mismatch would silently leave
+    /// dead weight rows or index past the table.
     #[test]
-    fn all_shapes_reachable() {
-        let mut seen = [false; PAWN_PAIR_SHAPES];
-        // Walk every legal pawn-square pair directly through the encoder.
+    fn every_square_pair_reachable() {
+        let mut seen = [false; PAWN_PAIR_SQUARE_PAIRS];
         for a in 8u8..56 {
             for b in 8u8..56 {
                 if a == b { continue; }
@@ -393,8 +402,28 @@ mod tests {
                 }
             }
         }
-        let dead: Vec<usize> = (0..PAWN_PAIR_SHAPES).filter(|&s| !seen[s]).collect();
-        assert!(dead.is_empty(), "unreachable shapes: {dead:?}");
+        let dead: Vec<usize> =
+            (0..PAWN_PAIR_SQUARE_PAIRS).filter(|&s| !seen[s]).collect();
+        assert!(dead.is_empty(), "unreachable square pairs: {} of {}",
+                dead.len(), PAWN_PAIR_SQUARE_PAIRS);
+    }
+
+    /// The square pair must encode POSITION, not just relative shape. This is
+    /// the property whose absence made the first version of this block inert:
+    /// a phalanx on rank 2 and one on rank 6 must be different features.
+    #[test]
+    fn same_shape_different_rank_is_a_different_feature() {
+        let low  = feats("4k3/8/8/8/8/8/PP6/4K3 w - - 0 1", WHITE, false); // a2,b2
+        let high = feats("4k3/8/PP6/8/8/8/8/4K3 w - - 0 1", WHITE, false); // a6,b6
+        assert_eq!(low.len(), 1);
+        assert_eq!(high.len(), 1);
+        assert_ne!(low[0], high[0],
+                   "same shape on different ranks must be different features");
+
+        // ... and the same shape on a different FILE too.
+        let far = feats("4k3/8/8/8/8/8/5PP1/4K3 w - - 0 1", WHITE, false); // f2,g2
+        assert_ne!(low[0], far[0],
+                   "same shape on different files must be different features");
     }
 
     /// THE invariant: applying a move's deltas to the parent's feature
@@ -564,8 +593,12 @@ mod tests {
     /// give the identical multiset — the block must be STM-relative.
     #[test]
     fn pov_symmetry() {
+        // Black's pawns must sit on the squares that map ONTO white's after
+        // the vertical flip -- a7/b7 -> a2/b2. The earlier version used g7/h7,
+        // which flips to g2/h2: a different square pair, and it only passed
+        // because the old encoding could not tell the two apart.
         let w = feats("8/8/8/8/8/8/PP6/8 w - - 0 1", WHITE, false);
-        let b = feats("8/6pp/8/8/8/8/8/8 w - - 0 1", BLACK, false);
+        let b = feats("8/pp6/8/8/8/8/8/8 w - - 0 1", BLACK, false);
         assert_eq!(w, b, "colour-and-rank-flipped position from BLACK must match WHITE's");
     }
 }
