@@ -5450,7 +5450,13 @@ fn negamax(
         let see_threshold = (probcut_beta - static_eval).max(0);
         // Improving-conditioned ProbCut depth (SF d6483505) —
         // bundled near-miss; tuned with the LMP/ProbCut margin cluster.
-        let pc_depth = depth - 4 - improving as i32;
+        let mut pc_depth = depth - 4 - improving as i32;
+        // At improving depth 5 the improving adjustment otherwise removes
+        // deep verification entirely, compounding the already lower margin.
+        // Retain one verification ply only at that boundary.
+        if improving && depth == 5 {
+            pc_depth = 1;
+        }
         let pc_tt_move = if tt_move_noisy
             && is_pseudo_legal(board, tt_move)
             && board.is_legal(tt_move, pinned, checkers)
