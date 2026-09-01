@@ -1847,6 +1847,26 @@ unsafe fn apply_threat_deltas_dual_body(
     let mut subs_w_storage = std::mem::MaybeUninit::<[usize; MAX_THREAT_DELTAS]>::uninit();
     let mut adds_b_storage = std::mem::MaybeUninit::<[usize; MAX_THREAT_DELTAS]>::uninit();
     let mut subs_b_storage = std::mem::MaybeUninit::<[usize; MAX_THREAT_DELTAS]>::uninit();
+    // Branch-free compress. Per delta we always compute both perspectives'
+    // feature index and store it into the next slot of BOTH the add and the
+    // sub list, then advance only the count of the list it belongs to, and
+    // only when the delta is valid. A slot written for an invalid delta
+    // (untracked pair, discarded symmetric order, index out of range) or for
+    // the wrong list is scratch: the next store to that list overwrites it
+    // and the final `scratch_slice!` never exposes it. This replaces three
+    // data-dependent branches per delta (`skip`, the bound check, and the
+    // add/sub selection) that LBR sampling showed were ~12% of ALL
+    // mispredicts in the engine — the same shape as the L2 zero-skip
+    // removal: doing a few cycles of unneeded arithmetic beats a ~15-cycle
+    // mispredict. Measured: whole-bench branch-misses -6.8%, this loop
+    // ~-120 Mcy of ~13 Gcy; part of that is given back in
+    // `apply_threat_indices`, whose weight-row fetches are the critical
+    // path and previously overlapped the mispredict stalls. The same
+    // rewrite of the single-perspective loop and of `threat_index` was
+    // tried and reverted: no mispredict gain and a slower refresh path. The index arithmetic is plain table lookups indexed by
+    // piece and square, so it is in-bounds for untracked pairs too, and the
+    // store address is bounded by the running count (<= deltas seen so far
+    // < MAX_THREAT_DELTAS), never by the computed index.
     let adds_w_ptr = scratch_ptr!(adds_w_storage, usize);
     let subs_w_ptr = scratch_ptr!(subs_w_storage, usize);
     let adds_b_ptr = scratch_ptr!(adds_b_storage, usize);
@@ -1865,44 +1885,43 @@ unsafe fn apply_threat_deltas_dual_body(
         let victim = delta.victim_cp() as usize;
         let to = delta.to_sq() as u32;
         let add = delta.add();
+        // Physical-square order for the symmetric-pair tie-break; identical
+        // for both perspectives.
+        let discard_order = (from as u8) < (to as u8);
 
         let pair_w = tables.pairs[attacker][victim];
-        if !pair_w.skip(from, to) {
-            let from_w = (from ^ flip_w) as usize;
-            let to_w = (to ^ flip_w) as usize;
-            let idx_w = pair_w.base
-                + tables.from_offset[attacker][from_w]
-                + tables.ray_rank[attacker][from_w][to_w] as i32;
-            if (idx_w as usize) < num_threats {
-                if add {
-                    unsafe { adds_w_ptr.add(n_adds_w).write(idx_w as usize); }
-                    n_adds_w += 1;
-                } else {
-                    unsafe { subs_w_ptr.add(n_subs_w).write(idx_w as usize); }
-                    n_subs_w += 1;
-                }
-            }
+        let from_w = (from ^ flip_w) as usize;
+        let to_w = (to ^ flip_w) as usize;
+        let idx_w = pair_w.base
+            + tables.from_offset[attacker][from_w]
+            + tables.ray_rank[attacker][from_w][to_w] as i32;
+        let valid_w = pair_w.tracked
+            & !(pair_w.symmetric & discard_order)
+            & ((idx_w as usize) < num_threats);
+        unsafe {
+            adds_w_ptr.add(n_adds_w).write(idx_w as usize);
+            subs_w_ptr.add(n_subs_w).write(idx_w as usize);
         }
+        n_adds_w += (valid_w & add) as usize;
+        n_subs_w += (valid_w & !add) as usize;
 
         let attacker_b = flipped_colored_piece(attacker);
         let victim_b = flipped_colored_piece(victim);
         let pair_b = tables.pairs[attacker_b][victim_b];
-        if !pair_b.skip(from, to) {
-            let from_b = (from ^ flip_b) as usize;
-            let to_b = (to ^ flip_b) as usize;
-            let idx_b = pair_b.base
-                + tables.from_offset[attacker_b][from_b]
-                + tables.ray_rank[attacker_b][from_b][to_b] as i32;
-            if (idx_b as usize) < num_threats {
-                if add {
-                    unsafe { adds_b_ptr.add(n_adds_b).write(idx_b as usize); }
-                    n_adds_b += 1;
-                } else {
-                    unsafe { subs_b_ptr.add(n_subs_b).write(idx_b as usize); }
-                    n_subs_b += 1;
-                }
-            }
+        let from_b = (from ^ flip_b) as usize;
+        let to_b = (to ^ flip_b) as usize;
+        let idx_b = pair_b.base
+            + tables.from_offset[attacker_b][from_b]
+            + tables.ray_rank[attacker_b][from_b][to_b] as i32;
+        let valid_b = pair_b.tracked
+            & !(pair_b.symmetric & discard_order)
+            & ((idx_b as usize) < num_threats);
+        unsafe {
+            adds_b_ptr.add(n_adds_b).write(idx_b as usize);
+            subs_b_ptr.add(n_subs_b).write(idx_b as usize);
         }
+        n_adds_b += (valid_b & add) as usize;
+        n_subs_b += (valid_b & !add) as usize;
     }
 
     let adds_w = scratch_slice!(adds_w_ptr, n_adds_w);
