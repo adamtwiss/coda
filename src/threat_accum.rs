@@ -186,9 +186,6 @@ pub struct ThreatEntry {
     pub accurate: [bool; 2],
     /// Threat deltas for the move that produced this ply
     pub delta: DeltaVec,
-    /// Pawn-pair deltas for the same move. Shares `deltas_valid` with `delta`:
-    /// both are produced by the same eager/lazy machinery in one step.
-    pub pp_delta: PPDeltaVec,
     /// The move that produced this ply (for king mirror check)
     pub mv: Move,
     /// Piece type that moved (for king mirror detection)
@@ -224,7 +221,6 @@ impl ThreatEntry {
             values: [[0i16; MAX_FT_SIZE]; 2],
             accurate: [false; 2],
             delta: DeltaVec::new(),
-            pp_delta: PPDeltaVec::new(),
             mv: NO_MOVE,
             moved_pt: NO_PIECE_TYPE,
             moved_color: WHITE,
@@ -250,6 +246,13 @@ pub struct ThreatStack {
     /// pawn-pair block lives at offset `num_threat_features` in the same
     /// weight array, so `num_features` doubles as its base.
     pub pp_features: usize,
+    /// Per-ply pawn-pair deltas, parallel to `stack`.
+    ///
+    /// Deliberately NOT a field of `ThreatEntry`. That struct is ~4.6 KB of
+    /// hot accumulator values walked on every replay, and adding 264 bytes to
+    /// it cost ~2.5% NPS on its own -- pure cache footprint, since the buffer
+    /// is only READ on the rare ply where pawn structure changed.
+    pp_delta: Vec<PPDeltaVec>,
     /// Reusable scratch for lazily regenerated pawn-pair deltas.
     pp_scratch: Vec<crate::pawn_pair::PawnPairDelta>,
 }
@@ -261,6 +264,7 @@ impl ThreatStack {
             stack.push(ThreatEntry::new());
         }
         Self { stack, index: 0, hidden_size, active: false, pp_features: 0,
+               pp_delta: vec![PPDeltaVec::new(); MAX_PLY],
                scratch: Vec::with_capacity(MAX_THREAT_DELTAS),
                pp_scratch: Vec::with_capacity(crate::pawn_pair::MAX_PAWN_PAIR_DELTAS) }
     }
@@ -278,6 +282,10 @@ impl ThreatStack {
     /// `make_move`, and record the move metadata needed by mirror checks.
     #[inline]
     pub fn absorb_deltas(&mut self, board: &crate::board::Board) {
+        if self.pp_features > 0 && board.generate_pawn_pair_deltas {
+            let i = self.index;
+            self.pp_delta[i].copy_from_slice(&board.pawn_pair_deltas);
+        }
         #[cfg(feature = "profile-threats")]
         crate::threats::apply_stats::record_generated(board.threat_deltas.len());
         let eager = board.generate_threat_deltas;
@@ -296,7 +304,6 @@ impl ThreatStack {
 
         if eager {
             entry.delta.copy_from_slice(&board.threat_deltas);
-            entry.pp_delta.copy_from_slice(&board.pawn_pair_deltas);
             entry.deltas_valid = true;
         } else {
             entry.deltas_valid = false;
@@ -367,7 +374,7 @@ impl ThreatStack {
                     &mut pp, st.pieces[crate::types::PAWN as usize], &st.colors,
                     color, mv, captured,
                     st.mailbox[crate::types::move_from(mv) as usize]);
-                self.stack[p].pp_delta.copy_from_slice(&pp);
+                self.pp_delta[p].copy_from_slice(&pp);
                 self.pp_scratch = pp;
             }
             crate::threats::replay_move_deltas(&mut st, color, mv, captured, &mut scratch);
@@ -391,10 +398,13 @@ impl ThreatStack {
         if self.index >= self.stack.len() {
             self.stack.push(ThreatEntry::new());
         }
+        if self.index >= self.pp_delta.len() {
+            self.pp_delta.push(PPDeltaVec::new());
+        }
+        self.pp_delta[self.index].clear();
         let entry = &mut self.stack[self.index];
         entry.accurate = [false; 2];
         entry.delta.clear();
-        entry.pp_delta.clear();
         entry.deltas_valid = false;
         entry.mv = mv;
         entry.moved_pt = moved_pt;
@@ -598,7 +608,7 @@ impl ThreatStack {
             }
 
             let nothing_to_do = (entry_mv == NO_MOVE || self.stack[ply].delta.is_empty())
-                && self.stack[ply].pp_delta.is_empty();
+                && self.pp_delta[ply].is_empty();
             if nothing_to_do {
                 // Null move, or a move that touched neither threats nor pawn
                 // structure: copy from previous.
@@ -607,16 +617,17 @@ impl ThreatStack {
             } else {
                 // One SIMD pass covers both feature spaces: pawn-pair indices
                 // are folded into the same add/sub lists inside the kernel.
-                let (prev, curr) = self.stack.split_at_mut(ply);
-                let ThreatEntry { values, delta, pp_delta, .. } = &mut curr[0];
+                let Self { stack, pp_delta, .. } = self;
+                let (prev, curr) = stack.split_at_mut(ply);
+                let entry = &mut curr[0];
                 unsafe {
                     crate::threats::apply_threat_deltas(
-                        &mut values[p][..h],
+                        &mut entry.values[p][..h],
                         &prev[ply - 1].values[p][..h],
-                        delta.as_slice(),
+                        entry.delta.as_slice(),
                         net_weights, h, num_features,
                         pov, mirrored,
-                        pp_delta.as_slice(), num_features,
+                        pp_delta[ply].as_slice(), num_features,
                     );
                 }
             }
@@ -653,18 +664,20 @@ impl ThreatStack {
                 crate::threats::apply_stats::record_first_consume();
             }
 
-            let (prev, curr) = self.stack.split_at_mut(ply);
+            let Self { stack, pp_delta, .. } = self;
+            let (prev, curr) = stack.split_at_mut(ply);
             let prev_entry = &prev[ply - 1];
             let entry = &mut curr[0];
+            let pp_here = &pp_delta[ply];
 
-            if (entry_mv == NO_MOVE || entry.delta.is_empty()) && entry.pp_delta.is_empty() {
+            if (entry_mv == NO_MOVE || entry.delta.is_empty()) && pp_here.is_empty() {
                 entry.values[WHITE as usize][..h]
                     .copy_from_slice(&prev_entry.values[WHITE as usize][..h]);
                 entry.values[BLACK as usize][..h]
                     .copy_from_slice(&prev_entry.values[BLACK as usize][..h]);
             } else {
                 let local_deltas = entry.delta.as_slice();
-                let pp_slice = entry.pp_delta.as_slice();
+                let pp_slice = pp_here.as_slice();
                 let (dst_w, dst_b) = {
                     let (w, b) = entry.values.split_at_mut(1);
                     (&mut w[0][..h], &mut b[0][..h])
