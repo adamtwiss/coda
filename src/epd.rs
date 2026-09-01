@@ -234,6 +234,22 @@ pub fn run_epd(path: &str, time_per_pos: u64, max_positions: usize, nnue_path: O
 
         let mut board = Board::from_fen(&pos.fen);
         info.nodes = 0;
+        // `search()` deliberately does NOT reset global_nodes (see its comment:
+        // callers own it, so SMP helper contributions aren't clobbered). epd
+        // calls `search()` directly and single-threaded, so it must do it here
+        // or the counter accumulates across the whole suite: every info line
+        // after the first reports the running SUITE total as `nodes`, and
+        // divides it by the per-position `time`, so `nps` climbs without bound
+        // (63M nps by mid-suite on a ~900k nps engine).
+        //
+        // Second, quieter consequence: global_nodes is also what the max_nodes
+        // limit tests against, so a node-limited epd run would have every
+        // position after the first trip its budget immediately.
+        //
+        // `bench` already carries the identical fix (P2.8); epd was missed.
+        // (last_flushed_nodes is reset inside search() itself, so only the
+        // shared counter needs clearing here.)
+        info.global_nodes.store(0, std::sync::atomic::Ordering::Relaxed);
         info.stop.store(false, std::sync::atomic::Ordering::Relaxed);
         reset_epd_position_state(&mut info);
 
