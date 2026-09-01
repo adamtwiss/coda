@@ -1240,6 +1240,8 @@ pub struct SearchInfo {
     /// byte-identical.
     pub root_ban: Vec<Move>,
     static_evals: [i32; MAX_PLY + 1],
+    /// Per-ply tt_pv, so a child can inherit its parent's PV-region flag.
+    tt_pv_stack: [bool; MAX_PLY + 1],
     /// LMR reduction applied at each ply (for hindsight reduction gating)
     reductions: [i32; MAX_PLY + 1],
     /// Excluded move for singular extension verification search (always NoMove when disabled)
@@ -1353,6 +1355,7 @@ impl SearchInfo {
             trace_line_mv: Vec::new(),
             nmp_min_ply: 0,
             static_evals: [0; MAX_PLY + 1],
+            tt_pv_stack: [false; MAX_PLY + 1],
             reductions: [0; MAX_PLY + 1],
             excluded_move: [NO_MOVE; MAX_PLY + 1],
             double_ext_count: [0; MAX_PLY + 1],
@@ -4784,6 +4787,7 @@ fn negamax(
     // Sticky PV flag: once a position is searched as PV, it stays PV in the TT.
     // Used to reduce LMR for moves that lead to historically important positions.
     let tt_pv = is_pv || (tt_hit && tt_entry.tt_pv);
+    info.tt_pv_stack[ply_u] = tt_pv;
 
     if tt_hit {
         tt_move = tt_entry.best_move;
@@ -6753,6 +6757,10 @@ fn negamax(
         let store_score = score_to_tt(best_score, ply);
 
         if FEAT_TT_STORE.load(Ordering::Relaxed) {
+            // A fail-low under a PV-class parent: no move beat alpha here, so
+            // the opponent's last move was good and this node belongs to the PV
+            // region on revisit. Inherit the parent's tt_pv into the store.
+            let tt_pv = tt_pv || (best_score <= alpha_orig && ply_u > 0 && info.tt_pv_stack[ply_u - 1]);
             info.tt.store(board.hash, depth, store_score, flag, best_move, raw_eval, tt_pv);
         }
     }
