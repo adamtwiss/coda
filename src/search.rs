@@ -5465,7 +5465,16 @@ fn negamax(
             let mv = pc_picker.next(board);
             if mv == NO_MOVE { break; }
 
-            if !see_ge(board, mv, see_threshold) { continue; }
+            // Sampled non-TT captures failed full-depth confirmation much
+            // more often than TT captures. Promotions form their own reliable
+            // class, so apply the safety margin only to ordinary non-TT moves.
+            let candidate_beta = if mv != pc_tt_move && !is_promotion(mv) {
+                probcut_beta + 24
+            } else {
+                probcut_beta
+            };
+            let candidate_see_threshold = (candidate_beta - static_eval).max(0);
+            if !see_ge(board, mv, candidate_see_threshold) { continue; }
 
             let pc_moved_pt = board.piece_type_at(move_from(mv));
             // Colored mover, read before make_move — written to the cont-hist
@@ -5501,11 +5510,11 @@ fn negamax(
             }
 
             // Cheap qsearch verification before expensive negamax (Stockfish pattern)
-            let mut score = -quiescence(board, info, -probcut_beta, -probcut_beta + 1, ply + 1);
+            let mut score = -quiescence(board, info, -candidate_beta, -candidate_beta + 1, ply + 1);
 
-            // Only do deeper search if qsearch also beats probcut_beta
-            if score >= probcut_beta && pc_depth > 0 {
-                score = -negamax(board, info, -probcut_beta, -probcut_beta + 1, pc_depth, ply + 1, !cut_node);
+            // Only do deeper search if qsearch also beats the candidate's beta.
+            if score >= candidate_beta && pc_depth > 0 {
+                score = -negamax(board, info, -candidate_beta, -candidate_beta + 1, pc_depth, ply + 1, !cut_node);
             }
 
             board.unmake_move();
@@ -5516,7 +5525,7 @@ fn negamax(
                 return 0;
             }
 
-            if score >= probcut_beta {
+            if score >= candidate_beta {
                 info.stats.probcut_cutoffs += 1;
                 // TT stores the RAW verified score (a tighter lower bound than
                 // the dampened value) and preserves the sticky PV flag — matches
@@ -5540,7 +5549,7 @@ fn negamax(
                 if is_decisive(score) {
                     return score;
                 }
-                return score - (probcut_beta - beta);
+                return score - (candidate_beta - beta);
             }
         }
     }
