@@ -30,7 +30,16 @@ fn pack_data(best_move: Move, flag: u8, static_eval: i32, score: i32, depth: i32
     let se13 = ((se_clamped as u16).wrapping_add(4096)) & 0x1FFF;
     let se = (se13 as u64) << 19;
     let sc = ((score as i16 as u16) as u64) << 32;
-    let d = ((depth as i8 as u8) as u64) << 48;
+    // Clamp before the i8 narrowing. The depth field is 8 bits signed
+    // (-128..127); without the clamp, `depth as i8` WRAPS. This became
+    // reachable when ROOT_DEPTH_MAX rose to 120 (960335e): with DEXT_CAP=8
+    // the deepest possible search depth is 120+8 = 128, which wrapped to
+    // -128 -- turning the single most expensive entry in the search into one
+    // that can never satisfy `tt_depth >= depth` and is the bucket's first
+    // replacement victim. At DEXT_CAP's SPSA range max (32), overflow would
+    // begin at root depth 96. Prior to the cap raise the worst case was
+    // 80+32 = 112, inside the field; the raise silently opened the edge.
+    let d = ((depth.clamp(-128, 127) as i8 as u8) as u64) << 48;
     let g = (generation as u64) << 56;
     mv | f | pv | se | sc | d | g
 }
