@@ -720,7 +720,12 @@ fn piece_attacks_empty(cp: usize, sq: u32) -> Bitboard {
 /// `#[inline]` so call sites with constrained piece_type (e.g. slider-only
 /// loops) can specialize away the 6-way switch dispatch under LTO. The
 /// dispatch (jump-table address calc) measured 10.69% inside this function,
-/// ~0.3% of total NPS.
+/// ~0.3% of total NPS. A branch-free form (leaper table + both magic
+/// lookups masked by type) was tried 2026-09-02 and measured a net LOSS:
+/// the jump table's mispredicts (~4% of all) went away, but the callers'
+/// bitboard-loop exits lost the piece-type history that had been
+/// predicting them, and every leaper paid two magic lookups — the hottest
+/// caller (`push_threats_for_piece`) got ~40% slower.
 #[inline]
 pub fn piece_attacks_occ(piece_type: u8, color: Color, sq: u32, occ: Bitboard) -> Bitboard {
     match piece_type {
@@ -1743,6 +1748,7 @@ unsafe fn apply_threat_deltas_body(
             mirrored,
             pov,
         );
+        prefetch_row(threat_weights, idx, (idx as usize) < num_threats, hidden_size);
         if idx < 0 || (idx as usize) >= num_threats { continue; }
         if delta.add() {
             unsafe { adds_ptr.add(n_adds).write(idx as usize); }
@@ -1824,6 +1830,32 @@ unsafe fn apply_threat_deltas_dual_avx2(
 }
 
 /// Shared body for [`apply_threat_deltas_dual`] — no `target_feature`.
+/// Start fetching the first two cache lines of weight row `idx` as soon as a
+/// delta loop has produced it, instead of after the whole loop in
+/// `apply_threat_indices` (the former preamble prefetch of the first 24 rows). Measured motivation: after the loop went
+/// branch-free it finished ~120 Mcy sooner, and `apply_threat_indices` gave
+/// ~80 of those back waiting for rows — the fetches were not overlapped.
+/// Branch-free: an invalid index is redirected to row 0 (L1-hot, harmless)
+/// via a mask rather than skipped with a branch. `wrapping_add` keeps the
+/// pointer arithmetic defined; the address is only ever prefetched.
+#[inline(always)]
+fn prefetch_row(threat_weights: &[i8], idx: i32, valid: bool, hidden_size: usize) {
+    #[cfg(target_arch = "x86_64")]
+    {
+        use std::arch::x86_64::{_mm_prefetch, _MM_HINT_T0};
+        let off = (idx as usize).wrapping_mul(hidden_size) & 0usize.wrapping_sub(valid as usize);
+        let row = threat_weights.as_ptr().wrapping_add(off);
+        unsafe {
+            _mm_prefetch(row as *const i8, _MM_HINT_T0);
+            _mm_prefetch(row.wrapping_add(64) as *const i8, _MM_HINT_T0);
+        }
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        let _ = (threat_weights, idx, valid, hidden_size);
+    }
+}
+
 #[inline(always)]
 unsafe fn apply_threat_deltas_dual_body(
     dst_w: &mut [i16],
@@ -1902,6 +1934,7 @@ unsafe fn apply_threat_deltas_dual_body(
             adds_w_ptr.add(n_adds_w).write(idx_w as usize);
             subs_w_ptr.add(n_subs_w).write(idx_w as usize);
         }
+        prefetch_row(threat_weights, idx_w, valid_w, hidden_size);
         n_adds_w += (valid_w & add) as usize;
         n_subs_w += (valid_w & !add) as usize;
 
@@ -1920,6 +1953,7 @@ unsafe fn apply_threat_deltas_dual_body(
             adds_b_ptr.add(n_adds_b).write(idx_b as usize);
             subs_b_ptr.add(n_subs_b).write(idx_b as usize);
         }
+        prefetch_row(threat_weights, idx_b, valid_b, hidden_size);
         n_adds_b += (valid_b & add) as usize;
         n_subs_b += (valid_b & !add) as usize;
     }
@@ -1955,25 +1989,9 @@ unsafe fn apply_threat_indices(
     adds: &[usize],
     subs: &[usize],
 ) {
-    // Prefetch the FIRST CHUNK (128 bytes = 2 lines) of every row before the
-    // kernel starts. The kernels walk all rows chunk-by-chunk, so chunk-0
-    // accesses are the cold misses; later chunks are covered by the in-loop
-    // next-chunk prefetch plus hardware stream prefetchers. Line-0-of-first-
-    // 4-rows (the previous form) left ~15 rows × 2 lines cold per call —
-    // perf annotate showed the row loads (vpmovsxbw) stalling at 16%+ of
-    // the function. Capped at 24 rows to bound issue cost on refresh-sized
-    // delta lists (avg 9.4 rows, p99 ≈ 48).
-    #[cfg(target_arch = "x86_64")]
-    {
-        use std::arch::x86_64::{_mm_prefetch, _MM_HINT_T0};
-        for &idx in adds.iter().chain(subs.iter()).take(24) {
-            unsafe {
-                let row = threat_weights.as_ptr().add(idx * hidden_size);
-                _mm_prefetch(row as *const i8, _MM_HINT_T0);
-                _mm_prefetch(row.add(64) as *const i8, _MM_HINT_T0);
-            }
-        }
-    }
+    // Row prefetch is issued by the callers while they produce the indices
+    // (`prefetch_row` in both delta loops), so the first two lines of every
+    // row are already in flight when the kernels start.
 
     // Apply weight rows with SIMD when available. Fused pattern: load src
     // chunk into registers, apply all adds/subs, store to dst. Avoids the
