@@ -5190,7 +5190,13 @@ fn negamax(
             && static_eval + tp(&RAZOR_MULT) * depth <= alpha
         {
             let v = quiescence(board, info, alpha, alpha + 1, ply);
-            if v <= alpha {
+            // A marginal QS fail-low is weak confirmation when an independent
+            // signal says a quiet recovery is plausible: correction history
+            // strongly lifts the raw eval, the node is improving, or alpha
+            // already represents a substantial advantage.
+            let weak_risk_confirmation = v > alpha - 32
+                && (static_eval - scaled_eval >= 64 || improving || alpha > 200);
+            if v <= alpha && !weak_risk_confirmation {
                 info.stats.razor_cutoffs += 1;
                 return v;
             }
