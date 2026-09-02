@@ -5187,7 +5187,13 @@ fn negamax(
             && depth <= tp10(&RAZOR_DEPTH_10X)
             && alpha.abs() < 2000
             && info.excluded_move[ply_u] == NO_MOVE
-            && static_eval + tp(&RAZOR_MULT) * depth <= alpha
+            // Positive correction history predicts that the uncorrected eval
+            // is too pessimistic—the precise failure mode for a quiet move
+            // omitted by QS. Require that much additional razor clearance;
+            // negative corrections, which audited as especially safe, retain
+            // the tuned production margin unchanged.
+            && static_eval + tp(&RAZOR_MULT) * depth
+                + (static_eval - scaled_eval).max(0) <= alpha
         {
             let v = quiescence(board, info, alpha, alpha + 1, ply);
             if v <= alpha {
