@@ -5450,15 +5450,22 @@ fn negamax(
         && king_zone_pressure < tp10(&PROBCUT_KING_ZONE_MAX_10X)  // A3: skip in high-threat positions
         && FEAT_PROBCUT.load(Ordering::Relaxed)
     {
-        // SEE threshold: only consider captures that gain enough material
-        let see_threshold = (probcut_beta - static_eval).max(0);
+        // The audit found no failed full-depth confirmations among sampled
+        // promotions. Give promotion candidates a modestly lower threshold
+        // without changing ordinary captures.
+        let pc_tt_beta = if is_promotion(tt_move) {
+            probcut_beta - 32
+        } else {
+            probcut_beta
+        };
+        let pc_tt_see_threshold = (pc_tt_beta - static_eval).max(0);
         // Improving-conditioned ProbCut depth (SF d6483505) —
         // bundled near-miss; tuned with the LMP/ProbCut margin cluster.
         let pc_depth = depth - 4 - improving as i32;
         let pc_tt_move = if tt_move_noisy
             && is_pseudo_legal(board, tt_move)
             && board.is_legal(tt_move, pinned, checkers)
-            && see_ge(board, tt_move, see_threshold)
+            && see_ge(board, tt_move, pc_tt_see_threshold)
         {
             tt_move
         } else {
@@ -5469,7 +5476,13 @@ fn negamax(
             let mv = pc_picker.next(board);
             if mv == NO_MOVE { break; }
 
-            if !see_ge(board, mv, see_threshold) { continue; }
+            let candidate_beta = if is_promotion(mv) {
+                probcut_beta - 32
+            } else {
+                probcut_beta
+            };
+            let candidate_see_threshold = (candidate_beta - static_eval).max(0);
+            if !see_ge(board, mv, candidate_see_threshold) { continue; }
 
             let pc_moved_pt = board.piece_type_at(move_from(mv));
             // Colored mover, read before make_move — written to the cont-hist
@@ -5505,11 +5518,11 @@ fn negamax(
             }
 
             // Cheap qsearch verification before expensive negamax (Stockfish pattern)
-            let mut score = -quiescence(board, info, -probcut_beta, -probcut_beta + 1, ply + 1);
+            let mut score = -quiescence(board, info, -candidate_beta, -candidate_beta + 1, ply + 1);
 
-            // Only do deeper search if qsearch also beats probcut_beta
-            if score >= probcut_beta && pc_depth > 0 {
-                score = -negamax(board, info, -probcut_beta, -probcut_beta + 1, pc_depth, ply + 1, !cut_node);
+            // Only do deeper search if qsearch also beats the candidate's beta.
+            if score >= candidate_beta && pc_depth > 0 {
+                score = -negamax(board, info, -candidate_beta, -candidate_beta + 1, pc_depth, ply + 1, !cut_node);
             }
 
             board.unmake_move();
@@ -5520,7 +5533,7 @@ fn negamax(
                 return 0;
             }
 
-            if score >= probcut_beta {
+            if score >= candidate_beta {
                 info.stats.probcut_cutoffs += 1;
                 // TT stores the RAW verified score (a tighter lower bound than
                 // the dampened value) and preserves the sticky PV flag — matches
@@ -5544,7 +5557,7 @@ fn negamax(
                 if is_decisive(score) {
                     return score;
                 }
-                return score - (probcut_beta - beta);
+                return score - (candidate_beta - beta);
             }
         }
     }
