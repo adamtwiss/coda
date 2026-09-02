@@ -6721,12 +6721,15 @@ fn negamax(
             // Singular verification: no alternative found, return alpha
             return alpha;
         }
-        if in_check {
-            // Checkmate - return negative mate score adjusted for ply
-            return -MATE_SCORE + ply;
-        }
-        // Stalemate
-        return 0;
+        // A mated or stalemated position is an EXACT value that was never
+        // stored: both branches below returned straight past the TT. Every
+        // revisit re-derived it from scratch (move generation, the whole
+        // in-check evasion path). Store it as EXACT at this depth so the next
+        // probe cuts immediately. raw_eval is the same value the normal
+        // store path passes (the in-check sentinel is handled by pack).
+        let terminal = if in_check { -MATE_SCORE + ply } else { 0 };
+        info.tt.store(board.hash, depth, score_to_tt(terminal, ply), TT_FLAG_EXACT, NO_MOVE, raw_eval, tt_pv);
+        return terminal;
     }
 
     // TB floor: a PV in-window TB hit established `tb_score` as ground
