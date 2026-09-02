@@ -5190,7 +5190,13 @@ fn negamax(
             && static_eval + tp(&RAZOR_MULT) * depth <= alpha
         {
             let v = quiescence(board, info, alpha, alpha + 1, ply);
-            if v <= alpha {
+            // A quiet TT move is direct evidence against razoring's premise
+            // that only a tactical move can recover the position. When QS
+            // merely grazes alpha, search that known quiet resource instead.
+            let weak_quiet_confirmation = tt_move != NO_MOVE
+                && !tt_move_noisy
+                && v > alpha - 32;
+            if v <= alpha && !weak_quiet_confirmation {
                 info.stats.razor_cutoffs += 1;
                 return v;
             }
