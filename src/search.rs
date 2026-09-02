@@ -786,6 +786,9 @@ pub static FEAT_4D_HISTORY: AtomicBool = AtomicBool::new(true); // threat-aware 
 // Diagnostic-only (env RFP_AUDIT=1): null-verify every RFP cutoff and count
 // false positives per depth. NOT a play feature — costs NPS; bench/EPD use.
 pub static RFP_AUDIT: AtomicBool = AtomicBool::new(false);
+// Diagnostic-only (env RAZOR_AUDIT=1): sample razor fail-lows and compare
+// them with the full search razoring replaced. NOT a play feature.
+pub static RAZOR_AUDIT: AtomicBool = AtomicBool::new(false);
 
 /// Disable all features (pure negamax + eval)
 pub fn disable_all_features() {
@@ -905,6 +908,8 @@ pub struct PruneStats {
     pub nmp_verify: u64,
     pub nmp_verify_fail: u64,
     pub rfp_cutoffs: u64,
+    pub razor_attempts: u64,
+    pub razor_q_rejects: u64,
     pub razor_cutoffs: u64,
     pub lmp_prunes: u64,
     pub futility_prunes: u64,
@@ -958,6 +963,27 @@ pub struct PruneStats {
     // Behavior-preserving: the RFP cutoff is returned regardless.
     pub rfp_audit_attempts: [u64; 24],
     pub rfp_audit_fp: [u64; 24],
+    // Razor false-positive audit (diagnostic, env RAZOR_AUDIT=1). One in
+    // sixty-four actual cutoffs is re-searched at the original depth with
+    // razoring disabled. Each pair is [audited, false-positive].
+    pub razor_audit_depth: [[u64; 2]; 6],
+    pub razor_audit_improving: [[u64; 2]; 2],
+    pub razor_audit_depth_delta: [[u64; 2]; 3],
+    pub razor_audit_ttmove: [[u64; 2]; 3],
+    pub razor_audit_alpha: [[u64; 2]; 5],
+    pub razor_audit_corr: [[u64; 2]; 5],
+    pub razor_audit_margin: [[u64; 2]; 4],
+    pub razor_audit_qmargin: [[u64; 2]; 4],
+    // Counterfactual conservative variants over the same audited cutoffs:
+    // [would-keep, kept-false-positives, would-remove].
+    pub razor_audit_variants: [[u64; 3]; 11],
+    pub razor_audit_corr_qnear: [[u64; 2]; 6],
+    pub razor_audit_alpha_qnear: [[u64; 2]; 4],
+    pub razor_audit_improving_qnear: [[u64; 2]; 4],
+    pub razor_audit_ttmove_qnear: [[u64; 2]; 6],
+    // Shadow sample outside the current lower alpha guard:
+    // [eligible, qsearch-fail-low, full-search false-positive].
+    pub razor_shadow_losing: [u64; 3],
     // TREESTATS parity counters, for tree-shape comparison against an
     // instrumented SF build; dumped by the UCI `treestats` command in the same
     // line format that patch emits. Bucket 0 = qsearch;
@@ -1044,6 +1070,9 @@ pub struct SearchInfo {
     /// nested audits (each audited cutoff would otherwise spawn audits at
     /// every RFP cutoff inside its own verification, compounding cost).
     pub rfp_audit_active: bool,
+    /// Prevent recursive razor audits and disable razoring in the full-search
+    /// confirmation subtree.
+    pub razor_audit_active: bool,
     pub tt: std::sync::Arc<TT>,  // shared across Lazy SMP threads
     pub history: Box<History>,
     pub stop: std::sync::Arc<AtomicBool>,  // shared stop flag
@@ -1377,6 +1406,7 @@ impl SearchInfo {
             syzygy: None,
             tb_probe_depth: 4,
             rfp_audit_active: false,
+            razor_audit_active: false,
         }
     }
 
@@ -2396,6 +2426,10 @@ pub(crate) fn init_feature_flags() {
             RFP_AUDIT.store(true, Ordering::Relaxed);
             eprintln!("RFP_AUDIT enabled: null-verifying every RFP cutoff (diagnostic, slow)");
         }
+        if std::env::var("RAZOR_AUDIT").is_ok() {
+            RAZOR_AUDIT.store(true, Ordering::Relaxed);
+            eprintln!("RAZOR_AUDIT enabled: full-searching 1/64 razor cutoffs (diagnostic, slow)");
+        }
     });
 }
 
@@ -2516,6 +2550,7 @@ fn refresh_helper_common(helper: &mut SearchInfo, main: &SearchInfo) {
     // Per-search scalars a fresh helper had zeroed.
     helper.nmp_min_ply = 0;
     helper.rfp_audit_active = false;
+    helper.razor_audit_active = false;
     helper.max_nodes = 0;
 }
 
@@ -5118,6 +5153,10 @@ fn negamax(
     // Internal Iterative Reduction: reduce depth when no TT move exists.
     // Restricted to PV/cut nodes (Obsidian/Berserk/Stormphrax pattern).
     let is_pv = beta - alpha_orig > 1;
+    // Preserve the pre-hindsight depth for the razor audit. The production
+    // gate intentionally sees the effective depth below; the audit measures
+    // whether that coupling is actually safe.
+    let razor_entry_depth = depth;
 
     // Threat square from null-move failure
     let mut threat_sq: i32 = -1;
@@ -5178,6 +5217,35 @@ fn negamax(
     // it removes the mechanism that kills shallow NMP — NMP-first intercepts
     // free RFP cutoffs — which is what enables the min-depth de-gate below.
     if !in_check {
+        // Shadow the asymmetric guard used by current peers: Coda currently
+        // rejects alpha <= -2000 as well as alpha >= 2000. This 1/64 sample
+        // measures the omitted losing-score habitat without changing its
+        // production return.
+        if RAZOR_AUDIT.load(Ordering::Relaxed)
+            && !info.razor_audit_active
+            && !is_pv
+            && ply > 0
+            && depth <= tp10(&RAZOR_DEPTH_10X)
+            && alpha <= -2000
+            && alpha > -MATE_IN_MAX_PLY
+            && info.excluded_move[ply_u] == NO_MOVE
+            && static_eval + tp(&RAZOR_MULT) * depth <= alpha
+            && (board.hash & 255) == 1
+            && !info.stop.load(Ordering::Relaxed)
+        {
+            info.stats.razor_shadow_losing[0] += 1;
+            let shadow_q = quiescence(board, info, alpha, alpha + 1, ply);
+            if shadow_q <= alpha && !info.stop.load(Ordering::Relaxed) {
+                info.stats.razor_shadow_losing[1] += 1;
+                info.razor_audit_active = true;
+                let shadow_full = negamax(board, info, alpha, alpha + 1, depth, ply, cut_node);
+                info.razor_audit_active = false;
+                if shadow_full > alpha && !info.stop.load(Ordering::Relaxed) {
+                    info.stats.razor_shadow_losing[2] += 1;
+                }
+            }
+        }
+
         // Razoring. 10/10 stronger engines have the
         // qsearch-verified non-PV form: when static eval is hopelessly below
         // alpha at shallow depth, drop to qsearch and trust its fail-low.
@@ -5188,12 +5256,112 @@ fn negamax(
             && alpha.abs() < 2000
             && info.excluded_move[ply_u] == NO_MOVE
             && static_eval + tp(&RAZOR_MULT) * depth <= alpha
+            && !info.razor_audit_active
         {
+            info.stats.razor_attempts += 1;
             let v = quiescence(board, info, alpha, alpha + 1, ply);
             if v <= alpha {
                 info.stats.razor_cutoffs += 1;
+                // A deterministic hash sample keeps this usable on a broad
+                // fixed-depth corpus. The production result remains `v`;
+                // the extra search exists only to classify the cutoff.
+                if RAZOR_AUDIT.load(Ordering::Relaxed)
+                    && (board.hash & 63) == 0
+                    && !info.stop.load(Ordering::Relaxed)
+                {
+                    info.razor_audit_active = true;
+                    let full_score = negamax(board, info, alpha, alpha + 1, depth, ply, cut_node);
+                    info.razor_audit_active = false;
+                    if !info.stop.load(Ordering::Relaxed) {
+                        let fp = usize::from(full_score > alpha);
+                        let d = depth.clamp(0, 5) as usize;
+                        let imp = usize::from(improving);
+                        let depth_delta = if depth < razor_entry_depth { 0 }
+                            else if depth == razor_entry_depth { 1 } else { 2 };
+                        let tt_class = if tt_move == NO_MOVE { 0 }
+                            else if tt_move_noisy { 2 } else { 1 };
+                        let alpha_class = if alpha < -1000 { 0 }
+                            else if alpha < -200 { 1 }
+                            else if alpha <= 200 { 2 }
+                            else if alpha <= 1000 { 3 } else { 4 };
+                        let corr_delta = static_eval - scaled_eval;
+                        let corr_class = if corr_delta <= -64 { 0 }
+                            else if corr_delta < -15 { 1 }
+                            else if corr_delta <= 15 { 2 }
+                            else if corr_delta < 64 { 3 } else { 4 };
+                        let clearance = alpha.saturating_sub(
+                            static_eval.saturating_add(tp(&RAZOR_MULT).saturating_mul(depth)));
+                        let margin_class = if clearance < 32 { 0 }
+                            else if clearance < 96 { 1 }
+                            else if clearance < 192 { 2 } else { 3 };
+                        let q_clearance = alpha.saturating_sub(v);
+                        let qmargin_class = if q_clearance < 32 { 0 }
+                            else if q_clearance < 96 { 1 }
+                            else if q_clearance < 192 { 2 } else { 3 };
+
+                        for (bucket, idx) in [
+                            (&mut info.stats.razor_audit_depth[..], d),
+                            (&mut info.stats.razor_audit_improving[..], imp),
+                            (&mut info.stats.razor_audit_depth_delta[..], depth_delta),
+                            (&mut info.stats.razor_audit_ttmove[..], tt_class),
+                            (&mut info.stats.razor_audit_alpha[..], alpha_class),
+                            (&mut info.stats.razor_audit_corr[..], corr_class),
+                            (&mut info.stats.razor_audit_margin[..], margin_class),
+                            (&mut info.stats.razor_audit_qmargin[..], qmargin_class),
+                        ] {
+                            bucket[idx][0] += 1;
+                            bucket[idx][1] += fp as u64;
+                        }
+
+                        let positive_corr = corr_delta.max(0);
+                        let alt_quadratic = 250 * depth + 25 * depth * depth;
+                        let current_margin = tp(&RAZOR_MULT) * depth;
+                        let variants = [
+                            clearance >= positive_corr,
+                            clearance >= 2 * positive_corr,
+                            !improving || clearance >= 64,
+                            q_clearance >= 32,
+                            clearance >= alpha.max(0) / 8,
+                            clearance >= (alt_quadratic - current_margin).max(0),
+                            clearance >= positive_corr + 32 * i32::from(improving),
+                            !(q_clearance < 32 && corr_delta > 0),
+                            !(q_clearance < 32 && alpha > 200),
+                            !(q_clearance < 32 && (corr_delta >= 64 || alpha > 200 || improving)),
+                            !(q_clearance < 32 && tt_class == 1),
+                        ];
+                        for (idx, keep) in variants.into_iter().enumerate() {
+                            if keep {
+                                info.stats.razor_audit_variants[idx][0] += 1;
+                                info.stats.razor_audit_variants[idx][1] += fp as u64;
+                            } else {
+                                info.stats.razor_audit_variants[idx][2] += 1;
+                            }
+                        }
+                        let corr3 = if corr_delta <= 0 { 0 }
+                            else if corr_delta < 64 { 1 } else { 2 };
+                        let qnear = usize::from(q_clearance < 32);
+                        let alpha_positive = usize::from(alpha > 200);
+                        for idx in [corr3 * 2 + qnear] {
+                            info.stats.razor_audit_corr_qnear[idx][0] += 1;
+                            info.stats.razor_audit_corr_qnear[idx][1] += fp as u64;
+                        }
+                        for idx in [alpha_positive * 2 + qnear] {
+                            info.stats.razor_audit_alpha_qnear[idx][0] += 1;
+                            info.stats.razor_audit_alpha_qnear[idx][1] += fp as u64;
+                        }
+                        for idx in [imp * 2 + qnear] {
+                            info.stats.razor_audit_improving_qnear[idx][0] += 1;
+                            info.stats.razor_audit_improving_qnear[idx][1] += fp as u64;
+                        }
+                        for idx in [tt_class * 2 + qnear] {
+                            info.stats.razor_audit_ttmove_qnear[idx][0] += 1;
+                            info.stats.razor_audit_ttmove_qnear[idx][1] += fp as u64;
+                        }
+                    }
+                }
                 return v;
             }
+            info.stats.razor_q_rejects += 1;
         }
 
         // Reverse Futility Pruning (Static Null Move Pruning) — pre-NMP site.
@@ -7579,6 +7747,9 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
         total_stats.nmp_attempts += info.stats.nmp_attempts;
         total_stats.nmp_cutoffs += info.stats.nmp_cutoffs;
         total_stats.rfp_cutoffs += info.stats.rfp_cutoffs;
+        total_stats.razor_attempts += info.stats.razor_attempts;
+        total_stats.razor_q_rejects += info.stats.razor_q_rejects;
+        total_stats.razor_cutoffs += info.stats.razor_cutoffs;
         total_stats.lmp_prunes += info.stats.lmp_prunes;
         total_stats.futility_prunes += info.stats.futility_prunes;
         total_stats.see_prunes += info.stats.see_prunes;
@@ -7622,6 +7793,50 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
             total_stats.rfp_audit_attempts[d] += info.stats.rfp_audit_attempts[d];
             total_stats.rfp_audit_fp[d] += info.stats.rfp_audit_fp[d];
         }
+        for i in 0..6 {
+            for j in 0..2 { total_stats.razor_audit_depth[i][j] += info.stats.razor_audit_depth[i][j]; }
+        }
+        for i in 0..2 {
+            for j in 0..2 { total_stats.razor_audit_improving[i][j] += info.stats.razor_audit_improving[i][j]; }
+        }
+        for i in 0..3 {
+            for j in 0..2 {
+                total_stats.razor_audit_depth_delta[i][j] += info.stats.razor_audit_depth_delta[i][j];
+                total_stats.razor_audit_ttmove[i][j] += info.stats.razor_audit_ttmove[i][j];
+            }
+        }
+        for i in 0..5 {
+            for j in 0..2 {
+                total_stats.razor_audit_alpha[i][j] += info.stats.razor_audit_alpha[i][j];
+                total_stats.razor_audit_corr[i][j] += info.stats.razor_audit_corr[i][j];
+            }
+        }
+        for i in 0..4 {
+            for j in 0..2 {
+                total_stats.razor_audit_margin[i][j] += info.stats.razor_audit_margin[i][j];
+                total_stats.razor_audit_qmargin[i][j] += info.stats.razor_audit_qmargin[i][j];
+            }
+        }
+        for i in 0..11 {
+            for j in 0..3 {
+                total_stats.razor_audit_variants[i][j] += info.stats.razor_audit_variants[i][j];
+            }
+        }
+        for i in 0..6 {
+            for j in 0..2 {
+                total_stats.razor_audit_corr_qnear[i][j] += info.stats.razor_audit_corr_qnear[i][j];
+                total_stats.razor_audit_ttmove_qnear[i][j] += info.stats.razor_audit_ttmove_qnear[i][j];
+            }
+        }
+        for i in 0..4 {
+            for j in 0..2 {
+                total_stats.razor_audit_alpha_qnear[i][j] += info.stats.razor_audit_alpha_qnear[i][j];
+                total_stats.razor_audit_improving_qnear[i][j] += info.stats.razor_audit_improving_qnear[i][j];
+            }
+        }
+        for i in 0..3 {
+            total_stats.razor_shadow_losing[i] += info.stats.razor_shadow_losing[i];
+        }
 
         // Accumulate EBF data across all positions
         let max_d = info.completed_depth as usize;
@@ -7655,6 +7870,11 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
     eprintln!("NMP attempts:   {:>8}  cutoffs: {} ({:.0}%)", s.nmp_attempts, s.nmp_cutoffs,
         if s.nmp_attempts > 0 { s.nmp_cutoffs as f64 / s.nmp_attempts as f64 * 100.0 } else { 0.0 });
     eprintln!("RFP cutoffs:    {:>8}  ({:.1}% of nodes)", s.rfp_cutoffs, s.rfp_cutoffs as f64 / total_nodes as f64 * 100.0);
+    eprintln!("Razor attempts: {:>8}  cutoffs: {} ({:.0}%, {:.2}% of nodes), q-rejects: {}",
+        s.razor_attempts, s.razor_cutoffs,
+        if s.razor_attempts > 0 { s.razor_cutoffs as f64 / s.razor_attempts as f64 * 100.0 } else { 0.0 },
+        s.razor_cutoffs as f64 / total_nodes as f64 * 100.0,
+        s.razor_q_rejects);
     eprintln!("LMP prunes:     {:>8}", s.lmp_prunes);
     eprintln!("Futility prunes:{:>8}", s.futility_prunes);
     eprintln!("SEE prunes:     {:>8}", s.see_prunes);
@@ -7770,6 +7990,7 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
     eprintln!("NMP cutoffs:    {:>6.1}/Kn  ({:.0}% of attempts)", s.nmp_cutoffs as f64 / kn,
         if s.nmp_attempts > 0 { s.nmp_cutoffs as f64 / s.nmp_attempts as f64 * 100.0 } else { 0.0 });
     eprintln!("RFP cutoffs:    {:>6.1}/Kn", s.rfp_cutoffs as f64 / kn);
+    eprintln!("Razor cutoffs:  {:>6.1}/Kn", s.razor_cutoffs as f64 / kn);
     eprintln!("LMP prunes:     {:>6.1}/Kn", s.lmp_prunes as f64 / kn);
     eprintln!("Futility:       {:>6.1}/Kn", s.futility_prunes as f64 / kn);
     eprintln!("SEE prune:      {:>6.1}/Kn", s.see_prunes as f64 / kn);
@@ -7793,6 +8014,49 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
         }
         eprintln!("TOTAL | {:>8} | {:>8} | {:>6.2}%", audit_total, fp_total,
             fp_total as f64 * 100.0 / audit_total as f64);
+    }
+
+    let razor_audit_total: u64 = s.razor_audit_depth.iter().map(|x| x[0]).sum();
+    if razor_audit_total > 0 {
+        eprintln!("--- Razor False-Positive Audit (1/64 full-search sample) ---");
+        let print_buckets = |label: &str, names: &[&str], rows: &[[u64; 2]]| {
+            eprintln!("{}:", label);
+            for (name, row) in names.iter().zip(rows.iter()) {
+                if row[0] == 0 { continue; }
+                eprintln!("  {:>12}: {:>7} audited  {:>7} FP  {:>6.2}%",
+                    name, row[0], row[1], row[1] as f64 * 100.0 / row[0] as f64);
+            }
+        };
+        print_buckets("depth", &["d0", "d1", "d2", "d3", "d4", "d5+"], &s.razor_audit_depth);
+        print_buckets("improving", &["false", "true"], &s.razor_audit_improving);
+        print_buckets("hindsight depth", &["reduced", "same", "extended"], &s.razor_audit_depth_delta);
+        print_buckets("TT move", &["none", "quiet", "noisy"], &s.razor_audit_ttmove);
+        print_buckets("alpha", &["<-1000", "-1000..-201", "-200..200", "201..1000", ">1000"], &s.razor_audit_alpha);
+        print_buckets("correction delta", &["<=-64", "-63..-16", "-15..15", "16..63", ">=64"], &s.razor_audit_corr);
+        print_buckets("static clearance", &["<32", "32..95", "96..191", ">=192"], &s.razor_audit_margin);
+        print_buckets("qsearch clearance", &["<32", "32..95", "96..191", ">=192"], &s.razor_audit_qmargin);
+        eprintln!("counterfactual variants (keep / FP kept / removed; total FP={}):",
+            s.razor_audit_depth.iter().map(|x| x[1]).sum::<u64>());
+        let variant_names = [
+            "+1x positive corr", "+2x positive corr", "+64 if improving",
+            "q-clearance >=32", "+alpha+/8", "250d+25d2", "+corr +32 improving",
+            "qnear & corr>0", "qnear & alpha>200", "qnear & risk signal",
+            "qnear & quiet TT",
+        ];
+        for (name, row) in variant_names.iter().zip(s.razor_audit_variants.iter()) {
+            eprintln!("  {:>20}: keep {:>7} (FP {:>5}), remove {:>7}",
+                name, row[0], row[1], row[2]);
+        }
+        print_buckets("corr x q-near", &["corr<=0 far", "corr<=0 near", "corr1..63 far", "corr1..63 near", "corr>=64 far", "corr>=64 near"], &s.razor_audit_corr_qnear);
+        print_buckets("alpha x q-near", &["alpha<=200 far", "alpha<=200 near", "alpha>200 far", "alpha>200 near"], &s.razor_audit_alpha_qnear);
+        print_buckets("improving x q-near", &["not-imp far", "not-imp near", "improving far", "improving near"], &s.razor_audit_improving_qnear);
+        print_buckets("TT move x q-near", &["no-TT far", "no-TT near", "quiet far", "quiet near", "noisy far", "noisy near"], &s.razor_audit_ttmove_qnear);
+        let sh = s.razor_shadow_losing;
+        if sh[0] > 0 {
+            eprintln!("losing-alpha shadow: {} eligible, {} q-fail-low, {} FP ({:.2}% of q-fail-low)",
+                sh[0], sh[1], sh[2],
+                if sh[1] > 0 { 100.0 * sh[2] as f64 / sh[1] as f64 } else { 0.0 });
+        }
     }
 
     // Eval-path decomposition — supports the "evals/node" investigation.
