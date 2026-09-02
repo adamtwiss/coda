@@ -5190,7 +5190,12 @@ fn negamax(
             && static_eval + tp(&RAZOR_MULT) * depth <= alpha
         {
             let v = quiescence(board, info, alpha, alpha + 1, ply);
-            if v <= alpha {
+            // A large positive correction says the raw eval is too
+            // pessimistic. If QS only barely fails low, search for the quiet
+            // recovery that correction history predicts may exist.
+            let weak_corrected_confirmation = static_eval - scaled_eval >= 64
+                && v > alpha - 32;
+            if v <= alpha && !weak_corrected_confirmation {
                 info.stats.razor_cutoffs += 1;
                 return v;
             }
