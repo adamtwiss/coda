@@ -5190,7 +5190,11 @@ fn negamax(
             && static_eval + tp(&RAZOR_MULT) * depth <= alpha
         {
             let v = quiescence(board, info, alpha, alpha + 1, ply);
-            if v <= alpha {
+            // When alpha already represents a substantial advantage, a QS
+            // result that only grazes it is weak evidence that no quiet move
+            // can preserve that advantage. Search those marginal cases.
+            let weak_winning_confirmation = alpha > 200 && v > alpha - 32;
+            if v <= alpha && !weak_winning_confirmation {
                 info.stats.razor_cutoffs += 1;
                 return v;
             }
