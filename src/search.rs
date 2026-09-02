@@ -6727,8 +6727,12 @@ fn negamax(
         // in-check evasion path). Store it as EXACT at this depth so the next
         // probe cuts immediately. raw_eval is the same value the normal
         // store path passes (the in-check sentinel is handled by pack).
+        // Stored at the TT depth CEILING (the i8 clamp in tt::pack_data), not
+        // at `depth`: a terminal verdict is exact at every depth, and the
+        // cutoff gate rejects entries shallower than the probing depth.
+        const TT_DEPTH_CEILING: i32 = 127;
         let terminal = if in_check { -MATE_SCORE + ply } else { 0 };
-        info.tt.store(board.hash, depth, score_to_tt(terminal, ply), TT_FLAG_EXACT, NO_MOVE, raw_eval, tt_pv);
+        info.tt.store(board.hash, TT_DEPTH_CEILING, score_to_tt(terminal, ply), TT_FLAG_EXACT, NO_MOVE, raw_eval, tt_pv);
         return terminal;
     }
 
