@@ -641,6 +641,10 @@ impl MovePicker {
         let escape_bonus_q = crate::search::ESCAPE_BONUS_Q.load(Ordering::Relaxed);
         let escape_bonus_r = crate::search::ESCAPE_BONUS_R.load(Ordering::Relaxed);
         let escape_bonus_minor = crate::search::ESCAPE_BONUS_MINOR.load(Ordering::Relaxed);
+        // Indexed by min(pt, 7): pawn/king/NO_PIECE_TYPE get 0.
+        let escape_bonus_by_pt: [i32; 8] = [
+            0, escape_bonus_minor, escape_bonus_minor, escape_bonus_r, escape_bonus_q, 0, 0, 0,
+        ];
         let quiet_check_bonus = crate::search::QUIET_CHECK_BONUS.load(Ordering::Relaxed);
         let quiet_check_see_margin = crate::search::QUIET_CHECK_SEE_MARGIN.load(Ordering::Relaxed);
         let discovered_attack_bonus = crate::search::DISCOVERED_ATTACK_BONUS.load(Ordering::Relaxed);
@@ -700,12 +704,8 @@ impl MovePicker {
             // Escape-capture bonus: bonus for moving a piece off a threatened
             // square. All four (Q/R/B/N) now tunable.
             if self.threats & (1u64 << from) != 0 && piece != NO_PIECE {
-                score += match pt {
-                    4 => escape_bonus_q,
-                    3 => escape_bonus_r,
-                    1 | 2 => escape_bonus_minor,
-                    _ => 0,
-                };
+                // Table instead of a match on piece type (jump table, mispredicts).
+                score += escape_bonus_by_pt[pt.min(7) as usize];
             }
 
             // Quiet check bonus: moves that give direct check (SF +16384).

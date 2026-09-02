@@ -436,37 +436,34 @@ impl TT {
         let idx = self.bucket_index(hash);
         let bucket = &self.buckets[idx];
         let key_upper = (hash >> 32) as u32;
-
-        for i in 0..BUCKET_SIZE {
-            // Order matters: load key (Acquire) BEFORE data so the
-            // Acquire-Release synchronization on the key store carries the
-            // happens-before edge to the data load below.
+        // Branch-free scan. All five slots share one cache line, so load
+        // them all, test each, and keep the LOWEST matching index (reverse
+        // walk + select). Same result as the former first-match early exit
+        // without its per-slot mispredicts (LBR: ~1.4% of all mispredicts).
+        // The only branch left is hit vs miss, which the caller tests anyway.
+        let mut datas = [0u64; BUCKET_SIZE];
+        let mut hit = BUCKET_SIZE;
+        for i in (0..BUCKET_SIZE).rev() {
             let stored_key = bucket.keys[i].load(Ordering::Acquire);
             let data = bucket.data[i].load(Ordering::Acquire);
-
-            // 32-bit XOR verification: detects torn reads from concurrent writes
-            if stored_key ^ (data as u32) != key_upper {
-                continue;
-            }
-
-            let flag = unpack_flag(data);
-            if flag == TT_FLAG_NONE {
-                continue;
-            }
-
-            return TTEntry {
-                best_move: unpack_move(data),
-                flag,
-                static_eval: unpack_static_eval(data),
-                score: unpack_score(data),
-                depth: unpack_depth(data),
-                tt_pv: unpack_tt_pv(data),
-                hit: true,
-                generation: unpack_generation(data),
-            };
+            datas[i] = data;
+            let ok = (stored_key ^ (data as u32) == key_upper) & (unpack_flag(data) != TT_FLAG_NONE);
+            hit = if ok { i } else { hit };
         }
-
-        TTEntry::miss()
+        if hit == BUCKET_SIZE {
+            return TTEntry::miss();
+        }
+        let data = datas[hit];
+        TTEntry {
+            best_move: unpack_move(data),
+            flag: unpack_flag(data),
+            static_eval: unpack_static_eval(data),
+            score: unpack_score(data),
+            depth: unpack_depth(data),
+            tt_pv: unpack_tt_pv(data),
+            hit: true,
+            generation: unpack_generation(data),
+        }
     }
 
     /// Current TT generation. Bumped each `new_search`. Used by the search
@@ -487,67 +484,55 @@ impl TT {
         let new_key = key_upper ^ (new_data as u32);
 
         // Scan all 5 slots: key match, empty, or worst-scoring
+        // Branch-free slot scan (one cache line). `special` is the LOWEST
+        // index that is empty or holds this key — exactly the slot the
+        // former early-exit loop would have stopped at; `replace_idx` is
+        // the first minimum of the replacement score over all slots, only
+        // consulted when no special slot exists (then every slot took part
+        // in the old loop too). The scan's per-slot branches were ~2.2% of
+        // all mispredicts; what remains branches on the outcome, once.
+        let mut datas = [0u64; BUCKET_SIZE];
+        let mut special = BUCKET_SIZE;
         let mut replace_idx = 0;
         let mut replace_score = i32::MAX;
-
         for i in 0..BUCKET_SIZE {
-            // Probe-equivalent loads: key first (Acquire) so we see the
-            // matching data write on aarch64.
             let slot_key = bucket.keys[i].load(Ordering::Acquire);
             let slot_data = bucket.data[i].load(Ordering::Acquire);
+            datas[i] = slot_data;
             let recovered_upper = slot_key ^ (slot_data as u32);
-
-            let slot_flag = unpack_flag(slot_data);
+            let is_special = (unpack_flag(slot_data) == TT_FLAG_NONE) | (recovered_upper == key_upper);
+            special = if is_special & (special == BUCKET_SIZE) { i } else { special };
+            let age = gen.wrapping_sub(unpack_generation(slot_data)) as i32;
+            let slot_score = unpack_depth(slot_data) - age * 8;
+            let better = slot_score < replace_score;
+            replace_score = if better { slot_score } else { replace_score };
+            replace_idx = if better { i } else { replace_idx };
+        }
+        if special < BUCKET_SIZE {
+            let slot_data = datas[special];
+            if unpack_flag(slot_data) == TT_FLAG_NONE {
+                bucket.data[special].store(new_data, Ordering::Release);
+                bucket.keys[special].store(new_key, Ordering::Release);
+                return;
+            }
+            // Same key: replace unless the stored entry is much deeper, from
+            // the same generation, and the new one is not exact.
             let slot_depth = unpack_depth(slot_data);
             let slot_gen = unpack_generation(slot_data);
-
-            // Empty slot: use immediately. Store data first (Release) then
-            // key (Release). The key Release publishes the data write so any
-            // probe seeing the new key on another core is guaranteed to see
-            // the matching new data.
-            if slot_flag == TT_FLAG_NONE {
-                bucket.data[i].store(new_data, Ordering::Release);
-                bucket.keys[i].store(new_key, Ordering::Release);
-                return;
+            let flag_is_exact = flag == TT_FLAG_EXACT;
+            if depth > slot_depth - 4 || gen != slot_gen || flag_is_exact {
+                let effective_move = if best_move == NO_MOVE {
+                    unpack_move(slot_data)
+                } else {
+                    best_move
+                };
+                let stored_data = pack_data(effective_move, flag, static_eval, score, depth, gen, is_pv);
+                let stored_key = key_upper ^ (stored_data as u32);
+                bucket.data[special].store(stored_data, Ordering::Release);
+                bucket.keys[special].store(stored_key, Ordering::Release);
             }
-
-            // Key match: update if newer generation, sufficiently deep, or EXACT.
-            // Also preserve the existing TT move when no new move is available
-            // (all-node stores with NO_MOVE must not erase a move from a deeper
-            // prior iteration — all 5 reference engines implement this).
-            if recovered_upper == key_upper {
-                let flag_is_exact = flag == TT_FLAG_EXACT;
-                // Same-key overwrite gate. Margin 4 (`slot_depth - 4`) matches
-                // the primary peers (SF/Berserk use `depth + 4`).
-                if depth > slot_depth - 4 || gen != slot_gen || flag_is_exact {
-                    // Preserve the existing best move when we have none
-                    let effective_move = if best_move == NO_MOVE {
-                        unpack_move(slot_data)
-                    } else {
-                        best_move
-                    };
-                    let stored_data = pack_data(effective_move, flag, static_eval, score, depth, gen, is_pv);
-                    let stored_key = key_upper ^ (stored_data as u32);
-                    bucket.data[i].store(stored_data, Ordering::Release);
-                    bucket.keys[i].store(stored_key, Ordering::Release);
-                }
-                return;
-            }
-
-            // Track worst slot for replacement: depth - 8*age. The same form
-            // as Obsidian's replacement score (getDepth() - 8*getAgeDistance())
-            // and SF's GENERATION_DELTA=8 — a convergent power-of-two
-            // coefficient. The 8 makes stale entries depreciate fast enough to
-            // free slots for fresh shallow ones when TT pressure is high.
-            let age = gen.wrapping_sub(slot_gen) as i32;
-            let slot_score = slot_depth - age * 8;
-            if slot_score < replace_score {
-                replace_score = slot_score;
-                replace_idx = i;
-            }
+            return;
         }
-
-        // No key match and no empty slot: replace worst-scoring slot
         bucket.data[replace_idx].store(new_data, Ordering::Release);
         bucket.keys[replace_idx].store(new_key, Ordering::Release);
     }
