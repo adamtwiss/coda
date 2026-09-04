@@ -5788,8 +5788,10 @@ fn negamax(
             if futility_value <= alpha && main_hist < tp(&FUT_HIST_EXEMPT) && !board.gives_direct_check(mv) {
                 trace_gate!(info, board.hash, ply, mv, "futility", depth, move_count);
                 info.stats.futility_prunes += 1;
-                skip_quiets = true;
-                picker.skip_remaining_quiets();
+                // Unlike LMP, futility is move-specific: main history and the
+                // reduced depth can differ across the ordered quiet tail. Let
+                // later quiets face their own predicate instead of assuming
+                // this first failure proves that every remaining move fails.
                 continue;
             }
         }
