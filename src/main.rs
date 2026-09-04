@@ -54,6 +54,7 @@ pub mod nnue_export;
 pub mod bullet_convert;
 mod cuckoo;
 pub mod threats;
+pub mod pawn_pair;
 pub mod threat_accum;
 pub mod sparse_l1;
 pub mod nnue_simd;
@@ -565,6 +566,11 @@ enum Commands {
         /// Number of threat features (0 = no threats, v9 format)
         #[arg(long, default_value_t = 0)]
         threats: usize,
+        /// Net was trained with the pawn-pair input block (v11 format).
+        /// Must match training: the FT size check rejects a mismatch rather
+        /// than converting silently.
+        #[arg(long)]
+        pawn_pairs: bool,
         /// Source output bucket count (default 8, set to 2 for 2-bucket nets)
         #[arg(long, default_value_t = 8)]
         output_buckets: usize,
@@ -857,7 +863,7 @@ fn main() {
                     let mut board = Board::from_fen(fen);
                     acc.force_recompute(&net, &board);
                     if tstack.active {
-                        tstack.ensure_computed(&net.threat_weights, net.num_threat_features, &board);
+                        tstack.ensure_computed(&net.threat_weights, net.num_threat_features, net.num_pawn_pair_features, &board);
                     }
                     let legal = generate_legal_moves(&board);
                     if legal.len == 0 { continue; }
@@ -895,6 +901,8 @@ fn main() {
                     let mut board = Board::from_fen(fen);
                     // v9 production path: threat deltas always on.
                     board.generate_threat_deltas = net.has_threats && !no_threat_deltas;
+                    board.generate_pawn_pair_deltas =
+                        net.num_pawn_pair_features > 0 && !no_threat_deltas;
                     let legal = generate_legal_moves(&board);
                     if legal.len == 0 { continue; }
                     move_corpus_positions += 1;
@@ -1377,7 +1385,7 @@ fn main() {
             run_binpack_material(&input, max);
         }
 
-        Some(Commands::ConvertBullet { input, output, screlu, pairwise, hidden, hidden2, int8l1, bucketed_hidden, ft_size, int16_hidden, dual, consensus_buckets, kb_layout, kb_count, threats, output_buckets, hl_crelu }) => {
+        Some(Commands::ConvertBullet { input, output, screlu, pairwise, hidden, hidden2, int8l1, bucketed_hidden, ft_size, int16_hidden, dual, consensus_buckets, kb_layout, kb_count, threats, output_buckets, hl_crelu, pawn_pairs }) => {
             // Resolve king bucket layout and count. Explicit --kb-layout wins;
             // --consensus-buckets is the legacy path for 16-bucket consensus.
             let layout = if !kb_layout.is_empty() {
@@ -1393,7 +1401,7 @@ fn main() {
             let count = if kb_count > 0 { kb_count } else { layout.default_count() };
 
             let result = if hidden > 0 {
-                bullet_convert::convert_v7(&input, &output, screlu, pairwise, hidden, hidden2, int8l1, bucketed_hidden, ft_size, int16_hidden, dual, layout, count, threats, hl_crelu)
+                bullet_convert::convert_v7(&input, &output, screlu, pairwise, hidden, hidden2, int8l1, bucketed_hidden, ft_size, int16_hidden, dual, layout, count, threats, hl_crelu, pawn_pairs)
             } else {
                 bullet_convert::convert_v5(&input, &output, screlu, pairwise, output_buckets, layout, count)
             };
@@ -1640,7 +1648,7 @@ fn run_check_net(net_path: &str) {
         if net.has_threats {
             let mut ts = crate::threat_accum::ThreatStack::new(h);
             ts.active = true;
-            ts.ensure_computed(&net.threat_weights, net.num_threat_features, &board);
+            ts.ensure_computed(&net.threat_weights, net.num_threat_features, net.num_pawn_pair_features, &board);
             net.forward_with_threats(&acc, board.side_to_move, piece_count, &ts)
         } else {
             net.forward(&acc, board.side_to_move, piece_count)
@@ -2707,7 +2715,7 @@ fn run_eval_fens(input: &str, output: &str, nnue_path: &Option<String>) {
         let mut ts = crate::threat_accum::ThreatStack::new(net.hidden_size);
         ts.active = net.has_threats;
         if ts.active {
-            ts.ensure_computed(&net.threat_weights, net.num_threat_features, &board);
+            ts.ensure_computed(&net.threat_weights, net.num_threat_features, net.num_pawn_pair_features, &board);
         }
         // Each FEN is an unrelated board: full recompute, same as eval-dist.
         acc.force_recompute(net, &board);
@@ -2925,7 +2933,7 @@ fn run_eval_dist(input: &str, n: usize, nnue_path: &Option<String>, csv: &Option
             let mut ts = crate::threat_accum::ThreatStack::new(net.hidden_size);
             ts.active = net.has_threats;
             if ts.active {
-                ts.ensure_computed(&net.threat_weights, net.num_threat_features, &board);
+                ts.ensure_computed(&net.threat_weights, net.num_threat_features, net.num_pawn_pair_features, &board);
             }
             // CRITICAL: the accumulator is reused across positions; each FEN
             // is an unrelated board, so the cached acc is stale. Without a
