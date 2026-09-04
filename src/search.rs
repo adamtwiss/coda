@@ -162,6 +162,11 @@ tunables!(
     // input. Exposing it costs nothing and is behaviour-identical at 12000.
     (FUT_HIST_EXEMPT, 12485, 2000, 16384, 900.0, true),
     (FUT_LMR_DEPTH, 14, 6, 24, 2.0, true),
+    // Move-count term: later quiets get a tighter futility margin. Default
+    // FUT_PER_DEPTH / 8 — one depth-ply of margin per eight moves; capped at
+    // the depth term so the margin never drops below FUT_BASE. Futility is
+    // evaluated per move across the quiet tail; LMP still bulk-skips.
+    (FUT_MC_PER_MOVE, 12, 0, 40, 2.0, true),
     (SEE_QUIET_MULT, 22, 5, 80, 3.75, true),
     // Low-increment TM multiplier ceiling. The factor product
     // (stability×fail-low×forced×subtree×score-trend, up to ~13.8×) is only
@@ -5783,7 +5788,8 @@ fn negamax(
             let main_hist = info.history.main_score(from, to, enemy_attacks);
             let hist_adj = main_hist / 128;
             let threats_adj = any_threat_count * tp(&FUT_THREATS_MARGIN);
-            let futility_value = static_eval + tp(&FUT_BASE) + lmr_d * tp(&FUT_PER_DEPTH) + hist_adj + threats_adj;
+            let mc_adj = (move_count * tp(&FUT_MC_PER_MOVE)).min(lmr_d * tp(&FUT_PER_DEPTH));
+            let futility_value = static_eval + tp(&FUT_BASE) + lmr_d * tp(&FUT_PER_DEPTH) + hist_adj + threats_adj - mc_adj;
             // Direct-check carve-out + strong-history exemption (Igel #410).
             if futility_value <= alpha && main_hist < tp(&FUT_HIST_EXEMPT) && !board.gives_direct_check(mv) {
                 trace_gate!(info, board.hash, ply, mv, "futility", depth, move_count);
