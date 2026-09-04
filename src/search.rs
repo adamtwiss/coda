@@ -5638,6 +5638,11 @@ fn negamax(
     // like a pure short-circuit — it moves the bench ~22%, and the mechanism
     // for that has never been localised.
     let mut skip_quiets = false;
+    // Once futility starts skipping the quiet tail, still admit a later move
+    // whose own main-history evidence clears the existing exemption. Quiet
+    // ordering mixes several signals, so main history is not monotone in pick
+    // order and the first pruned move cannot prove that later ones fail it.
+    let mut futility_tail_history = false;
 
     loop {
         let mv = picker.next(board);
@@ -5675,8 +5680,12 @@ fn negamax(
         let is_promo = is_promotion(mv);
 
         if skip_quiets && !is_cap && !is_promo {
-            trace_gate!(info, board.hash, ply, mv, "skip_quiets", depth, move_count);
-            continue;
+            let history_rescue = futility_tail_history
+                && info.history.main_score(from, to, enemy_attacks) >= tp(&FUT_HIST_EXEMPT);
+            if !history_rescue {
+                trace_gate!(info, board.hash, ply, mv, "skip_quiets", depth, move_count);
+                continue;
+            }
         }
 
         // Late Move Pruning (reordered FIRST, SF Step-14 order): at shallow
@@ -5760,7 +5769,7 @@ fn negamax(
                 trace_gate!(info, board.hash, ply, mv, "futility", depth, move_count);
                 info.stats.futility_prunes += 1;
                 skip_quiets = true;
-                picker.skip_remaining_quiets();
+                futility_tail_history = true;
                 continue;
             }
         }
