@@ -4827,7 +4827,11 @@ fn negamax(
             if tt_depth > depth - (tt_score <= beta) as i32 && FEAT_TT_CUTOFF.load(Ordering::Relaxed) {
                 // Unified TT cutoff with node-type guard (Alexandria pattern):
                 // At non-PV nodes, accept TT cutoff when:
-                // - cut_node matches score direction (cut expects fail-high, all expects fail-low)
+                // - a fail-high entry meets a cut node (the node type that
+                //   expects it); a fail-low entry cuts at ANY non-PV node — an
+                //   all-node expects it, and a cut node holding a fail-low
+                //   entry has already been refuted at this depth once.
+                //   (Previously symmetric: fail-low cut only at all-nodes.)
                 // - TT bound type matches (LOWER for fail-high, UPPER for fail-low)
                 let score_above_beta = tt_score >= beta;
                 let bound_matches = if score_above_beta {
@@ -4850,7 +4854,7 @@ fn negamax(
                 // Cost: one board-only make/unmake + one probe, deep cutoffs
                 // only. Shallow cutoffs and the bounds-collapse path below stay
                 // unverified (matching SF's single-site scope).
-                if !tt_cut_is_pv && cut_node == score_above_beta && bound_matches
+                if !tt_cut_is_pv && (cut_node || !score_above_beta) && bound_matches
                     && halfmove_ok
                     && !tt_cutoff_child_disagrees(info, board, tt_move, tt_score, beta, depth, ply)
                 {
