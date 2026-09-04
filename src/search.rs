@@ -5638,6 +5638,10 @@ fn negamax(
     // like a pure short-circuit — it moves the bench ~22%, and the mechanism
     // for that has never been localised.
     let mut skip_quiets = false;
+    // Quiet ordering is not check-monotone. If futility starts a bulk skip,
+    // preserve a later direct check so the existing per-move carve-out remains
+    // meaningful across the whole tail rather than only up to the first miss.
+    let mut futility_tail_checks = false;
 
     loop {
         let mv = picker.next(board);
@@ -5675,8 +5679,10 @@ fn negamax(
         let is_promo = is_promotion(mv);
 
         if skip_quiets && !is_cap && !is_promo {
-            trace_gate!(info, board.hash, ply, mv, "skip_quiets", depth, move_count);
-            continue;
+            if !futility_tail_checks || !board.gives_direct_check(mv) {
+                trace_gate!(info, board.hash, ply, mv, "skip_quiets", depth, move_count);
+                continue;
+            }
         }
 
         // Late Move Pruning (reordered FIRST, SF Step-14 order): at shallow
@@ -5760,7 +5766,7 @@ fn negamax(
                 trace_gate!(info, board.hash, ply, mv, "futility", depth, move_count);
                 info.stats.futility_prunes += 1;
                 skip_quiets = true;
-                picker.skip_remaining_quiets();
+                futility_tail_checks = true;
                 continue;
             }
         }
