@@ -1,11 +1,27 @@
 //! Pawn-pair input features.
 //!
-//! **Attribution.** The idea of a pawn-pair input block — and specifically the
-//! empirical observation that, of all pawn pairs, only those at most one file
-//! apart carry signal — is **Jonathan Hallström's, introduced in Pawnocchio**.
-//! It has since been adopted independently by Stormphrax, Viridithas and
-//! Stockfish. The idea is his; the encoding below is derived from Coda's own
-//! board representation and was written without any other engine's source open.
+//! **Attribution — the idea is not ours.** Pawn-pair input features appear in
+//! Pawnocchio (Jonathan Hallström), Stormphrax, Viridithas, Triumviratus, and
+//! Stockfish, whose SFNNv16 input set names the same construction "PP 3Wide".
+//! Triumviratus's own documentation credits Stormphrax, Viridithas and
+//! Pawnocchio for the idea. We make **no claim about which was first** — we
+//! have no source establishing priority, and an earlier version of this comment
+//! asserted one it could not support.
+//!
+//! **Provenance of this encoding, stated plainly, because it changed.** A first
+//! attempt derived an encoding independently and got it wrong: it recorded only
+//! a pair's relative SHAPE, so a phalanx on rank 2 was the same feature as one
+//! on rank 6. Measured, that block was always active and carried large eval
+//! influence while improving eval accuracy by nothing, and it lost 8–11 Elo to
+//! its own throughput cost. The encoding below was then designed from the
+//! published feature DEFINITION those engines share — a pair indexed by both
+//! pawns' SQUARES and colours — which is why it is no longer an independent
+//! derivation and this comment no longer claims to be one.
+//!
+//! No foreign code, formula, or constant was used. The feature count is derived
+//! here: 372 is the number of square pairs within one file over ranks 2..7 in
+//! Coda's own square numbering, produced by the `PAIR_SLOT` table below, times
+//! our own four colour combinations.
 //!
 //! # Encoding (1,488 features)
 //!
