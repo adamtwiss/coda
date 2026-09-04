@@ -225,6 +225,45 @@ const FILE3: [Bitboard; 8] = {
     t
 };
 
+/// Which pawns leave the pawn set and which join it, for one move.
+///
+/// Shared by BOTH pawn-structure feature blocks (pawn-pair and passed-pawn) on
+/// purpose: they trigger on exactly the same events, and two copies of this
+/// derivation would eventually disagree, leaving one block silently wrong.
+pub struct PawnSetChange {
+    pub removed: [(u8, Color); 2],
+    pub n_removed: usize,
+    pub added: Option<(u8, Color)>,
+}
+
+/// A promotion removes the pawn from `from` and adds NOTHING — the piece that
+/// lands on `to` is no longer a pawn. En passant removes a pawn that is not on
+/// the destination square.
+#[inline]
+pub fn pawn_set_change(us: Color, mv: Move, captured: u8, pt: u8) -> PawnSetChange {
+    let from = move_from(mv);
+    let to = move_to(mv);
+    let them = flip_color(us);
+    let is_ep = move_flags(mv) == FLAG_EN_PASSANT;
+
+    let mut removed: [(u8, Color); 2] = [(0, 0); 2];
+    let mut n_removed = 0usize;
+    if is_ep {
+        let cap_sq = if us == WHITE { to.wrapping_sub(8) } else { to.wrapping_add(8) };
+        removed[n_removed] = (cap_sq, them);
+        n_removed += 1;
+    } else if captured == PAWN {
+        removed[n_removed] = (to, them);
+        n_removed += 1;
+    }
+    if pt == PAWN {
+        removed[n_removed] = (from, us);
+        n_removed += 1;
+    }
+    let added = if pt == PAWN && !is_promotion(mv) { Some((to, us)) } else { None };
+    PawnSetChange { removed, n_removed, added }
+}
+
 /// Emit the pawn-pair deltas for `mv`, given the pawn state BEFORE it.
 ///
 /// Called from two places that must agree byte-for-byte: eagerly in
@@ -243,30 +282,7 @@ pub fn push_pawn_pair_deltas(
     pt: u8,
 ) {
     out.clear();
-    let from = move_from(mv);
-    let to = move_to(mv);
-    let them = flip_color(us);
-    let is_ep = move_flags(mv) == FLAG_EN_PASSANT;
-
-    // Which pawns leave the pawn set, and which join it. A promotion removes
-    // the pawn from `from` and adds NOTHING — the piece that lands on `to` is
-    // no longer a pawn.
-    let mut removed: [(u8, Color); 2] = [(0, 0); 2];
-    let mut n_removed = 0usize;
-    if is_ep {
-        let cap_sq = if us == WHITE { to.wrapping_sub(8) } else { to.wrapping_add(8) };
-        removed[n_removed] = (cap_sq, them);
-        n_removed += 1;
-    } else if captured == PAWN {
-        removed[n_removed] = (to, them);
-        n_removed += 1;
-    }
-    if pt == PAWN {
-        removed[n_removed] = (from, us);
-        n_removed += 1;
-    }
-    let added: Option<(u8, Color)> =
-        if pt == PAWN && !is_promotion(mv) { Some((to, us)) } else { None };
+    let PawnSetChange { removed, n_removed, added } = pawn_set_change(us, mv, captured, pt);
 
     if n_removed == 0 && added.is_none() {
         return; // no pawn moved and no pawn was captured -- the block is untouched

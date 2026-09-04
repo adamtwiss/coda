@@ -27,7 +27,7 @@
 //! Cost is negligible: a typical position has 0-3 passers, against the
 //! pawn-pair block's ~18 active features.
 
-use crate::types::{Color, WHITE};
+use crate::types::{Color, Move, WHITE};
 use crate::bitboard::{Bitboard, FILE_A, FILE_H};
 
 /// Squares a pawn can occupy (ranks 2..7).
@@ -115,6 +115,91 @@ pub fn enumerate_passed_pawns<F: FnMut(usize)>(
             if let Some(i) = passer_feature(s, mine) {
                 callback(i);
             }
+        }
+    }
+}
+
+/// One passed-pawn change: a square, its colour, and whether the pawn became
+/// passed or stopped being passed. Physical square and absolute colour, like
+/// the other delta types, so one delta serves both perspectives.
+/// Packed into 8 bits: `sq(6) | colour(1) | add(1)`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct PassedPawnDelta(u8);
+
+impl PassedPawnDelta {
+    pub const ZERO: Self = Self(0);
+    #[inline]
+    pub fn new(sq: u8, col: Color, add: bool) -> Self {
+        Self(sq | ((col as u8) << 6) | ((add as u8) << 7))
+    }
+    #[inline] pub fn sq(self) -> u8 { self.0 & 63 }
+    #[inline] pub fn col(self) -> Color { ((self.0 >> 6) & 1) as Color }
+    #[inline] pub fn add(self) -> bool { (self.0 >> 7) & 1 == 1 }
+}
+
+/// Feature index for one delta from one perspective.
+#[inline]
+pub fn passed_index_for(d: PassedPawnDelta, pov: Color, mirrored: bool) -> Option<usize> {
+    let mut s = d.sq();
+    if pov != WHITE { s ^= 56; }
+    if mirrored { s ^= 7; }
+    passer_feature(s, d.col() == pov)
+}
+
+/// Emit the passed-pawn deltas for `mv`, given the pawn state BEFORE it.
+///
+/// **This cannot be a local computation, unlike the pawn-pair block.** Moving
+/// one pawn can flip the passed status of several OTHERS — capturing a lone
+/// sentry can pass a whole phalanx, and advancing a pawn can un-pass an enemy
+/// one. So both passer sets are recomputed before and after and diffed. That
+/// is about a dozen bitboard operations, cheaper than reasoning about which
+/// pawns could have been affected, and correct by construction.
+///
+/// Uses the SAME `pawn_set_change` derivation as the pawn-pair block, so the
+/// two blocks cannot disagree about what a move did to the pawn set.
+pub fn push_passed_pawn_deltas(
+    out: &mut Vec<PassedPawnDelta>,
+    pawns_bb: Bitboard,
+    colors_bb: &[Bitboard; 2],
+    us: Color,
+    mv: Move,
+    captured: u8,
+    pt: u8,
+) {
+    out.clear();
+    let ch = crate::pawn_pair::pawn_set_change(us, mv, captured, pt);
+    if ch.n_removed == 0 && ch.added.is_none() {
+        return; // no pawn moved and none was captured
+    }
+
+    let mut w = pawns_bb & colors_bb[WHITE as usize];
+    let mut b = pawns_bb & !colors_bb[WHITE as usize];
+    let before = passed_pawns(w, b);
+
+    for k in 0..ch.n_removed {
+        let (sq, col) = ch.removed[k];
+        let bit = 1u64 << sq;
+        if col == WHITE { w &= !bit; } else { b &= !bit; }
+    }
+    if let Some((sq, col)) = ch.added {
+        let bit = 1u64 << sq;
+        if col == WHITE { w |= bit; } else { b |= bit; }
+    }
+    let after = passed_pawns(w, b);
+
+    for c in 0..2 {
+        let col = c as Color;
+        let mut gone = before[c] & !after[c];
+        while gone != 0 {
+            let sq = gone.trailing_zeros() as u8;
+            gone &= gone - 1;
+            out.push(PassedPawnDelta::new(sq, col, false));
+        }
+        let mut born = after[c] & !before[c];
+        while born != 0 {
+            let sq = born.trailing_zeros() as u8;
+            born &= born - 1;
+            out.push(PassedPawnDelta::new(sq, col, true));
         }
     }
 }
@@ -235,6 +320,100 @@ mod tests {
             }
         }
         assert!(n > 100, "corpus produced too few passers to be a real check: {n}");
+    }
+
+    /// THE invariant: applying a move's deltas to the parent's feature set must
+    /// reproduce a fresh enumeration exactly, for both perspectives. This block
+    /// is the harder case — a single move can flip several pawns at once — so
+    /// the counter tracks how often that actually happened, and the test fails
+    /// if the corpus never exercised it.
+    #[test]
+    fn deltas_reproduce_full_enumeration() {
+        use crate::movegen::generate_legal_moves;
+        use crate::types::{move_from, move_to, move_flags, is_promotion, FLAG_EN_PASSANT, Move};
+        crate::init();
+
+        const START_FENS: &[&str] = &[
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+            "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",
+            "8/P6P/4k3/8/8/4K3/p6p/8 w - - 0 1",
+            "rnbqkbnr/ppp1p1pp/8/3pPp2/8/8/PPPP1PPP/RNBQKBNR w KQkq f6 0 3",
+            "4k3/8/8/1pP5/1P6/8/8/4K3 w - - 0 1",
+            "4k3/pp4pp/8/8/8/8/PP4PP/4K3 w - - 0 1",
+        ];
+        fn next_u32(st: &mut u32) -> u32 { let mut x=*st; x^=x<<13; x^=x>>17; x^=x<<5; *st=x; x }
+        fn mirror_of(b: &Board, pov: Color) -> bool { (b.king_sq(pov) % 8) >= 4 }
+        fn set_of(b: &Board, pov: Color) -> [i32; PASSED_PAWN_FEATURES] {
+            let mut c = [0i32; PASSED_PAWN_FEATURES];
+            enumerate_passed_pawns(b.pieces[PAWN as usize], &b.colors, pov,
+                                   mirror_of(b, pov), |i| c[i] += 1);
+            c
+        }
+
+        let (mut checked, mut nonempty, mut multi, mut third_party) = (0, 0, 0, 0);
+        for (fi, fen) in START_FENS.iter().enumerate() {
+            for game in 0..20 {
+                let mut rng = 0x2545_F491u32
+                    .wrapping_add(fi as u32 * 7919).wrapping_add(game * 104_729) | 1;
+                let mut board = Board::new();
+                board.set_fen(fen);
+                for _ply in 0..120 {
+                    let legal = generate_legal_moves(&board);
+                    if legal.len == 0 { break; }
+                    let mut pawnish: Vec<Move> = Vec::new();
+                    for i in 0..legal.len {
+                        let m = legal.get(i);
+                        if board.mailbox[move_from(m) as usize] == PAWN
+                            || board.mailbox[move_to(m) as usize] == PAWN { pawnish.push(m); }
+                    }
+                    let mv = if !pawnish.is_empty() && next_u32(&mut rng) % 4 != 0 {
+                        pawnish[(next_u32(&mut rng) as usize) % pawnish.len()]
+                    } else { legal.get((next_u32(&mut rng) as usize) % legal.len) };
+
+                    let us = board.side_to_move;
+                    let is_ep = move_flags(mv) == FLAG_EN_PASSANT;
+                    let captured = if is_ep { PAWN } else { board.mailbox[move_to(mv) as usize] };
+                    let pt = board.mailbox[move_from(mv) as usize];
+                    let before = [set_of(&board, WHITE), set_of(&board, 1 - WHITE)];
+                    let mirror_before = [mirror_of(&board, WHITE), mirror_of(&board, 1 - WHITE)];
+
+                    let mut d = Vec::new();
+                    push_passed_pawn_deltas(&mut d, board.pieces[PAWN as usize],
+                                            &board.colors, us, mv, captured, pt);
+                    assert!(d.len() <= MAX_PASSED_PAWN_DELTAS,
+                            "delta overflow {} > {}", d.len(), MAX_PASSED_PAWN_DELTAS);
+                    if !d.is_empty() { nonempty += 1; }
+                    if d.len() > 2 { multi += 1; }
+                    // A delta on a square that is neither the from nor the to
+                    // square proves the non-local case actually occurred.
+                    if d.iter().any(|x| x.sq() != move_from(mv) && x.sq() != move_to(mv)) {
+                        third_party += 1;
+                    }
+
+                    if !board.make_move(mv) { break; }
+                    for pov in [WHITE, 1 - WHITE] {
+                        let p = pov as usize;
+                        if mirror_of(&board, pov) != mirror_before[p] { continue; }
+                        let mut got = before[p];
+                        for x in &d {
+                            if let Some(i) = passed_index_for(*x, pov, mirror_before[p]) {
+                                got[i] += if x.add() { 1 } else { -1 };
+                            }
+                        }
+                        assert_eq!(got, set_of(&board, pov),
+                            "delta replay != enumeration, fen {fi} game {game} pov {pov} mv {mv:#06x}");
+                        checked += 1;
+                    }
+                }
+            }
+        }
+        assert!(checked > 5000, "too few checks: {checked}");
+        assert!(nonempty > 200, "too few passer changes: {nonempty}");
+        assert!(third_party > 20,
+            "the NON-LOCAL case never occurred ({third_party}); this test would not \
+             have caught a local-only implementation");
+        println!("passed-pawn deltas: {checked} checks, {nonempty} changing moves, \
+                  {multi} multi-pawn flips, {third_party} third-party flips");
     }
 
     /// Mirror invariance, as for pawn-pair.
