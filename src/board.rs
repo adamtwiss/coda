@@ -50,6 +50,9 @@ pub struct Board {
     /// because `RawThreatDelta` is attacker/victim-shaped and a pawn-pair
     /// change does not fit it without a kind-bit in a hot struct.
     pub pawn_pair_deltas: Vec<crate::pawn_pair::PawnPairDelta>,
+    /// Passed-pawn deltas for the last move. Generated on the same trigger as
+    /// the pawn-pair deltas, since both blocks change on exactly the same events.
+    pub passed_pawn_deltas: Vec<crate::passed_pawn::PassedPawnDelta>,
     /// Whether to generate threat deltas during make_move (set when threat net is loaded).
     pub generate_threat_deltas: bool,
     /// Whether to generate pawn-pair deltas (net has a pawn-pair block).
@@ -136,6 +139,7 @@ impl Board {
             undo_stack: Vec::with_capacity(512),
             threat_deltas: Vec::with_capacity(128),
             pawn_pair_deltas: Vec::with_capacity(crate::pawn_pair::MAX_PAWN_PAIR_DELTAS),
+            passed_pawn_deltas: Vec::with_capacity(crate::passed_pawn::MAX_PASSED_PAWN_DELTAS),
             generate_threat_deltas: false,
             generate_pawn_pair_deltas: false,
         }
@@ -963,6 +967,9 @@ impl Board {
             crate::pawn_pair::push_pawn_pair_deltas(
                 &mut self.pawn_pair_deltas, self.pieces[PAWN as usize], &self.colors,
                 us, mv, captured, pt);
+            crate::passed_pawn::push_passed_pawn_deltas(
+                &mut self.passed_pawn_deltas, self.pieces[PAWN as usize], &self.colors,
+                us, mv, captured, pt);
         }
 
         // Handle captures
@@ -1153,6 +1160,7 @@ impl Board {
     pub fn make_null_move(&mut self) {
         self.threat_deltas.clear(); // null move = no piece changes = no threat deltas
         self.pawn_pair_deltas.clear(); // ... and no pawn-structure change either
+        self.passed_pawn_deltas.clear();
         self.undo_stack.push(UndoInfo {
             mv: NO_MOVE,
             captured: NO_PIECE_TYPE,

@@ -1698,7 +1698,8 @@ impl SearchInfo {
         if self.threat_stack.active {
             if let Some(ref net) = self.nnue_net {
                 self.threat_stack.ensure_computed(&net.threat_weights, net.num_threat_features,
-                                                  net.num_pawn_pair_features, board);
+                                                  net.num_pawn_pair_features,
+                                                  net.num_passed_pawn_features, board);
             }
         }
         let score = if let (Some(net), Some(acc)) = (&self.nnue_net, &mut self.nnue_acc) {

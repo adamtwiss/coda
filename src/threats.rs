@@ -1122,6 +1122,26 @@ pub fn enumerate_threats_bullet_postfix_ref<F: FnMut(usize)>(
 /// Maximum threat deltas per ply.
 pub const MAX_THREAT_DELTAS: usize = 128;
 
+/// The auxiliary feature blocks that ride the threat feature space and are
+/// folded into the SAME add/sub index lists as threat deltas, so one SIMD pass
+/// applies all of them. Bundled into a struct rather than passed as loose
+/// pairs: each block would otherwise add two more parameters to five
+/// signatures.
+#[derive(Clone, Copy)]
+pub struct AuxDeltas<'a> {
+    pub pawn_pair: &'a [crate::pawn_pair::PawnPairDelta],
+    pub pawn_pair_base: usize,
+    pub passed: &'a [crate::passed_pawn::PassedPawnDelta],
+    pub passed_base: usize,
+}
+
+impl AuxDeltas<'static> {
+    /// No auxiliary blocks — for paths that do not carry them.
+    pub const NONE: AuxDeltas<'static> = AuxDeltas {
+        pawn_pair: &[], pawn_pair_base: 0, passed: &[], passed_base: 0,
+    };
+}
+
 /// Packed threat delta. Purely internal to the incremental threat accumulator
 /// (built pre-move, consumed to add/sub feature rows) — never serialised, so the
 /// bit layout is Coda's own. The two colored pieces are 0..11 (4 bits each) and
@@ -1674,8 +1694,7 @@ pub unsafe fn apply_threat_deltas(
     num_threats: usize,
     pov: Color,
     mirrored: bool,
-    pp_deltas: &[crate::pawn_pair::PawnPairDelta],
-    pp_base: usize,
+    aux: AuxDeltas,
 ) {
     // Runtime dispatch only in non-AVX2-baseline builds; AVX2-baseline (native
     // fleet) builds fall through to the body directly — see the note on
@@ -1685,13 +1704,13 @@ pub unsafe fn apply_threat_deltas(
         return unsafe {
             apply_threat_deltas_avx2(
                 dst, src, deltas, threat_weights, hidden_size, num_threats, pov, mirrored,
-                pp_deltas, pp_base)
+                aux)
         };
     }
     unsafe {
         apply_threat_deltas_body(
             dst, src, deltas, threat_weights, hidden_size, num_threats, pov, mirrored,
-            pp_deltas, pp_base)
+            aux)
     }
 }
 
@@ -1708,13 +1727,12 @@ unsafe fn apply_threat_deltas_avx2(
     num_threats: usize,
     pov: Color,
     mirrored: bool,
-    pp_deltas: &[crate::pawn_pair::PawnPairDelta],
-    pp_base: usize,
+    aux: AuxDeltas,
 ) {
     unsafe {
         apply_threat_deltas_body(
             dst, src, deltas, threat_weights, hidden_size, num_threats, pov, mirrored,
-            pp_deltas, pp_base)
+            aux)
     }
 }
 
@@ -1730,8 +1748,7 @@ unsafe fn apply_threat_deltas_body(
     num_threats: usize,
     pov: Color,
     mirrored: bool,
-    pp_deltas: &[crate::pawn_pair::PawnPairDelta],
-    pp_base: usize,
+    aux: AuxDeltas,
 ) {
     #[cfg(feature = "profile-threats")]
     crate::threats::apply_stats::record(deltas.len());
@@ -1742,8 +1759,8 @@ unsafe fn apply_threat_deltas_body(
     // perspective) at ~600k pushes per bench = ~2.4 GB of avoided
     // memset traffic. Same pattern that gave +3% bench in
     // forward_with_l1_pairwise_inner.
-    let mut adds_storage = std::mem::MaybeUninit::<[usize; MAX_THREAT_DELTAS + crate::pawn_pair::MAX_PAWN_PAIR_DELTAS]>::uninit();
-    let mut subs_storage = std::mem::MaybeUninit::<[usize; MAX_THREAT_DELTAS + crate::pawn_pair::MAX_PAWN_PAIR_DELTAS]>::uninit();
+    let mut adds_storage = std::mem::MaybeUninit::<[usize; MAX_THREAT_DELTAS + crate::pawn_pair::MAX_PAWN_PAIR_DELTAS + crate::passed_pawn::MAX_PASSED_PAWN_DELTAS]>::uninit();
+    let mut subs_storage = std::mem::MaybeUninit::<[usize; MAX_THREAT_DELTAS + crate::pawn_pair::MAX_PAWN_PAIR_DELTAS + crate::passed_pawn::MAX_PASSED_PAWN_DELTAS]>::uninit();
     let adds_ptr = scratch_ptr!(adds_storage, usize);
     let subs_ptr = scratch_ptr!(subs_storage, usize);
     let mut n_adds = 0usize;
@@ -1771,15 +1788,23 @@ unsafe fn apply_threat_deltas_body(
     // array above the threat block, so folding them in here means one SIMD
     // pass instead of two and no second source copy. A separate scalar pass
     // measured -10.7% NPS on its own.
-    for d in pp_deltas {
+    let push = |idx: usize, add: bool, n_adds: &mut usize, n_subs: &mut usize| {
+        if add {
+            unsafe { adds_ptr.add(*n_adds).write(idx); }
+            *n_adds += 1;
+        } else {
+            unsafe { subs_ptr.add(*n_subs).write(idx); }
+            *n_subs += 1;
+        }
+    };
+    for d in aux.pawn_pair {
         if let Some(i) = crate::pawn_pair::pp_index_for(*d, pov, mirrored) {
-            if d.add() {
-                unsafe { adds_ptr.add(n_adds).write(pp_base + i); }
-                n_adds += 1;
-            } else {
-                unsafe { subs_ptr.add(n_subs).write(pp_base + i); }
-                n_subs += 1;
-            }
+            push(aux.pawn_pair_base + i, d.add(), &mut n_adds, &mut n_subs);
+        }
+    }
+    for d in aux.passed {
+        if let Some(i) = crate::passed_pawn::passed_index_for(*d, pov, mirrored) {
+            push(aux.passed_base + i, d.add(), &mut n_adds, &mut n_subs);
         }
     }
     let adds = scratch_slice!(adds_ptr, n_adds);
@@ -1814,21 +1839,20 @@ pub unsafe fn apply_threat_deltas_dual(
     num_threats: usize,
     mirrored_w: bool,
     mirrored_b: bool,
-    pp_deltas: &[crate::pawn_pair::PawnPairDelta],
-    pp_base: usize,
+    aux: AuxDeltas,
 ) {
     #[cfg(all(target_arch = "x86_64", not(target_feature = "avx2")))]
     if is_x86_feature_detected!("avx2") {
         return unsafe {
             apply_threat_deltas_dual_avx2(
                 dst_w, src_w, dst_b, src_b, deltas, threat_weights,
-                hidden_size, num_threats, mirrored_w, mirrored_b, pp_deltas, pp_base)
+                hidden_size, num_threats, mirrored_w, mirrored_b, aux)
         };
     }
     unsafe {
         apply_threat_deltas_dual_body(
             dst_w, src_w, dst_b, src_b, deltas, threat_weights,
-            hidden_size, num_threats, mirrored_w, mirrored_b, pp_deltas, pp_base)
+            hidden_size, num_threats, mirrored_w, mirrored_b, aux)
     }
 }
 
@@ -1847,13 +1871,12 @@ unsafe fn apply_threat_deltas_dual_avx2(
     num_threats: usize,
     mirrored_w: bool,
     mirrored_b: bool,
-    pp_deltas: &[crate::pawn_pair::PawnPairDelta],
-    pp_base: usize,
+    aux: AuxDeltas,
 ) {
     unsafe {
         apply_threat_deltas_dual_body(
             dst_w, src_w, dst_b, src_b, deltas, threat_weights,
-            hidden_size, num_threats, mirrored_w, mirrored_b, pp_deltas, pp_base)
+            hidden_size, num_threats, mirrored_w, mirrored_b, aux)
     }
 }
 
@@ -1896,8 +1919,7 @@ unsafe fn apply_threat_deltas_dual_body(
     num_threats: usize,
     mirrored_w: bool,
     mirrored_b: bool,
-    pp_deltas: &[crate::pawn_pair::PawnPairDelta],
-    pp_base: usize,
+    aux: AuxDeltas,
 ) {
     #[cfg(feature = "profile-threats")]
     {
@@ -1905,10 +1927,10 @@ unsafe fn apply_threat_deltas_dual_body(
         crate::threats::apply_stats::record(deltas.len());
     }
 
-    let mut adds_w_storage = std::mem::MaybeUninit::<[usize; MAX_THREAT_DELTAS + crate::pawn_pair::MAX_PAWN_PAIR_DELTAS]>::uninit();
-    let mut subs_w_storage = std::mem::MaybeUninit::<[usize; MAX_THREAT_DELTAS + crate::pawn_pair::MAX_PAWN_PAIR_DELTAS]>::uninit();
-    let mut adds_b_storage = std::mem::MaybeUninit::<[usize; MAX_THREAT_DELTAS + crate::pawn_pair::MAX_PAWN_PAIR_DELTAS]>::uninit();
-    let mut subs_b_storage = std::mem::MaybeUninit::<[usize; MAX_THREAT_DELTAS + crate::pawn_pair::MAX_PAWN_PAIR_DELTAS]>::uninit();
+    let mut adds_w_storage = std::mem::MaybeUninit::<[usize; MAX_THREAT_DELTAS + crate::pawn_pair::MAX_PAWN_PAIR_DELTAS + crate::passed_pawn::MAX_PASSED_PAWN_DELTAS]>::uninit();
+    let mut subs_w_storage = std::mem::MaybeUninit::<[usize; MAX_THREAT_DELTAS + crate::pawn_pair::MAX_PAWN_PAIR_DELTAS + crate::passed_pawn::MAX_PASSED_PAWN_DELTAS]>::uninit();
+    let mut adds_b_storage = std::mem::MaybeUninit::<[usize; MAX_THREAT_DELTAS + crate::pawn_pair::MAX_PAWN_PAIR_DELTAS + crate::passed_pawn::MAX_PASSED_PAWN_DELTAS]>::uninit();
+    let mut subs_b_storage = std::mem::MaybeUninit::<[usize; MAX_THREAT_DELTAS + crate::pawn_pair::MAX_PAWN_PAIR_DELTAS + crate::passed_pawn::MAX_PASSED_PAWN_DELTAS]>::uninit();
     // Branch-free compress. Per delta we always compute both perspectives'
     // feature index and store it into the next slot of BOTH the add and the
     // sub list, then advance only the count of the list it belongs to, and
@@ -1989,17 +2011,28 @@ unsafe fn apply_threat_deltas_dual_body(
     }
 
     // Same fold as the single-perspective path, once per perspective.
-    for d in pp_deltas {
-        for (pov, mirrored, a_ptr, s_ptr, na, ns) in [
-            (WHITE, mirrored_w, adds_w_ptr, subs_w_ptr, &mut n_adds_w, &mut n_subs_w),
-            (BLACK, mirrored_b, adds_b_ptr, subs_b_ptr, &mut n_adds_b, &mut n_subs_b),
-        ] {
+    for (pov, mirrored, a_ptr, s_ptr, na, ns) in [
+        (WHITE, mirrored_w, adds_w_ptr, subs_w_ptr, &mut n_adds_w, &mut n_subs_w),
+        (BLACK, mirrored_b, adds_b_ptr, subs_b_ptr, &mut n_adds_b, &mut n_subs_b),
+    ] {
+        for d in aux.pawn_pair {
             if let Some(i) = crate::pawn_pair::pp_index_for(*d, pov, mirrored) {
                 if d.add() {
-                    unsafe { a_ptr.add(*na).write(pp_base + i); }
+                    unsafe { a_ptr.add(*na).write(aux.pawn_pair_base + i); }
                     *na += 1;
                 } else {
-                    unsafe { s_ptr.add(*ns).write(pp_base + i); }
+                    unsafe { s_ptr.add(*ns).write(aux.pawn_pair_base + i); }
+                    *ns += 1;
+                }
+            }
+        }
+        for d in aux.passed {
+            if let Some(i) = crate::passed_pawn::passed_index_for(*d, pov, mirrored) {
+                if d.add() {
+                    unsafe { a_ptr.add(*na).write(aux.passed_base + i); }
+                    *na += 1;
+                } else {
+                    unsafe { s_ptr.add(*ns).write(aux.passed_base + i); }
                     *ns += 1;
                 }
             }

@@ -2905,6 +2905,10 @@ pub struct NNUENet {
     /// index `num_threat_features + i`, and its weights are appended to
     /// `threat_weights`. Pack time is therefore unchanged. 0 when absent.
     pub num_pawn_pair_features: usize,
+    /// Passed-pawn features (v11, arch_flags2 bit 1). Occupies the shared
+    /// threat feature space immediately above the pawn-pair block, so its
+    /// index base is `num_threat_features + num_pawn_pair_features`.
+    pub num_passed_pawn_features: usize,
     pub has_threats: bool,
     /// Number of king buckets in this net (16 for uniform/consensus).
     /// PSQ weight block is sized `num_king_buckets * 768 * hidden_size`.
@@ -3007,6 +3011,7 @@ impl NNUENet {
         let mut has_threats = false; // bit 6: threat features (v9+)
         let mut num_threat_features = 0usize;
         let mut num_pawn_pair_features = 0usize;
+        let mut num_passed_pawn_features = 0usize;
         // extended_kb (bit 7) is only read inside the v7+ match arm; declared locally there.
         let mut num_king_buckets: usize = 16; // default (uniform/consensus)
         let mut kb_layout = KbLayout::Uniform;
@@ -3141,7 +3146,7 @@ impl NNUENet {
                 //   bits 1-7: reserved, must be zero
                 if version >= 11 {
                     let arch_flags2 = read_u8(reader)?;
-                    if arch_flags2 & !1 != 0 {
+                    if arch_flags2 & !3 != 0 {
                         return Err(format!(
                             "unknown arch_flags2 bits set (0x{:02x}); this net uses an \
                              architecture feature this build does not implement",
@@ -3168,6 +3173,22 @@ impl NNUENet {
                             return Err("net has pawn-pair features but no threat \
                                         features; pawn-pair extends the threat feature \
                                         space and cannot stand alone".to_string());
+                        }
+                    }
+                    // bit 1: passed-pawn block, a u32 count follows.
+                    if arch_flags2 & 2 != 0 {
+                        num_passed_pawn_features = read_u32(reader)? as usize;
+                        if num_passed_pawn_features
+                            != crate::passed_pawn::PASSED_PAWN_FEATURES {
+                            return Err(format!(
+                                "net declares {} passed-pawn features but this build \
+                                 enumerates {}; the encodings disagree",
+                                num_passed_pawn_features,
+                                crate::passed_pawn::PASSED_PAWN_FEATURES));
+                        }
+                        if !has_threats {
+                            return Err("net has passed-pawn features but no threat \
+                                        features".to_string());
                         }
                     }
                 }
@@ -3230,7 +3251,8 @@ impl NNUENet {
         // pawn-pair index `i` addressable as `num_threat_features + i` with no
         // extra indexing anywhere downstream.
         let mut threat_weights: AlignedVec<i8> = AlignedVec::zeros(0);
-        let num_shared_features = num_threat_features + num_pawn_pair_features;
+        let num_shared_features =
+            num_threat_features + num_pawn_pair_features + num_passed_pawn_features;
         if has_threats && num_shared_features > 0 {
             let total = num_shared_features * hidden_size;
             threat_weights = AlignedVec::hugepage_zeros(total);
@@ -3248,6 +3270,11 @@ impl NNUENet {
                           threat feature space)",
                     num_pawn_pair_features,
                     (num_pawn_pair_features * hidden_size) / 1024);
+            }
+            if num_passed_pawn_features > 0 {
+                println!("info string Loaded {} passed-pawn features ({}KB)",
+                    num_passed_pawn_features,
+                    (num_passed_pawn_features * hidden_size) / 1024);
             }
         }
 
@@ -3479,6 +3506,7 @@ impl NNUENet {
         Ok(NNUENet {
             hidden_size,
             num_pawn_pair_features,
+            num_passed_pawn_features,
             input_weights,
             input_biases,
             output_weights,
@@ -5423,7 +5451,7 @@ impl NNUEAccumulator {
     /// forward applying per-ply deltas. Each ply's deltas were stored by
     /// store_threat_deltas() after make_move.
     pub fn recompute_threats_if_needed(&mut self, net: &NNUENet, board: &crate::board::Board) {
-        debug_assert_eq!(net.num_pawn_pair_features, 0,
+        debug_assert_eq!(net.num_pawn_pair_features + net.num_passed_pawn_features, 0,
             "recompute_threats_if_needed does not carry pawn-pair deltas; the \
              production path is ThreatStack::ensure_computed");
         if !net.has_threats { return; }
@@ -5500,10 +5528,10 @@ impl NNUEAccumulator {
                         WHITE, w_mirrored,
                         // This accumulator's own threat stack is used only by
                         // the eval-bench and mirror-consistency paths, which do
-                        // not carry pawn-pair deltas. The assert above keeps
-                        // that from becoming silently wrong if a v11 net is
-                        // ever routed here.
-                        &[], 0,
+                        // not carry auxiliary-block deltas. The assert above
+                        // keeps that from becoming silently wrong if a net with
+                        // those blocks is ever routed here.
+                        crate::threats::AuxDeltas::NONE,
                     );
                 }
                 let (prev_b, curr_b) = self.threat.parent_and_current(src, ply, BLACK as usize);
@@ -5512,7 +5540,7 @@ impl NNUEAccumulator {
                         curr_b, prev_b,
                         &deltas, &net.threat_weights, h, net.num_threat_features,
                         BLACK, b_mirrored,
-                        &[], 0,
+                        crate::threats::AuxDeltas::NONE,
                     );
                 }
                 // Swap back
