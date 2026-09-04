@@ -237,11 +237,17 @@ pub fn convert_v7(
     num_threats: usize,
     hl_crelu: bool,
     pawn_pairs: bool,
+    passed_pawns: bool,
 ) -> Result<(), String> {
     // Pawn-pair features extend the THREAT feature space (see nnue.rs), so they
     // occupy l0 columns immediately after the threat block and cannot exist
     // without it.
     let num_pawn_pairs = if pawn_pairs { crate::pawn_pair::PAWN_PAIR_FEATURES } else { 0 };
+    let num_passed = if passed_pawns { crate::passed_pawn::PASSED_PAWN_FEATURES } else { 0 };
+    if passed_pawns && num_threats == 0 {
+        return Err("--passed-pawns requires --threats: the block extends the threat \
+                    feature space".to_string());
+    }
     if pawn_pairs && num_threats == 0 {
         return Err("--pawn-pairs requires --threats: pawn-pair features extend the \
                     threat feature space and cannot stand alone".to_string());
@@ -278,7 +284,7 @@ pub fn convert_v7(
     // size check rejects the file. That check is the only thing standing
     // between a mis-specified flag and a silently wrong net — the same failure
     // shape as the --hl-crelu defect, which had no such guard.
-    let total_ft_inputs = psq_input_size + num_threats + num_pawn_pairs;
+    let total_ft_inputs = psq_input_size + num_threats + num_pawn_pairs + num_passed;
     let bytes_per_neuron = total_ft_inputs * 2 + 2 + l1_mul * bl1 * l1w_bytes_per;
     let h = if ft_size_override > 0 {
         ft_size_override
@@ -288,8 +294,8 @@ pub fn convert_v7(
         (data_len - fixed_bytes) / bytes_per_neuron
     };
 
-    println!("Input: {} bytes, FT={} L1={}{} L2={} threats={} pawn_pairs={} kb={}/{:?} (bucketed: {}x{}, {}x{})",
-        data.len(), h, l1_size, if int8_l1 { "(i8)" } else { "" }, l2_size, num_threats, num_pawn_pairs,
+    println!("Input: {} bytes, FT={} L1={}{} L2={} threats={} pawn_pairs={} passed={} kb={}/{:?} (bucketed: {}x{}, {}x{})",
+        data.len(), h, l1_size, if int8_l1 { "(i8)" } else { "" }, l2_size, num_threats, num_pawn_pairs, num_passed,
         kb_count, kb_layout, bl1, bl2, NNUE_OUTPUT_BUCKETS, l1_size);
 
     // Verify size
@@ -372,6 +378,28 @@ pub fn convert_v7(
         // threat row, so its weights can be larger. Warn at the same 1% bar.
         if pct > 1.0 {
             eprintln!("WARNING: {:.2}% of pawn-pair weights clipped to i8 — scale \
+                       mismatch, will lose Elo", pct);
+        }
+    }
+
+    // Passed-pawn weights: the next num_passed rows, same quantisation as the
+    // threat and pawn-pair rows above (columns of the same l0 matrix).
+    let mut passed_weights = Vec::new();
+    if num_passed > 0 {
+        passed_weights = vec![0i8; num_passed * h];
+        let mut clipped = 0u64;
+        for i in 0..num_passed * h {
+            let val_i16 = read_i16_le(&data, offset);
+            offset += 2;
+            if val_i16 < i8::MIN as i16 || val_i16 > i8::MAX as i16 { clipped += 1; }
+            passed_weights[i] = (val_i16 as i32).clamp(i8::MIN as i32, i8::MAX as i32) as i8;
+        }
+        let total = (num_passed * h) as u64;
+        let pct = 100.0 * clipped as f64 / total as f64;
+        println!("Read {} passed-pawn weights ({}×{}, i16→i8 clamp, {:.4}% clipped)",
+            total, num_passed, h, pct);
+        if pct > 1.0 {
+            eprintln!("WARNING: {:.2}% of passed-pawn weights clipped to i8 — scale \
                        mismatch, will lose Elo", pct);
         }
     }
@@ -503,7 +531,7 @@ pub fn convert_v7(
     // is the intended fail-loud behavior for format mismatch.
     // v11 adds an arch_flags2 byte (pawn-pair block). See nnue.rs for why it is
     // a new byte rather than a ninth meaning for a bit in the first flags byte.
-    let version = if num_pawn_pairs > 0 { 11u32 }
+    let version = if num_pawn_pairs > 0 || num_passed > 0 { 11u32 }
         else if num_threats > 0 { 10u32 } else if dual_l1 { 8u32 } else { 7u32 };
     let mut buf = Vec::new();
     write_u32_le(&mut buf, NNUE_MAGIC);
@@ -570,9 +598,13 @@ pub fn convert_v7(
     if version >= 11 {
         let mut arch_flags2 = 0u8;
         if num_pawn_pairs > 0 { arch_flags2 |= 1; }
+        if num_passed > 0 { arch_flags2 |= 2; }
         buf.push(arch_flags2);
         if num_pawn_pairs > 0 {
             write_u32_le(&mut buf, num_pawn_pairs as u32);
+        }
+        if num_passed > 0 {
+            write_u32_le(&mut buf, num_passed as u32);
         }
     }
 
@@ -587,6 +619,9 @@ pub fn convert_v7(
     // pawn-pair feature `i` is addressable as `num_threat_features + i`.
     if num_pawn_pairs > 0 {
         for &w in &pawn_pair_weights { buf.push(w as u8); }
+    }
+    if num_passed > 0 {
+        for &w in &passed_weights { buf.push(w as u8); }
     }
     for &w in &l1_weights { write_i16_le(&mut buf, w); } // [L1_input][BUCKETS*L1]
     for &b in &l1_biases { write_i16_le(&mut buf, b); }   // [BUCKETS*L1]

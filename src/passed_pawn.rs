@@ -416,6 +416,34 @@ mod tests {
                   {multi} multi-pawn flips, {third_party} third-party flips");
     }
 
+    /// Cross-check dump: `stm|ntm` indices per FEN, for diffing against the
+    /// trainer's enumeration. Env-gated.
+    #[test]
+    #[ignore]
+    fn dump_indices() {
+        use std::io::Write;
+        let inp = std::env::var("PA_DUMP_IN").expect("PA_DUMP_IN");
+        let outp = std::env::var("PA_DUMP_OUT").expect("PA_DUMP_OUT");
+        let text = std::fs::read_to_string(&inp).unwrap();
+        let mut out = std::fs::File::create(&outp).unwrap();
+        for fen in text.lines().filter(|l| !l.trim().is_empty()) {
+            let mut b = Board::new();
+            b.set_fen(fen);
+            let stm = b.side_to_move;
+            let mut row: Vec<String> = Vec::new();
+            for pov in [stm, 1 - stm] {
+                let ks = b.king_sq(pov) as usize ^ if pov != WHITE { 56 } else { 0 };
+                let mirrored = (ks & 7) >= 4;
+                let mut v = Vec::new();
+                enumerate_passed_pawns(b.pieces[PAWN as usize], &b.colors, pov,
+                                       mirrored, |i| v.push(i));
+                v.sort_unstable();
+                row.push(v.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(","));
+            }
+            writeln!(out, "{}|{}", row[0], row[1]).unwrap();
+        }
+    }
+
     /// Mirror invariance, as for pawn-pair.
     #[test]
     fn mirror_invariance() {
