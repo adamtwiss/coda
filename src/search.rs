@@ -786,6 +786,10 @@ pub static FEAT_4D_HISTORY: AtomicBool = AtomicBool::new(true); // threat-aware 
 // Diagnostic-only (env RFP_AUDIT=1): null-verify every RFP cutoff and count
 // false positives per depth. NOT a play feature — costs NPS; bench/EPD use.
 pub static RFP_AUDIT: AtomicBool = AtomicBool::new(false);
+// Diagnostic-only (env FUTILITY_BULK_AUDIT=1): inspect the quiet moves that
+// the first futility prune discards via skip_remaining_quiets(). The snapshot
+// is read-only, so fixed-depth search results and tree evolution are unchanged.
+pub static FUTILITY_BULK_AUDIT: AtomicBool = AtomicBool::new(false);
 
 /// Disable all features (pure negamax + eval)
 pub fn disable_all_features() {
@@ -958,6 +962,23 @@ pub struct PruneStats {
     // Behavior-preserving: the RFP cutoff is returned regardless.
     pub rfp_audit_attempts: [u64; 24],
     pub rfp_audit_fp: [u64; 24],
+    // Futility bulk-skip audit, bucketed by raw node depth
+    // {<=3, 4-6, 7-10, 11+}. The snapshot replays the remaining quiet picker
+    // order and asks which moves would survive LMP, per-move futility and SEE
+    // if the bulk skip were absent. Reason columns are {check, strong history,
+    // futility value above alpha}; they overlap by design.
+    pub fut_bulk_triggers: [u64; 4],
+    pub fut_bulk_remaining: [u64; 4],
+    pub fut_bulk_before_lmp: [u64; 4],
+    pub fut_bulk_lmp_stops: [u64; 4],
+    pub fut_bulk_escapes: [u64; 4],
+    pub fut_bulk_survive_see: [u64; 4],
+    pub fut_bulk_nodes_with_escape: [u64; 4],
+    pub fut_bulk_nodes_with_survivor: [u64; 4],
+    pub fut_bulk_escape_reason: [[u64; 3]; 4],
+    pub fut_bulk_survive_reason: [[u64; 3]; 4],
+    // Surviving moves by alpha-static_eval gap {<100, 100-199, 200-399, 400+}.
+    pub fut_bulk_survive_gap: [u64; 4],
     // TREESTATS parity counters, for tree-shape comparison against an
     // instrumented SF build; dumped by the UCI `treestats` command in the same
     // line format that patch emits. Bucket 0 = qsearch;
@@ -2395,6 +2416,10 @@ pub(crate) fn init_feature_flags() {
         if std::env::var("RFP_AUDIT").is_ok() {
             RFP_AUDIT.store(true, Ordering::Relaxed);
             eprintln!("RFP_AUDIT enabled: null-verifying every RFP cutoff (diagnostic, slow)");
+        }
+        if std::env::var("FUTILITY_BULK_AUDIT").is_ok() {
+            FUTILITY_BULK_AUDIT.store(true, Ordering::Relaxed);
+            eprintln!("FUTILITY_BULK_AUDIT enabled: inspecting quiets hidden by futility bulk skips");
         }
     });
 }
@@ -5757,6 +5782,91 @@ fn negamax(
             let futility_value = static_eval + tp(&FUT_BASE) + lmr_d * tp(&FUT_PER_DEPTH) + hist_adj + threats_adj;
             // Direct-check carve-out + strong-history exemption (Igel #410).
             if futility_value <= alpha && main_hist < tp(&FUT_HIST_EXEMPT) && !board.gives_direct_check(mv) {
+                if FUTILITY_BULK_AUDIT.load(Ordering::Relaxed) {
+                    let d_bucket = if depth <= 3 { 0 } else if depth <= 6 { 1 } else if depth <= 10 { 2 } else { 3 };
+                    let gap = alpha.saturating_sub(static_eval);
+                    let gap_bucket = if gap < 100 { 0 } else if gap < 200 { 1 } else if gap < 400 { 2 } else { 3 };
+                    info.stats.fut_bulk_triggers[d_bucket] += 1;
+
+                    // Replay the still-unpicked quiets without mutating the
+                    // live picker. This models removing only futility's bulk
+                    // skip: a later LMP trigger still terminates the quiet
+                    // stream, and SEE still filters its normal candidates.
+                    let remaining = picker.remaining_quiets_in_pick_order();
+                    let mut audit_move_count = move_count;
+                    let mut node_has_escape = false;
+                    let mut node_has_survivor = false;
+                    for later in remaining {
+                        if !board.is_legal(later, pinned, checkers) {
+                            continue;
+                        }
+                        audit_move_count += 1;
+                        info.stats.fut_bulk_remaining[d_bucket] += 1;
+
+                        let later_check = board.gives_direct_check(later);
+                        if depth <= tp10(&LMP_DEPTH_10X) && FEAT_LMP.load(Ordering::Relaxed) {
+                            let mut later_lmp_limit =
+                                (tp10(&LMP_BASE_10X) + depth * depth) / (2 - improving as i32);
+                            if alpha - static_eval >= tp(&LMP_MARGIN_THRESH) {
+                                later_lmp_limit =
+                                    (later_lmp_limit * tp(&LMP_MARGIN_PCT) / 100).max(1);
+                            }
+                            if audit_move_count > later_lmp_limit && (depth >= 4 || !later_check) {
+                                info.stats.fut_bulk_lmp_stops[d_bucket] += 1;
+                                break;
+                            }
+                        }
+                        info.stats.fut_bulk_before_lmp[d_bucket] += 1;
+
+                        let later_from = move_from(later);
+                        let later_to = move_to(later);
+                        let later_r = if audit_move_count > 1 && depth >= 2 {
+                            lmr_reduction(
+                                (depth as usize).min(63) as i32,
+                                (audit_move_count as usize).min(63) as i32,
+                            ) / LMR_SCALE
+                        } else {
+                            0
+                        };
+                        let later_lmr_d = if later_r > 0 {
+                            (depth - later_r).max(1)
+                        } else {
+                            depth
+                        };
+                        let later_hist = info.history.main_score(later_from, later_to, enemy_attacks);
+                        let later_futility = static_eval
+                            + tp(&FUT_BASE)
+                            + later_lmr_d * tp(&FUT_PER_DEPTH)
+                            + later_hist / 128
+                            + threats_adj;
+                        let by_check = later_check;
+                        let by_history = later_hist >= tp(&FUT_HIST_EXEMPT);
+                        let by_margin = later_lmr_d > tp(&FUT_LMR_DEPTH) || later_futility > alpha;
+                        if !(by_check || by_history || by_margin) {
+                            continue;
+                        }
+
+                        node_has_escape = true;
+                        info.stats.fut_bulk_escapes[d_bucket] += 1;
+                        let reasons = [by_check, by_history, by_margin];
+                        for reason in 0..3 {
+                            info.stats.fut_bulk_escape_reason[d_bucket][reason] += reasons[reason] as u64;
+                        }
+
+                        let survives_see = !FEAT_SEE_PRUNE.load(Ordering::Relaxed)
+                            || see_ge(board, later, -tp(&SEE_QUIET_MULT) * later_lmr_d * later_lmr_d);
+                        if survives_see {
+                            node_has_survivor = true;
+                            info.stats.fut_bulk_survive_see[d_bucket] += 1;
+                            info.stats.fut_bulk_survive_gap[gap_bucket] += 1;
+                            for reason in 0..3 {
+                                info.stats.fut_bulk_survive_reason[d_bucket][reason] += reasons[reason] as u64;
+                            }
+                        }
+                    }
+                    info.stats.fut_bulk_nodes_with_escape[d_bucket] += node_has_escape as u64;
+                    info.stats.fut_bulk_nodes_with_survivor[d_bucket] += node_has_survivor as u64;
+                }
                 trace_gate!(info, board.hash, ply, mv, "futility", depth, move_count);
                 info.stats.futility_prunes += 1;
                 skip_quiets = true;
@@ -7622,6 +7732,21 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
             total_stats.rfp_audit_attempts[d] += info.stats.rfp_audit_attempts[d];
             total_stats.rfp_audit_fp[d] += info.stats.rfp_audit_fp[d];
         }
+        for d in 0..4 {
+            total_stats.fut_bulk_triggers[d] += info.stats.fut_bulk_triggers[d];
+            total_stats.fut_bulk_remaining[d] += info.stats.fut_bulk_remaining[d];
+            total_stats.fut_bulk_before_lmp[d] += info.stats.fut_bulk_before_lmp[d];
+            total_stats.fut_bulk_lmp_stops[d] += info.stats.fut_bulk_lmp_stops[d];
+            total_stats.fut_bulk_escapes[d] += info.stats.fut_bulk_escapes[d];
+            total_stats.fut_bulk_survive_see[d] += info.stats.fut_bulk_survive_see[d];
+            total_stats.fut_bulk_nodes_with_escape[d] += info.stats.fut_bulk_nodes_with_escape[d];
+            total_stats.fut_bulk_nodes_with_survivor[d] += info.stats.fut_bulk_nodes_with_survivor[d];
+            total_stats.fut_bulk_survive_gap[d] += info.stats.fut_bulk_survive_gap[d];
+            for reason in 0..3 {
+                total_stats.fut_bulk_escape_reason[d][reason] += info.stats.fut_bulk_escape_reason[d][reason];
+                total_stats.fut_bulk_survive_reason[d][reason] += info.stats.fut_bulk_survive_reason[d][reason];
+            }
+        }
 
         // Accumulate EBF data across all positions
         let max_d = info.completed_depth as usize;
@@ -7793,6 +7918,44 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
         }
         eprintln!("TOTAL | {:>8} | {:>8} | {:>6.2}%", audit_total, fp_total,
             fp_total as f64 * 100.0 / audit_total as f64);
+    }
+
+    let fut_bulk_total: u64 = s.fut_bulk_triggers.iter().sum();
+    if fut_bulk_total > 0 {
+        eprintln!("--- Futility Bulk-Skip Audit (read-only picker replay) ---");
+        eprintln!("depth | triggers | remaining | pre-LMP | escapes | SEE-survive | nodes+survivor");
+        let dnames = ["<=3", "4-6", "7-10", "11+"];
+        for d in 0..4 {
+            if s.fut_bulk_triggers[d] == 0 { continue; }
+            eprintln!("{:>5} | {:>8} | {:>9} | {:>7} | {:>7} | {:>11} | {:>14}",
+                dnames[d], s.fut_bulk_triggers[d], s.fut_bulk_remaining[d],
+                s.fut_bulk_before_lmp[d], s.fut_bulk_escapes[d],
+                s.fut_bulk_survive_see[d], s.fut_bulk_nodes_with_survivor[d]);
+        }
+        let total_remaining: u64 = s.fut_bulk_remaining.iter().sum();
+        let total_pre_lmp: u64 = s.fut_bulk_before_lmp.iter().sum();
+        let total_escapes: u64 = s.fut_bulk_escapes.iter().sum();
+        let total_survivors: u64 = s.fut_bulk_survive_see.iter().sum();
+        let nodes_escape: u64 = s.fut_bulk_nodes_with_escape.iter().sum();
+        let nodes_survivor: u64 = s.fut_bulk_nodes_with_survivor.iter().sum();
+        let lmp_stops: u64 = s.fut_bulk_lmp_stops.iter().sum();
+        eprintln!("TOTAL | {:>8} | {:>9} | {:>7} | {:>7} | {:>11} | {:>14}",
+            fut_bulk_total, total_remaining, total_pre_lmp, total_escapes,
+            total_survivors, nodes_survivor);
+        eprintln!("nodes with escape: {} ({:.2}%); later LMP barriers: {}", nodes_escape,
+            100.0 * nodes_escape as f64 / fut_bulk_total as f64, lmp_stops);
+        let reason_names = ["direct-check", "strong-history", "margin/depth"];
+        for reason in 0..3 {
+            let escaped: u64 = (0..4).map(|d| s.fut_bulk_escape_reason[d][reason]).sum();
+            let survived: u64 = (0..4).map(|d| s.fut_bulk_survive_reason[d][reason]).sum();
+            eprintln!("reason {:>14}: {:>7} escapes, {:>7} survive SEE", reason_names[reason], escaped, survived);
+            eprintln!("  survive by depth: <=3={} 4-6={} 7-10={} 11+={}",
+                s.fut_bulk_survive_reason[0][reason], s.fut_bulk_survive_reason[1][reason],
+                s.fut_bulk_survive_reason[2][reason], s.fut_bulk_survive_reason[3][reason]);
+        }
+        eprintln!("SEE survivors by alpha-static gap: <100={} 100-199={} 200-399={} 400+={}",
+            s.fut_bulk_survive_gap[0], s.fut_bulk_survive_gap[1],
+            s.fut_bulk_survive_gap[2], s.fut_bulk_survive_gap[3]);
     }
 
     // Eval-path decomposition — supports the "evals/node" investigation.

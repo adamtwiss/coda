@@ -14,7 +14,7 @@ use crate::attacks::*;
 use crate::bitboard::*;
 use crate::board::Board;
 use crate::eval::see_value;
-use crate::movegen::{generate_captures, generate_evasions, generate_quiets, MoveList};
+use crate::movegen::{generate_captures, generate_evasions, generate_quiets, MoveList, MAX_MOVES};
 use crate::see::see_ge;
 use crate::types::*;
 
@@ -904,6 +904,43 @@ impl MovePicker {
             self.stage = Stage::BadCaptures;
             self.restore_bad_captures();
         }
+    }
+
+    /// Diagnostic snapshot of the remaining quiets in the exact order that
+    /// repeated `pick_best()` calls would return them. This does not mutate the
+    /// picker, so audit code can inspect the moves discarded by a bulk skip
+    /// without changing the searched tree or its history/TT evolution.
+    #[cold]
+    pub fn remaining_quiets_in_pick_order(&self) -> Vec<Move> {
+        if self.stage != Stage::Quiets || self.index >= self.moves.len {
+            return Vec::new();
+        }
+
+        let mut moves = [NO_MOVE; MAX_MOVES];
+        let mut scores = [0i32; MAX_MOVES];
+        let len = self.moves.len - self.index;
+        for offset in 0..len {
+            let source = self.index + offset;
+            moves[offset] = self.moves.get(source);
+            // SAFETY: every score below moves.len is initialized alongside
+            // its move; this is the same invariant used by pick_best().
+            scores[offset] = unsafe { self.scores[source].assume_init() };
+        }
+
+        let mut ordered = Vec::with_capacity(len);
+        for first in 0..len {
+            let mut best = first;
+            for candidate in (first + 1)..len {
+                // Strict comparison preserves pick_best's first-on-tie rule.
+                if scores[candidate] > scores[best] {
+                    best = candidate;
+                }
+            }
+            moves.swap(first, best);
+            scores.swap(first, best);
+            ordered.push(moves[first]);
+        }
+        ordered
     }
 
     /// Selection sort: find best from current index, swap to front, return it.
