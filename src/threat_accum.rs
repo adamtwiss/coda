@@ -280,11 +280,15 @@ impl ThreatStack {
 
     /// Copy `Board::threat_deltas` into the current entry after a successful
     /// `make_move`, and record the move metadata needed by mirror checks.
-    #[inline]
+    ///
+    /// `inline(always)`: this sits on every make_move. It was inlined into
+    /// its callers on its own before the pawn-pair copy below was added; the
+    /// extra branch tipped the inliner and the resulting call showed up as
+    /// ~0.2% of instructions with a net that never takes it.
+    #[inline(always)]
     pub fn absorb_deltas(&mut self, board: &crate::board::Board) {
         if self.pp_features > 0 && board.generate_pawn_pair_deltas {
-            let i = self.index;
-            self.pp_delta[i].copy_from_slice(&board.pawn_pair_deltas);
+            self.absorb_pawn_pair_deltas(board);
         }
         #[cfg(feature = "profile-threats")]
         crate::threats::apply_stats::record_generated(board.threat_deltas.len());
@@ -308,6 +312,14 @@ impl ThreatStack {
         } else {
             entry.deltas_valid = false;
         }
+    }
+
+    /// Eager-generation half of `absorb_deltas`, kept out of line so the
+    /// production (lazy) path inlines a two-load test and nothing else.
+    #[inline(never)]
+    fn absorb_pawn_pair_deltas(&mut self, board: &crate::board::Board) {
+        let i = self.index;
+        self.pp_delta[i].copy_from_slice(&board.pawn_pair_deltas);
     }
 
     /// Give every entry in `from_ply..=self.index` its deltas, regenerating any
@@ -398,10 +410,18 @@ impl ThreatStack {
         if self.index >= self.stack.len() {
             self.stack.push(ThreatEntry::new());
         }
-        if self.index >= self.pp_delta.len() {
-            self.pp_delta.push(PPDeltaVec::new());
+        // The pawn-pair side array is only touched when the net has the
+        // block: with pp_features == 0 nothing reads it (every consumer is
+        // gated the same way), so the per-push clear would be a wasted store
+        // into a 40 KB array that is otherwise cold. Entries left behind by an
+        // earlier pawn-pair net are wiped once when pp_features changes, in
+        // ensure_computed.
+        if self.pp_features > 0 {
+            if self.index >= self.pp_delta.len() {
+                self.pp_delta.push(PPDeltaVec::new());
+            }
+            self.pp_delta[self.index].clear();
         }
-        self.pp_delta[self.index].clear();
         let entry = &mut self.stack[self.index];
         entry.accurate = [false; 2];
         entry.delta.clear();
@@ -571,6 +591,7 @@ impl ThreatStack {
                   board: &crate::board::Board, pov: Color) {
         let h = self.hidden_size;
         let p = pov as usize;
+        let pp_on = self.pp_features > 0;
         let king_sq = (board.pieces[KING as usize] & board.colors[pov as usize]).trailing_zeros();
         let mirrored = (king_sq % 8) >= 4;
 
@@ -607,8 +628,11 @@ impl ThreatStack {
                 crate::threats::apply_stats::record_first_consume();
             }
 
+            // pp_delta is consulted only when the net has a pawn-pair block;
+            // otherwise the array is never written (see push) and must not be
+            // read either.
             let nothing_to_do = (entry_mv == NO_MOVE || self.stack[ply].delta.is_empty())
-                && self.pp_delta[ply].is_empty();
+                && (!pp_on || self.pp_delta[ply].is_empty());
             if nothing_to_do {
                 // Null move, or a move that touched neither threats nor pawn
                 // structure: copy from previous.
@@ -620,6 +644,8 @@ impl ThreatStack {
                 let Self { stack, pp_delta, .. } = self;
                 let (prev, curr) = stack.split_at_mut(ply);
                 let entry = &mut curr[0];
+                let pp_slice: &[crate::pawn_pair::PawnPairDelta] =
+                    if pp_on { pp_delta[ply].as_slice() } else { &[] };
                 unsafe {
                     crate::threats::apply_threat_deltas(
                         &mut entry.values[p][..h],
@@ -627,7 +653,7 @@ impl ThreatStack {
                         entry.delta.as_slice(),
                         net_weights, h, num_features,
                         pov, mirrored,
-                        pp_delta[ply].as_slice(), num_features,
+                        pp_slice, num_features,
                     );
                 }
             }
@@ -644,6 +670,7 @@ impl ThreatStack {
     pub fn update_dual(&mut self, ancestor: usize, net_weights: &[i8], num_features: usize,
                        board: &crate::board::Board) {
         let h = self.hidden_size;
+        let pp_on = self.pp_features > 0;
         let white_king_sq = (board.pieces[KING as usize] & board.colors[WHITE as usize]).trailing_zeros();
         let black_king_sq = (board.pieces[KING as usize] & board.colors[BLACK as usize]).trailing_zeros();
         let mirrored_w = (white_king_sq % 8) >= 4;
@@ -668,16 +695,18 @@ impl ThreatStack {
             let (prev, curr) = stack.split_at_mut(ply);
             let prev_entry = &prev[ply - 1];
             let entry = &mut curr[0];
-            let pp_here = &pp_delta[ply];
+            // Same gate as `update`: the side array is untouched without a
+            // pawn-pair block.
+            let pp_slice: &[crate::pawn_pair::PawnPairDelta] =
+                if pp_on { pp_delta[ply].as_slice() } else { &[] };
 
-            if (entry_mv == NO_MOVE || entry.delta.is_empty()) && pp_here.is_empty() {
+            if (entry_mv == NO_MOVE || entry.delta.is_empty()) && pp_slice.is_empty() {
                 entry.values[WHITE as usize][..h]
                     .copy_from_slice(&prev_entry.values[WHITE as usize][..h]);
                 entry.values[BLACK as usize][..h]
                     .copy_from_slice(&prev_entry.values[BLACK as usize][..h]);
             } else {
                 let local_deltas = entry.delta.as_slice();
-                let pp_slice = pp_here.as_slice();
                 let (dst_w, dst_b) = {
                     let (w, b) = entry.values.split_at_mut(1);
                     (&mut w[0][..h], &mut b[0][..h])
@@ -717,7 +746,14 @@ impl ThreatStack {
     pub fn ensure_computed(&mut self, net_weights: &[i8], num_features: usize,
                           num_pp: usize, board: &crate::board::Board) {
         if !self.active { return; }
-        self.pp_features = num_pp;
+        if num_pp != self.pp_features {
+            // Net changed (or first eval on a fresh stack). push() only clears
+            // pp_delta while pp_features > 0, so anything an earlier
+            // pawn-pair net left behind is wiped here, once, before the
+            // replay paths start reading the array again.
+            for d in self.pp_delta.iter_mut() { d.clear(); }
+            self.pp_features = num_pp;
+        }
 
         // Experiment (CODA_THREAT_REFRESH_ALWAYS): bypass the walkback/replay
         // machinery and re-enumerate from the board every time. Paired with
