@@ -3055,6 +3055,12 @@ pub(crate) fn search_helper(board: &mut Board, info: &mut SearchInfo, _limits: &
     if info.threat_stack.active {
         info.threat_stack.reset();
         if let Some(ref net) = info.nnue_net {
+            // The root refresh has to know the net's auxiliary blocks.
+            // pp_features is otherwise only assigned inside ensure_computed(),
+            // which has not run yet on a fresh stack, so the first search after
+            // a net load would refresh the root without its pawn-pair rows and
+            // every node would then replay from that base.
+            info.threat_stack.pp_features = net.num_pawn_pair_features;
             info.threat_stack.refresh(&net.threat_weights, net.num_threat_features, board, WHITE);
             info.threat_stack.refresh(&net.threat_weights, net.num_threat_features, board, BLACK);
         }
@@ -3253,6 +3259,12 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     if info.threat_stack.active {
         info.threat_stack.reset();
         if let Some(ref net) = info.nnue_net {
+            // The root refresh has to know the net's auxiliary blocks.
+            // pp_features is otherwise only assigned inside ensure_computed(),
+            // which has not run yet on a fresh stack, so the first search after
+            // a net load would refresh the root without its pawn-pair rows and
+            // every node would then replay from that base.
+            info.threat_stack.pp_features = net.num_pawn_pair_features;
             info.threat_stack.refresh(&net.threat_weights, net.num_threat_features, board, WHITE);
             info.threat_stack.refresh(&net.threat_weights, net.num_threat_features, board, BLACK);
         }
