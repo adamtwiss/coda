@@ -1,27 +1,9 @@
 //! Pawn-pair input features.
 //!
-//! **Attribution — the idea is not ours.** Pawn-pair input features appear in
-//! Pawnocchio (Jonathan Hallström), Stormphrax, Viridithas, Triumviratus, and
-//! Stockfish, whose SFNNv16 input set names the same construction "PP 3Wide".
-//! Triumviratus's own documentation credits Stormphrax, Viridithas and
-//! Pawnocchio for the idea. We make **no claim about which was first** — we
-//! have no source establishing priority, and an earlier version of this comment
-//! asserted one it could not support.
-//!
-//! **Provenance of this encoding, stated plainly, because it changed.** A first
-//! attempt derived an encoding independently and got it wrong: it recorded only
-//! a pair's relative SHAPE, so a phalanx on rank 2 was the same feature as one
-//! on rank 6. Measured, that block was always active and carried large eval
-//! influence while improving eval accuracy by nothing, and it lost 8–11 Elo to
-//! its own throughput cost. The encoding below was then designed from the
-//! published feature DEFINITION those engines share — a pair indexed by both
-//! pawns' SQUARES and colours — which is why it is no longer an independent
-//! derivation and this comment no longer claims to be one.
-//!
-//! No foreign code, formula, or constant was used. The feature count is derived
-//! here: 372 is the number of square pairs within one file over ranks 2..7 in
-//! Coda's own square numbering, produced by the `PAIR_SLOT` table below, times
-//! our own four colour combinations.
+//! Pairwise pawn-structure inputs are now a common cross-engine pattern. We
+//! believe the idea originates from Jonathan Hallström's Pawnocchio engine —
+//! the concept also appeared in Stockfish, Triumviratus and Stormphrax before
+//! Coda.
 //!
 //! # Encoding (1,488 features)
 //!
@@ -92,14 +74,12 @@ pub const PAWN_PAIR_FEATURES: usize = PAWN_PAIR_SQUARE_PAIRS * PAWN_PAIR_COLOURS
 /// the pair is more than one file apart.
 ///
 /// Indexed by the two pawns' ACTUAL SQUARES, not by the pair's relative shape.
-/// That distinction is the whole feature: an earlier version of this module
-/// encoded only shape (16 geometric relations x 4 colour pairings = 64
-/// features), which made a phalanx on rank 2 the same feature as one on rank 6.
-/// Measured, that block was always active, carried ~105cp of eval influence,
-/// and improved eval accuracy by nothing at all -- a dense always-on feature
-/// with no positional content is a learned bias channel. Square-indexing costs
-/// no extra work per node (the same pairs are active, only the weight table is
-/// larger) and is what the feature is supposed to be.
+/// A shape-only encoding cannot separate a phalanx on rank 2 from one on rank
+/// 6. Measured here, such a block was active in every position and carried
+/// ~105cp of eval influence while improving eval accuracy by nothing (#3381,
+/// #3382). Square indexing costs no extra work per node -- the same pairs are
+/// active, only the weight table is larger -- and measured +2.6 STC (#3397) /
+/// +9.3 LTC (#3399).
 ///
 /// Ordering by square index needs no special case for the two-file geometry:
 /// (a2,b3) and (b2,a3) are different square pairs, so a chain leaning one way
