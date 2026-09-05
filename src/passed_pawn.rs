@@ -1,11 +1,7 @@
 //! Passed-pawn input features.
 //!
-//! **Attribution — the idea is not ours.** A passed-pawn NNUE input block is
-//! Triumviratus's, who claim it as original to that project and measured it at
-//! +6.96 ±6.56. Unlike the pawn-pair block it has, as far as our engine notes
-//! record, no independent replication — so the prior here is weaker and the
-//! measurement is what decides. The detection and encoding below are written in
-//! Coda's own bitboard idiom; no foreign code, formula or constant is used.
+//! Passed-pawn inputs are a cross-engine pattern; we believe the idea
+//! originates from Triumviratus.
 //!
 //! # Encoding (96 features)
 //!
@@ -17,8 +13,7 @@
 //!
 //! Square-indexed for the same reason the pawn-pair block is: a passer on the
 //! 7th rank and one on the 3rd are different things, and an encoding that
-//! cannot tell them apart carries influence without carrying information. That
-//! failure mode cost a full cycle on pawn-pair and is not worth repeating.
+//! cannot tell them apart carries influence without carrying information.
 //!
 //! This is a *relational* property — whether a pawn is passed depends on every
 //! enemy pawn on three files — so the king-bucketed piece-square features
