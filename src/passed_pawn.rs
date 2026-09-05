@@ -1,7 +1,7 @@
 //! Passed-pawn input features.
 //!
-//! Passed-pawn inputs are a cross-engine pattern; we believe the idea
-//! originates from Triumviratus.
+//! The passed-pawn input block is a concept that originates from
+//! Triumviratus.
 //!
 //! # Encoding (96 features)
 //!
