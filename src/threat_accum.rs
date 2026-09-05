@@ -280,11 +280,15 @@ impl ThreatStack {
 
     /// Copy `Board::threat_deltas` into the current entry after a successful
     /// `make_move`, and record the move metadata needed by mirror checks.
-    #[inline]
+    ///
+    /// `inline(always)`: this sits on every make_move. It was inlined into
+    /// its callers on its own before the pawn-pair copy below was added; the
+    /// extra branch tipped the inliner and the resulting call showed up as
+    /// ~0.2% of instructions with a net that never takes it.
+    #[inline(always)]
     pub fn absorb_deltas(&mut self, board: &crate::board::Board) {
         if self.pp_features > 0 && board.generate_pawn_pair_deltas {
-            let i = self.index;
-            self.pp_delta[i].copy_from_slice(&board.pawn_pair_deltas);
+            self.absorb_pawn_pair_deltas(board);
         }
         #[cfg(feature = "profile-threats")]
         crate::threats::apply_stats::record_generated(board.threat_deltas.len());
@@ -308,6 +312,14 @@ impl ThreatStack {
         } else {
             entry.deltas_valid = false;
         }
+    }
+
+    /// Eager-generation half of `absorb_deltas`, kept out of line so the
+    /// production (lazy) path inlines a two-load test and nothing else.
+    #[inline(never)]
+    fn absorb_pawn_pair_deltas(&mut self, board: &crate::board::Board) {
+        let i = self.index;
+        self.pp_delta[i].copy_from_slice(&board.pawn_pair_deltas);
     }
 
     /// Give every entry in `from_ply..=self.index` its deltas, regenerating any

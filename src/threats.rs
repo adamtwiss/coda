@@ -1244,6 +1244,12 @@ fn castle_rook_squares(us: Color, from: u8, to: u8) -> (u8, u8) {
 /// drift, and `lazy_deltas_match_eager_generation` is the guard against it:
 /// it walks the fuzz corpus asserting this function reproduces `make_move`'s
 /// deltas exactly, so the two cannot silently diverge.
+///
+/// `inline(always)`: the only production caller is
+/// `ThreatStack::materialize_deltas`, which inlined this by itself until the
+/// pawn-pair regeneration it now also carries pushed it past the inliner's
+/// budget; the resulting call was ~0.25% of instructions.
+#[inline(always)]
 pub fn replay_move_deltas(
     st: &mut PieceState,
     us: Color,
@@ -1718,6 +1724,45 @@ unsafe fn apply_threat_deltas_avx2(
     }
 }
 
+/// Append the pawn-pair feature indices of `pp_deltas` (for one perspective)
+/// to the add/sub index lists that the threat loop has already filled, and
+/// return the new list lengths.
+///
+/// Deliberately `inline(never)`. Inlined, its inputs (`pp_base`, `mirrored`,
+/// the slice) stay live across the threat loop above it, and the register
+/// allocator paid for that with spills INSIDE that loop -- measurable on a
+/// net with no pawn-pair block at all, where this is never even called. Out
+/// of line, the threat loop allocates exactly as it did before the block
+/// existed, and the call is skipped when the slice is empty.
+///
+/// # Safety
+/// `adds_ptr` / `subs_ptr` must have room for `n_adds + pp_deltas.len()` and
+/// `n_subs + pp_deltas.len()` entries respectively.
+#[inline(never)]
+unsafe fn fold_pawn_pair_indices(
+    pp_deltas: &[crate::pawn_pair::PawnPairDelta],
+    pp_base: usize,
+    pov: Color,
+    mirrored: bool,
+    adds_ptr: *mut usize,
+    subs_ptr: *mut usize,
+    mut n_adds: usize,
+    mut n_subs: usize,
+) -> (usize, usize) {
+    for d in pp_deltas {
+        if let Some(i) = crate::pawn_pair::pp_index_for(*d, pov, mirrored) {
+            if d.add() {
+                unsafe { adds_ptr.add(n_adds).write(pp_base + i); }
+                n_adds += 1;
+            } else {
+                unsafe { subs_ptr.add(n_subs).write(pp_base + i); }
+                n_subs += 1;
+            }
+        }
+    }
+    (n_adds, n_subs)
+}
+
 /// Shared body for [`apply_threat_deltas`] — no `target_feature`, so its
 /// (and `apply_threat_indices`') scalar fallbacks compile to scalar code.
 #[inline(always)]
@@ -1771,16 +1816,11 @@ unsafe fn apply_threat_deltas_body(
     // array above the threat block, so folding them in here means one SIMD
     // pass instead of two and no second source copy. A separate scalar pass
     // measured -10.7% NPS on its own.
-    for d in pp_deltas {
-        if let Some(i) = crate::pawn_pair::pp_index_for(*d, pov, mirrored) {
-            if d.add() {
-                unsafe { adds_ptr.add(n_adds).write(pp_base + i); }
-                n_adds += 1;
-            } else {
-                unsafe { subs_ptr.add(n_subs).write(pp_base + i); }
-                n_subs += 1;
-            }
-        }
+    if !pp_deltas.is_empty() {
+        (n_adds, n_subs) = unsafe {
+            fold_pawn_pair_indices(pp_deltas, pp_base, pov, mirrored,
+                                   adds_ptr, subs_ptr, n_adds, n_subs)
+        };
     }
     let adds = scratch_slice!(adds_ptr, n_adds);
     let subs = scratch_slice!(subs_ptr, n_subs);
@@ -1988,21 +2028,18 @@ unsafe fn apply_threat_deltas_dual_body(
         n_subs_b += (valid_b & !add) as usize;
     }
 
-    // Same fold as the single-perspective path, once per perspective.
-    for d in pp_deltas {
-        for (pov, mirrored, a_ptr, s_ptr, na, ns) in [
-            (WHITE, mirrored_w, adds_w_ptr, subs_w_ptr, &mut n_adds_w, &mut n_subs_w),
-            (BLACK, mirrored_b, adds_b_ptr, subs_b_ptr, &mut n_adds_b, &mut n_subs_b),
-        ] {
-            if let Some(i) = crate::pawn_pair::pp_index_for(*d, pov, mirrored) {
-                if d.add() {
-                    unsafe { a_ptr.add(*na).write(pp_base + i); }
-                    *na += 1;
-                } else {
-                    unsafe { s_ptr.add(*ns).write(pp_base + i); }
-                    *ns += 1;
-                }
-            }
+    // Same fold as the single-perspective path, once per perspective. Each
+    // list only ever receives its own perspective's entries, so folding all
+    // deltas for WHITE and then all for BLACK yields the same per-list order
+    // as interleaving them.
+    if !pp_deltas.is_empty() {
+        unsafe {
+            (n_adds_w, n_subs_w) = fold_pawn_pair_indices(
+                pp_deltas, pp_base, WHITE, mirrored_w,
+                adds_w_ptr, subs_w_ptr, n_adds_w, n_subs_w);
+            (n_adds_b, n_subs_b) = fold_pawn_pair_indices(
+                pp_deltas, pp_base, BLACK, mirrored_b,
+                adds_b_ptr, subs_b_ptr, n_adds_b, n_subs_b);
         }
     }
     let adds_w = scratch_slice!(adds_w_ptr, n_adds_w);
