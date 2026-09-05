@@ -6219,22 +6219,20 @@ fn negamax(
                 // from NMP/ProbCut gates — tactical king positions need depth.
                 reduction -= king_zone_pressure * 10 * LMR_SCALE / LMR_KING_PRESSURE_DIV_10X.load(Ordering::Relaxed).max(1); // CONTINUOUS
 
-                // Clamp: allow up to ONE PLY of extension (the battery's
-                // reduce-less terms used to saturate at zero; a move with
-                // superb history, a check, tt_pv and a wide window can now
-                // earn deeper search rather than merely un-reduced), never
-                // reduce past depth 1. A partial ply below zero still floors
-                // to 0 at the /LMR_SCALE step, so the extension only fires
-                // when the terms push a FULL ply past zero. Quiets only; the
-                // capture block keeps its zero floor.
-                if reduction < -LMR_SCALE {
-                    reduction = -LMR_SCALE;
+                // Clamp: never extend (negative), never reduce past depth 1.
+                // Note: `new_depth - 1` can be -1 when negative singular
+                // extensions drove `new_depth` to 0; re-clamp to keep the
+                // stored value non-negative (downstream reads compare to
+                // 0/2/3 thresholds, but a negative `info.reductions[ply_u]`
+                // violates the local invariant).
+                if reduction < 0 {
+                    reduction = 0;
                 }
                 if reduction > (new_depth - 1) * LMR_SCALE {
                     reduction = (new_depth - 1) * LMR_SCALE;
                 }
-                if reduction < -LMR_SCALE {
-                    reduction = -LMR_SCALE;
+                if reduction < 0 {
+                    reduction = 0;
                 }
             }
         }
@@ -6341,16 +6339,12 @@ fn negamax(
         reduction /= LMR_SCALE;
 
         // Store reduction for child's hindsight gating
-        // Hindsight slot stays non-negative (its readers compare to 0/2/3).
-        info.reductions[ply_u] = reduction.max(0);
+        info.reductions[ply_u] = reduction;
 
         // Track nodes per root move for node-based time management
         let nodes_before = if ply == 0 { info.nodes } else { 0 };
 
-        // != 0: a negative reduction is a one-ply extension of the zero-window
-        // probe; the re-search guard `new_depth > lmr_depth` is then false, so
-        // the deeper probe stands and PVS proceeds at new_depth as usual.
-        if reduction != 0 {
+        if reduction > 0 {
             info.stats.lmr_searches += 1;
 
             // LMR: reduced depth, zero window
