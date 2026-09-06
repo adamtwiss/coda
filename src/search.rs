@@ -117,6 +117,10 @@ tunables!(
     (NMP_DEPTH_DIV_10X, 47, 10, 200, 15.0, true),
     (NMP_EVAL_DIV, 75, 50, 400, 17.5, true),
     (NMP_EVAL_MAX_10X, 35, 10, 60, 5.0, false),
+    // NMP gate eased when improving: a rising static eval may sit this many
+    // cp below the gate and still try the null move. Default is about half
+    // of NMP_EVAL_DIV (the eval quantum worth half a ply of R).
+    (NMP_IMP_MARGIN, 40, 0, 150, 8.0, true),
     // Depth at/above which an NMP cutoff must be re-searched to verify it.
     // Must stay ABOVE the min-depth gate: if it sits below, every NMP cutoff
     // pays a verification re-search and NMP never gets a cheap cutoff. Below
@@ -5326,7 +5330,7 @@ fn negamax(
         + (any_threat_count - 2).max(0) * 64;
 
     if depth >= tp10(&NMP_MIN_DEPTH_10X) && !in_check && ply > 0 && stm_non_pawn != 0
-        && beta - alpha == 1 && static_eval >= beta + nmp_threat_margin
+        && beta - alpha == 1 && static_eval + tp(&NMP_IMP_MARGIN) * (improving as i32) >= beta + nmp_threat_margin
         && !prev_was_null  // Prevent consecutive null moves
         && ply >= info.nmp_min_ply  // Ply barrier: verification subtree cannot re-trigger NMP (audit B1)
         && beta.abs() < MATE_IN_MAX_PLY  // Skip NMP for mate/TB scores
