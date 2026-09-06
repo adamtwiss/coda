@@ -148,7 +148,10 @@ tunables!(
     // Razoring: drop straight to qsearch when static eval is far enough below
     // alpha that a full search is unlikely to recover it. Margin scales with
     // depth, gated to shallow depths only.
-    (RAZOR_MULT, 286, 100, 500, 20.0, false),
+    // Quadratic form: margin = RAZOR_QUAD * depth^2 (was RAZOR_MULT * depth).
+    // Default matches the old linear margin at depth 2, the middle of the
+    // gated range, so depth 1 razors more and depth 3 razors less.
+    (RAZOR_QUAD, 143, 40, 300, 12.0, false),
     (RAZOR_DEPTH_10X, 38, 10, 80, 5.0, true),
     // Futility margin: base + per-depth, compared against alpha at the
     // frontier. History adjusts the effective lmr_depth used here, so these
@@ -5221,7 +5224,7 @@ fn negamax(
             && depth <= tp10(&RAZOR_DEPTH_10X)
             && alpha.abs() < 2000
             && info.excluded_move[ply_u] == NO_MOVE
-            && static_eval + tp(&RAZOR_MULT) * depth <= alpha
+            && static_eval + tp(&RAZOR_QUAD) * depth * depth <= alpha
         {
             let v = quiescence(board, info, alpha, alpha + 1, ply);
             // When alpha already represents a substantial advantage, a QS
