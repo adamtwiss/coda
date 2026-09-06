@@ -426,6 +426,18 @@ tunables!(
     // tested for Coda's regime and the signal was not there.
     (DEXT_MARGIN_PV, 169, 50, 400, 15.0, false),
     (DEXT_MARGIN_QUIET, 17, 0, 100, 4.0, false),
+    // Singular/double extension is NOT granted (the singular search still
+    // runs, so multicut and the negative extension are unchanged) when the
+    // TT score is within SE_DRAW_MARGIN of zero AND the total non-pawn
+    // material of both sides is at or below SE_DRAW_NPM. Drawn-endgame
+    // corpus (2026-09-06): singular extensions rose 23x in the exploding
+    // iteration of a dead-drawn rook ending; removing the singular SEARCH
+    // made the corpus 2x worse, removing only the granted plies in
+    // draw-scored low-material nodes cut resolved-endgame nodes to 0.73x
+    // (width sweep 0/20/40/80 -> 0.75/0.54/0.37/0.50 on the worst dozen).
+    // The material condition keeps it out of middlegames (control 0.95).
+    (SE_DRAW_MARGIN, 40, 0, 120, 8.0, true),
+    (SE_DRAW_NPM, 3800, 0, 6000, 200.0, true),
     (DEXT_MARGIN_CORR, 13, 0, 64, 3.0, true),
     (DEXT_MARGIN_BASE, 37, -50, 150, 6.0, true),
     (DEXT_CAP, 9, 4, 32, 2.0, true),
@@ -2150,6 +2162,15 @@ fn cont_corr_value(info: &SearchInfo, ply: usize) -> i64 {
 /// Compute the correction value alone (the centipawn delta corrhist would apply
 /// to raw eval). Used by SE-margin formulas to gate extension confidence on
 /// |correction| — extend less on uncertain (drifting) evals.
+/// Total non-pawn material of both sides in SEE units (endgame gates).
+#[inline(always)]
+fn non_pawn_material(board: &Board) -> i32 {
+    let minors = popcount(board.pieces[KNIGHT as usize] | board.pieces[BISHOP as usize]) as i32;
+    let rooks = popcount(board.pieces[ROOK as usize]) as i32;
+    let queens = popcount(board.pieces[QUEEN as usize]) as i32;
+    minors * crate::eval::see_value(KNIGHT) + rooks * crate::eval::see_value(ROOK) + queens * crate::eval::see_value(QUEEN)
+}
+
 fn correction_value(info: &SearchInfo, board: &Board, ply: usize) -> i32 {
     let stm = board.side_to_move as usize;
     let pawn_idx = (board.pawn_hash as usize) & (CORR_HIST_SIZE - 1);
@@ -5916,12 +5937,16 @@ fn negamax(
                                     - tp(&DEXT_MARGIN_CORR) * corr_abs / 128
                                     + tp(&DEXT_MARGIN_BASE);
 
-                    singular_extension = 1;
-                    info.stats.singular_ext += 1;
-                    if info.double_ext_count[ply_u] < tp(&DEXT_CAP) {
-                        let de = (singular_score < singular_beta - dext_margin) as i32;
-                        singular_extension += de;
-                        if de > 0 { info.stats.double_ext += 1; }
+                    let draw_scored_low_material = tt_score_local.abs() <= tp(&SE_DRAW_MARGIN)
+                        && non_pawn_material(board) <= tp(&SE_DRAW_NPM);
+                    if !draw_scored_low_material {
+                        singular_extension = 1;
+                        info.stats.singular_ext += 1;
+                        if info.double_ext_count[ply_u] < tp(&DEXT_CAP) {
+                            let de = (singular_score < singular_beta - dext_margin) as i32;
+                            singular_extension += de;
+                            if de > 0 { info.stats.double_ext += 1; }
+                        }
                     }
                 } else if tt_score_local >= beta {
                     // TT move fails high and alternatives competitive — strong reduce
