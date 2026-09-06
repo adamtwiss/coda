@@ -5825,10 +5825,13 @@ fn negamax(
             }
         }
 
-        // Singular extension verification search (v7: multi-cut + negative ext, no positive ext)
-        // Singular extensions: verify TT move is uniquely best by searching with excluded move.
-        // NMP must be gated during singular extension verification search.
-        // All components working: positive ext (+1), double ext (+2), multi-cut, negative ext (-1).
+        // Singular extensions: verify the TT move is uniquely best by re-searching
+        // this node with it excluded, at reduced depth and a window just below
+        // the TT score. Outcomes: singular (+1, +2 with DEXT margin), multi-cut
+        // (return without searching), or a negative extension (-1/-2/-3) when
+        // alternatives are competitive. NMP, ProbCut, RFP, TT cutoffs and the
+        // node-end TT store are all gated on excluded_move during the
+        // verification search.
         let mut singular_extension = 0i32;
         if mv == tt_move
             && tt_move != NO_MOVE
@@ -7721,7 +7724,7 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
     eprintln!("Singular ext:   {:>8}  (single +1 ply)", s.singular_ext);
     eprintln!("Double ext:     {:>8}  (additional +1 on top of singular)", s.double_ext);
     eprintln!("Negative ext:   {:>8}  (-1/-2/-3 fail-high reduce)", s.negative_ext);
-    eprintln!("Multi-cut:      {:>8}  (return singular_beta)", s.multicut);
+    eprintln!("Multi-cut:      {:>8}  (return singular_score; singular_beta if decisive)", s.multicut);
     eprintln!("QS nodes:       {:>8}  ({:.1}% of total)", s.qnodes, s.qnodes as f64 / total_nodes as f64 * 100.0);
     if s.beta_cutoffs > 0 {
         let avg_pos = s.cutoff_movecount_sum as f64 / s.beta_cutoffs as f64;
