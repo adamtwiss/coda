@@ -1771,6 +1771,36 @@ fn run_measure_net_sparsity(net_path: &str) {
     let compact_bytes = ((total_rows - zero_rows) * h) as u64;
     println!("Matrix size: {} MB raw, {} MB compact (post zero-row compaction)",
         matrix_bytes / (1024 * 1024), compact_bytes / (1024 * 1024));
+
+    // Pawn-pair rows share the threat matrix, stored after the threat rows.
+    let num_pp = net.num_pawn_pair_features;
+    if num_pp > 0 {
+        let mut zero = 0usize;
+        let mut near = 0usize;
+        let mut hist: [usize; 6] = [0; 6];
+        let mut abs_sum = 0u64;
+        let mut nz = 0u64;
+        for r in num_features..num_features + num_pp {
+            let row = &net.threat_weights[r * h..(r + 1) * h];
+            let max_abs = row.iter().map(|&w| (w as i32).abs()).max().unwrap_or(0);
+            if max_abs == 0 { zero += 1; }
+            if max_abs <= 1 { near += 1; }
+            hist[match max_abs { 0 => 0, 1 => 1, 2..=3 => 2, 4..=7 => 3, 8..=31 => 4, _ => 5 }] += 1;
+            for &w in row {
+                if w != 0 { nz += 1; }
+                abs_sum += (w as i32).unsigned_abs() as u64;
+            }
+        }
+        let tw = (num_pp * h) as u64;
+        println!("=== Pawn-pair rows ===");
+        println!("Rows:  {} total", num_pp);
+        println!("Zero rows:      {} ({:.2}%)", zero, 100.0 * zero as f64 / num_pp as f64);
+        println!("Near-zero rows: {} ({:.2}%)  [|max| <= 1]", near, 100.0 * near as f64 / num_pp as f64);
+        println!("Row-max-abs histogram: 0:{} 1:{} 2-3:{} 4-7:{} 8-31:{} 32+:{}",
+            hist[0], hist[1], hist[2], hist[3], hist[4], hist[5]);
+        println!("Zero weights:    {} / {} ({:.2}%)", tw - nz, tw, 100.0 * (tw - nz) as f64 / tw as f64);
+        println!("Mean |weight|:   {:.3}", abs_sum as f64 / tw as f64);
+    }
 }
 
 /// Per-layer weight statistics. All inputs treated as i64 internally for
