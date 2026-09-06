@@ -2531,6 +2531,26 @@ unsafe fn add_weight_rows_avx512(
 /// NEON SIMD: apply threat weight rows to accumulator using register tiling.
 /// Mirrors apply_deltas_avx2 — fused load src / apply adds+subs / store dst.
 /// 16 regs × 8 i16 = 128 elements per chunk (same footprint as AVX2 8×16).
+///
+/// Two codegen details matter here, both measured on an Apple M5 where this
+/// kernel is the single largest self-time entry in the profile (~18% of
+/// samples before the pawn-pair block, ~22% after):
+///
+/// * The full-chunk path is instantiated with `REGS` as a compile-time
+///   constant, exactly as the AVX2 kernel does. With a runtime register
+///   count LLVM unrolled the per-register loop but kept a compare-and-branch
+///   exit test after every register, doubling the instruction count of the
+///   inner loop.
+/// * Each weight row is loaded 16 bytes at a time (`vld1q_s8`) and widened
+///   into two accumulators with the low/high forms of the widening add, so
+///   one load feeds two registers instead of one 8-byte load per register.
+///
+/// Together these measured +8.6% NPS on the M5 (6 interleaved bench runs,
+/// 1.48 -> 1.61 Mnps). Software prefetch — both a `prfm` per row for the
+/// next chunk inside the kernel and an aarch64 `prefetch_row` at index
+/// generation — was tried on top and measured within noise (±0.5% over 10
+/// runs at depth 13), so unlike the x86 kernels this one issues none: the
+/// M5's hardware prefetcher already streams the 1 KB rows.
 #[cfg(target_arch = "aarch64")]
 unsafe fn apply_deltas_neon(
     dst: &mut [i16],
@@ -2550,58 +2570,93 @@ unsafe fn apply_deltas_neon(
     const CHUNK: usize = REGS * 8; // 128 elements
 
     let mut offset = 0;
-    while offset < hidden_size {
-        let chunk_size = (hidden_size - offset).min(CHUNK);
-        let nregs = (chunk_size + 7) / 8;
 
-        // Seed chunk accumulator from src.
-        let mut regs: [int16x8_t; REGS] = [vdupq_n_s16(0); REGS];
-        for i in 0..nregs {
-            regs[i] = vld1q_s16(src_ptr.add(offset + i * 8));
-        }
-
-        // Paired add+sub: one register of each per iteration, reuses chunk regs.
-        // Uses vaddw_s8/vsubw_s8 which fuse widen+add and widen+sub into a
-        // single instruction each, avoiding a separate vmovl_s8 pass.
-        let mut ai = 0;
-        let mut si = 0;
-        while ai < adds.len() && si < subs.len() {
-            let aw = w_ptr.add(adds[ai] * hidden_size + offset);
-            let sw = w_ptr.add(subs[si] * hidden_size + offset);
+    // Inner-loop body, parameterised on the register count so the full-chunk
+    // fast path is fully unrolled with no per-register exit test and the
+    // tail uses the runtime count. `offset` must be declared before this
+    // macro_rules! definition for macro hygiene.
+    macro_rules! apply_chunk {
+        ($nregs:expr) => {{
+            let nregs: usize = $nregs;
+            // Registers come in pairs fed by one 16-byte load; an odd
+            // register count (tail only) finishes with a single 8-byte load.
+            let pairs = nregs / 2;
+            let odd = nregs % 2 == 1;
+            let mut regs: [int16x8_t; REGS] = [vdupq_n_s16(0); REGS];
             for i in 0..nregs {
-                regs[i] = vaddw_s8(regs[i], vld1_s8(aw.add(i * 8)));
-                regs[i] = vsubw_s8(regs[i], vld1_s8(sw.add(i * 8)));
+                regs[i] = vld1q_s16(src_ptr.add(offset + i * 8));
             }
-            ai += 1;
-            si += 1;
-        }
-
-        while ai < adds.len() {
-            let aw = w_ptr.add(adds[ai] * hidden_size + offset);
+            let mut ai = 0;
+            let mut si = 0;
+            while ai < adds.len() && si < subs.len() {
+                let aw = w_ptr.add(adds[ai] * hidden_size + offset);
+                let sw = w_ptr.add(subs[si] * hidden_size + offset);
+                for p in 0..pairs {
+                    let a = vld1q_s8(aw.add(p * 16));
+                    let s = vld1q_s8(sw.add(p * 16));
+                    regs[2 * p] = vaddw_s8(regs[2 * p], vget_low_s8(a));
+                    regs[2 * p + 1] = vaddw_high_s8(regs[2 * p + 1], a);
+                    regs[2 * p] = vsubw_s8(regs[2 * p], vget_low_s8(s));
+                    regs[2 * p + 1] = vsubw_high_s8(regs[2 * p + 1], s);
+                }
+                if odd {
+                    let i = nregs - 1;
+                    regs[i] = vaddw_s8(regs[i], vld1_s8(aw.add(i * 8)));
+                    regs[i] = vsubw_s8(regs[i], vld1_s8(sw.add(i * 8)));
+                }
+                ai += 1;
+                si += 1;
+            }
+            while ai < adds.len() {
+                let aw = w_ptr.add(adds[ai] * hidden_size + offset);
+                for p in 0..pairs {
+                    let a = vld1q_s8(aw.add(p * 16));
+                    regs[2 * p] = vaddw_s8(regs[2 * p], vget_low_s8(a));
+                    regs[2 * p + 1] = vaddw_high_s8(regs[2 * p + 1], a);
+                }
+                if odd {
+                    let i = nregs - 1;
+                    regs[i] = vaddw_s8(regs[i], vld1_s8(aw.add(i * 8)));
+                }
+                ai += 1;
+            }
+            while si < subs.len() {
+                let sw = w_ptr.add(subs[si] * hidden_size + offset);
+                for p in 0..pairs {
+                    let s = vld1q_s8(sw.add(p * 16));
+                    regs[2 * p] = vsubw_s8(regs[2 * p], vget_low_s8(s));
+                    regs[2 * p + 1] = vsubw_high_s8(regs[2 * p + 1], s);
+                }
+                if odd {
+                    let i = nregs - 1;
+                    regs[i] = vsubw_s8(regs[i], vld1_s8(sw.add(i * 8)));
+                }
+                si += 1;
+            }
             for i in 0..nregs {
-                regs[i] = vaddw_s8(regs[i], vld1_s8(aw.add(i * 8)));
+                vst1q_s16(dst_ptr.add(offset + i * 8), regs[i]);
             }
-            ai += 1;
-        }
+        }};
+    }
 
-        while si < subs.len() {
-            let sw = w_ptr.add(subs[si] * hidden_size + offset);
-            for i in 0..nregs {
-                regs[i] = vsubw_s8(regs[i], vld1_s8(sw.add(i * 8)));
-            }
-            si += 1;
-        }
-
-        for i in 0..nregs {
-            vst1q_s16(dst_ptr.add(offset + i * 8), regs[i]);
-        }
-
+    // Full-chunk fast path: REGS is a compile-time constant. For h=1024
+    // (CHUNK=128) all 8 iterations hit this branch.
+    while offset + CHUNK <= hidden_size {
+        apply_chunk!(REGS);
         offset += CHUNK;
+    }
+
+    // Tail: never fires on prod hidden sizes (multiples of 128). The
+    // dispatcher guarantees hidden_size % 8 == 0, so the count is exact.
+    if offset < hidden_size {
+        let nregs = (hidden_size - offset) / 8;
+        apply_chunk!(nregs);
     }
 }
 
 /// NEON SIMD: accumulate multiple weight rows into dst (for full threat refresh).
-/// Mirrors add_weight_rows_avx2.
+/// Mirrors add_weight_rows_avx2; same const-register / paired-load structure
+/// as apply_deltas_neon above.
 #[cfg(target_arch = "aarch64")]
 unsafe fn add_weight_rows_neon(
     dst: &mut [i16],
@@ -2618,27 +2673,41 @@ unsafe fn add_weight_rows_neon(
     const CHUNK: usize = REGS * 8;
 
     let mut offset = 0;
-    while offset < hidden_size {
-        let chunk_size = (hidden_size - offset).min(CHUNK);
-        let nregs = (chunk_size + 7) / 8;
 
-        let mut regs: [int16x8_t; REGS] = [vdupq_n_s16(0); REGS];
-        for i in 0..nregs {
-            regs[i] = vld1q_s16(dst_ptr.add(offset + i * 8));
-        }
-
-        for &idx in indices.iter() {
-            let aw = w_ptr.add(idx * hidden_size + offset);
+    macro_rules! add_chunk {
+        ($nregs:expr) => {{
+            let nregs: usize = $nregs;
+            let pairs = nregs / 2;
+            let odd = nregs % 2 == 1;
+            let mut regs: [int16x8_t; REGS] = [vdupq_n_s16(0); REGS];
             for i in 0..nregs {
-                regs[i] = vaddw_s8(regs[i], vld1_s8(aw.add(i * 8)));
+                regs[i] = vld1q_s16(dst_ptr.add(offset + i * 8));
             }
-        }
+            for &idx in indices.iter() {
+                let aw = w_ptr.add(idx * hidden_size + offset);
+                for p in 0..pairs {
+                    let a = vld1q_s8(aw.add(p * 16));
+                    regs[2 * p] = vaddw_s8(regs[2 * p], vget_low_s8(a));
+                    regs[2 * p + 1] = vaddw_high_s8(regs[2 * p + 1], a);
+                }
+                if odd {
+                    let i = nregs - 1;
+                    regs[i] = vaddw_s8(regs[i], vld1_s8(aw.add(i * 8)));
+                }
+            }
+            for i in 0..nregs {
+                vst1q_s16(dst_ptr.add(offset + i * 8), regs[i]);
+            }
+        }};
+    }
 
-        for i in 0..nregs {
-            vst1q_s16(dst_ptr.add(offset + i * 8), regs[i]);
-        }
-
+    while offset + CHUNK <= hidden_size {
+        add_chunk!(REGS);
         offset += CHUNK;
+    }
+    if offset < hidden_size {
+        let nregs = (hidden_size - offset) / 8;
+        add_chunk!(nregs);
     }
 }
 
@@ -2807,9 +2876,17 @@ mod tests {
     #[test]
     #[cfg(target_arch = "aarch64")]
     fn test_apply_deltas_neon_matches_scalar() {
-        let h = 768;
+        // Full-chunk widths (768, 1024) plus tails of 8 regs (320), 9 regs
+        // (200, odd -> single 8-byte finish) and 1 reg (136).
+        for h in [768usize, 1024, 320, 200, 136] {
+            check_apply_deltas_neon(h);
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    fn check_apply_deltas_neon(h: usize) {
         let n_threats = 64;
-        let mut r = rng(0xc0da_d317_a5_0002);
+        let mut r = rng(0xc0da_d317_a5_0002 ^ h as u64);
 
         let mut weights = vec![0i8; n_threats * h];
         for w in weights.iter_mut() { *w = (r() % 256) as i8; }
@@ -2849,9 +2926,15 @@ mod tests {
     #[test]
     #[cfg(target_arch = "aarch64")]
     fn test_add_weight_rows_neon_matches_scalar() {
-        let h = 768;
+        for h in [768usize, 1024, 320, 200, 136] {
+            check_add_weight_rows_neon(h);
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    fn check_add_weight_rows_neon(h: usize) {
         let n_features = 32;
-        let mut r = rng(0xc0da_add1_a5_0004);
+        let mut r = rng(0xc0da_add1_a5_0004 ^ h as u64);
 
         let mut weights = vec![0i8; n_features * h];
         for w in weights.iter_mut() { *w = (r() % 256) as i8; }
