@@ -2065,7 +2065,7 @@ unsafe fn apply_threat_deltas_dual_body(
 /// attribute would only autovectorize the (never-taken-on-AVX2) scalar
 /// fallback below — which SIGILLs on pre-AVX2 CPUs. Dropping it keeps the
 /// fallback scalar and correct everywhere with no perf cost on capable hosts.
-unsafe fn apply_threat_indices(
+pub(crate) unsafe fn apply_threat_indices(
     dst: &mut [i16],
     src: &[i16],
     threat_weights: &[i8],
