@@ -12,6 +12,18 @@ pub const TT_FLAG_UPPER: u8 = 3; // All-node (fail-low, score <= alpha)
 
 const BUCKET_SIZE: usize = 5;
 
+/// Experiment switches (env, read once; see `store`). Absent = production.
+#[inline(always)]
+fn exp_tt_samekey_gen() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("EXP_TT_SAMEKEY_GEN").is_ok())
+}
+#[inline(always)]
+fn exp_tt_samekey_slack() -> i32 {
+    static V: std::sync::OnceLock<i32> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("EXP_TT_SAMEKEY_SLACK").ok().and_then(|v| v.parse().ok()).unwrap_or(4))
+}
+
 /// Packed data layout (64 bits):
 ///   bits  0-15:  best move (16 bits)
 ///   bits 16-17:  flag (2 bits)
@@ -522,10 +534,18 @@ impl TT {
             }
             // Same key: replace unless the stored entry is much deeper, from
             // the same generation, and the new one is not exact.
+            // EXPERIMENT (2026-09-07, TT-retention investigation):
+            //   EXP_TT_SAMEKEY_GEN=1  -> generation no longer forces the
+            //     replacement; the depth-slack rule applies across searches
+            //     too, so a deep entry from the previous move survives
+            //     shallow revisits.
+            //   EXP_TT_SAMEKEY_SLACK=k -> replace when depth > slot_depth - k
+            //     (production 4).
             let slot_depth = unpack_depth(slot_data);
             let slot_gen = unpack_generation(slot_data);
             let flag_is_exact = flag == TT_FLAG_EXACT;
-            if depth > slot_depth - 4 || gen != slot_gen || flag_is_exact {
+            let gen_forces = gen != slot_gen && !exp_tt_samekey_gen();
+            if depth > slot_depth - exp_tt_samekey_slack() || gen_forces || flag_is_exact {
                 let effective_move = if best_move == NO_MOVE {
                     unpack_move(slot_data)
                 } else {

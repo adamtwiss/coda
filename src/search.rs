@@ -1064,6 +1064,7 @@ exp_flag!(exp_se_draw_npm, "EXP_SE_DRAW_NPM");   // ...and (for both SE gates) o
 exp_flag!(exp_corr_npm, "EXP_CORR_NPM");         // correction history off when non-pawn material <= this
 exp_flag!(exp_tt_guard_draw, "EXP_TT_GUARD_DRAW"); // TT node-type guard waived when |tt score| <= this
 exp_flag!(exp_tt_guard_npm, "EXP_TT_GUARD_NPM"); // TT node-type guard waived when non-pawn material <= this
+exp_flag!(exp_tt_pv_cutoff, "EXP_TT_PV_CUTOFF"); // 1: accept EXACT entries of sufficient depth as cutoffs at non-root PV nodes
 
 /// Whether the TT-cutoff node-type guard applies at this node: the ablation
 /// flag, minus the experiment waivers for draw-scored entries / low material.
@@ -5109,7 +5110,8 @@ fn negamax(
                 // a zero window) but the stale is_pv blocks it, so recompute
                 // from the post-mate-dist window. alpha here is still
                 // alpha_orig — TT narrowing happens after this check.
-                let tt_cut_is_pv = beta - alpha > 1;
+                let tt_cut_is_pv = beta - alpha > 1
+                    && !(exp_tt_pv_cutoff() == 1 && tt_entry.flag == TT_FLAG_EXACT);
                 // Accounting only (first failing gate, same order as the condition
                 // below); the child-disagreement probe is not re-run — its refusals
                 // are candidates minus cutoffs.
