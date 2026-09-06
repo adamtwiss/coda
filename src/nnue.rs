@@ -8863,4 +8863,47 @@ mod tests {
             }
         }
     }
+
+    /// PSQ feature-transformer weight magnitude distribution of the test net.
+    /// Ignored by default — run with
+    /// `cargo test --release measure_psq_weight_range -- --nocapture --ignored`.
+    ///
+    /// Purpose: price an i8 storage format for the PSQ block. Weights are
+    /// stored at the accumulator scale, so |w| <= 127 is the i8-representable
+    /// range; anything above would saturate (or need a different scale).
+    #[test]
+    #[ignore]
+    fn measure_psq_weight_range() {
+        crate::init();
+        let _g = crate::threats::FEATURE_SPACE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let net = match try_load_v9_net() {
+            Some(n) => n,
+            None => { eprintln!("Skipping: no net available"); return; }
+        };
+        let w = &net.input_weights;
+        let h = net.hidden_size;
+        let rows = w.len() / h;
+        let mut hist = [0u64; 6]; // <=15, <=31, <=63, <=127, <=255, >255
+        let mut max_abs = 0i32;
+        let mut sat_rows = 0usize;
+        for r in 0..rows {
+            let mut row_sat = false;
+            for &x in &w[r * h..(r + 1) * h] {
+                let a = (x as i32).abs();
+                max_abs = max_abs.max(a);
+                let b = if a <= 15 { 0 } else if a <= 31 { 1 } else if a <= 63 { 2 } else if a <= 127 { 3 } else if a <= 255 { 4 } else { 5 };
+                hist[b] += 1;
+                if a > 127 { row_sat = true; }
+            }
+            if row_sat { sat_rows += 1; }
+        }
+        let n = w.len() as f64;
+        eprintln!("PSQ FT weights: {} rows x {} = {} weights, max |w| = {}", rows, h, w.len(), max_abs);
+        for (label, c) in [("<=15", hist[0]), ("16-31", hist[1]), ("32-63", hist[2]), ("64-127", hist[3]), ("128-255", hist[4]), (">255", hist[5])] {
+            eprintln!("  |w| {:>8}: {:>10} ({:.4}%)", label, c, 100.0 * c as f64 / n);
+        }
+        eprintln!("  rows with any |w| > 127: {} of {} ({:.2}%)", sat_rows, rows, 100.0 * sat_rows as f64 / rows as f64);
+        let above = (hist[4] + hist[5]) as f64;
+        eprintln!("  weights outside i8 range: {:.4}%", 100.0 * above / n);
+    }
 }
