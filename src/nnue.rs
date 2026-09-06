@@ -698,35 +698,47 @@ unsafe fn simd_acc_fused_neon(
     let src_ptr = src.as_ptr();
 
     let mut offset = 0;
-    while offset < h {
-        let nregs = ((h - offset).min(CHUNK) + 7) / 8;
 
-        let mut regs: [int16x8_t; REGS] = [vdupq_n_s16(0); REGS];
-        for i in 0..nregs {
-            regs[i] = vld1q_s16(src_ptr.add(offset + i * 8));
-        }
-
-        for row in add_rows {
-            let row_ptr = row.as_ptr().add(offset);
+    // Compile-time register count on the full-chunk path, runtime count only
+    // for the tail — the same dispatch-elimination pattern as the AVX2 twin
+    // and as threats::apply_deltas_neon, where a runtime count left a
+    // compare-and-branch after every register in the unrolled inner loop.
+    // Smaller effect here (i16 rows need no widening, and the FT rows are
+    // 2 KB gathers that are largely memory-bound): ~+1% on an M5.
+    macro_rules! apply_chunk {
+        ($nregs:expr) => {{
+            let nregs: usize = $nregs;
+            let mut regs: [int16x8_t; REGS] = [vdupq_n_s16(0); REGS];
             for i in 0..nregs {
-                let w = vld1q_s16(row_ptr.add(i * 8));
-                regs[i] = vaddq_s16(regs[i], w);
+                regs[i] = vld1q_s16(src_ptr.add(offset + i * 8));
             }
-        }
-
-        for row in sub_rows {
-            let row_ptr = row.as_ptr().add(offset);
+            for row in add_rows {
+                let row_ptr = row.as_ptr().add(offset);
+                for i in 0..nregs {
+                    let w = vld1q_s16(row_ptr.add(i * 8));
+                    regs[i] = vaddq_s16(regs[i], w);
+                }
+            }
+            for row in sub_rows {
+                let row_ptr = row.as_ptr().add(offset);
+                for i in 0..nregs {
+                    let w = vld1q_s16(row_ptr.add(i * 8));
+                    regs[i] = vsubq_s16(regs[i], w);
+                }
+            }
             for i in 0..nregs {
-                let w = vld1q_s16(row_ptr.add(i * 8));
-                regs[i] = vsubq_s16(regs[i], w);
+                vst1q_s16(dst_ptr.add(offset + i * 8), regs[i]);
             }
-        }
+        }};
+    }
 
-        for i in 0..nregs {
-            vst1q_s16(dst_ptr.add(offset + i * 8), regs[i]);
-        }
-
+    while offset + CHUNK <= h {
+        apply_chunk!(REGS);
         offset += CHUNK;
+    }
+    if offset < h {
+        let nregs = (h - offset).div_ceil(8);
+        apply_chunk!(nregs);
     }
 }
 
@@ -6230,35 +6242,43 @@ unsafe fn finny_batch_apply_neon(
     let w_ptr = input_weights.as_ptr();
 
     let mut offset = 0;
-    while offset < h {
-        let nregs = ((h - offset).min(CHUNK) + 7) / 8;
 
-        let mut regs: [int16x8_t; REGS] = [vdupq_n_s16(0); REGS];
-        for i in 0..nregs {
-            regs[i] = vld1q_s16(acc_ptr.add(offset + i * 8));
-        }
-
-        for &idx in adds {
-            let row = w_ptr.add(idx * h + offset);
+    // Compile-time register count on the full-chunk path (see
+    // simd_acc_fused_neon for why).
+    macro_rules! apply_chunk {
+        ($nregs:expr) => {{
+            let nregs: usize = $nregs;
+            let mut regs: [int16x8_t; REGS] = [vdupq_n_s16(0); REGS];
             for i in 0..nregs {
-                let w = vld1q_s16(row.add(i * 8));
-                regs[i] = vaddq_s16(regs[i], w);
+                regs[i] = vld1q_s16(acc_ptr.add(offset + i * 8));
             }
-        }
-
-        for &idx in subs {
-            let row = w_ptr.add(idx * h + offset);
+            for &idx in adds {
+                let row = w_ptr.add(idx * h + offset);
+                for i in 0..nregs {
+                    let w = vld1q_s16(row.add(i * 8));
+                    regs[i] = vaddq_s16(regs[i], w);
+                }
+            }
+            for &idx in subs {
+                let row = w_ptr.add(idx * h + offset);
+                for i in 0..nregs {
+                    let w = vld1q_s16(row.add(i * 8));
+                    regs[i] = vsubq_s16(regs[i], w);
+                }
+            }
             for i in 0..nregs {
-                let w = vld1q_s16(row.add(i * 8));
-                regs[i] = vsubq_s16(regs[i], w);
+                vst1q_s16(acc_ptr.add(offset + i * 8), regs[i]);
             }
-        }
+        }};
+    }
 
-        for i in 0..nregs {
-            vst1q_s16(acc_ptr.add(offset + i * 8), regs[i]);
-        }
-
+    while offset + CHUNK <= h {
+        apply_chunk!(REGS);
         offset += CHUNK;
+    }
+    if offset < h {
+        let nregs = (h - offset).div_ceil(8);
+        apply_chunk!(nregs);
     }
 }
 
