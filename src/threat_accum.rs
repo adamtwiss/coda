@@ -1971,6 +1971,112 @@ mod incremental_tests {
     }
 
     /// Ensure RawThreatDelta round-trips — if this breaks the whole
+    /// Row-count measurement: how many threat rows, pawn-pawn threat rows and
+    /// pawn-pair rows a move changes, split by pawn moves vs the rest, over
+    /// every legal move of the bench positions. Ignored by default — run with
+    /// `cargo test --release measure_pawn_row_shares -- --nocapture --ignored`.
+    ///
+    /// Purpose: the pawn-pair block encodes every pawn-pawn attack relation
+    /// the threat block already carries, so the pawn-pawn threat rows are the
+    /// candidate to drop if the block's row cost needs offsetting. This
+    /// reports what that would buy. The pawn-pawn subset is obtained by
+    /// enumerating threats on a pawns-only copy of the board: pawn attacks do
+    /// not depend on occupancy, so that set is exactly the pawn-pawn subset of
+    /// the full enumeration.
+    #[test]
+    #[ignore]
+    fn measure_pawn_row_shares() {
+        crate::init();
+        let _space = crate::threats::FEATURE_SPACE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        fn feature_sets(board: &Board) -> (Vec<usize>, Vec<usize>, Vec<usize>) {
+            let occ = board.colors[0] | board.colors[1];
+            let pawns = board.pieces[PAWN as usize];
+            let mut pieces_po = [0u64; 6];
+            pieces_po[PAWN as usize] = pawns;
+            let colors_po = [board.colors[0] & pawns, board.colors[1] & pawns];
+            let mut mailbox_po = [NO_PIECE_TYPE; 64];
+            for sq in 0..64 {
+                if (pawns >> sq) & 1 == 1 {
+                    mailbox_po[sq] = PAWN;
+                }
+            }
+            let (mut all, mut pp_thr, mut pairs) = (Vec::new(), Vec::new(), Vec::new());
+            for pov in [WHITE, BLACK] {
+                let k = (board.pieces[KING as usize] & board.colors[pov as usize]).trailing_zeros();
+                let mirrored = (k % 8) >= 4;
+                let tag = (pov as usize) << 24;
+                crate::threats::enumerate_threats(
+                    &board.pieces, &board.colors, &board.mailbox, occ, pov, mirrored,
+                    |i| all.push(i | tag),
+                );
+                crate::threats::enumerate_threats(
+                    &pieces_po, &colors_po, &mailbox_po, pawns, pov, mirrored,
+                    |i| pp_thr.push(i | tag),
+                );
+                crate::pawn_pair::enumerate_pawn_pairs(
+                    pawns, &board.colors, pov, mirrored,
+                    |i| pairs.push(i | tag),
+                );
+            }
+            all.sort_unstable();
+            pp_thr.sort_unstable();
+            pairs.sort_unstable();
+            (all, pp_thr, pairs)
+        }
+
+        fn symdiff(a: &[usize], b: &[usize]) -> usize {
+            let (mut i, mut j, mut n) = (0, 0, 0);
+            while i < a.len() && j < b.len() {
+                if a[i] == b[j] { i += 1; j += 1; }
+                else if a[i] < b[j] { i += 1; n += 1; }
+                else { j += 1; n += 1; }
+            }
+            n + (a.len() - i) + (b.len() - j)
+        }
+
+        // [pawn moves, other moves] -> (moves, threat rows, pawn-pawn threat rows, pawn-pair rows)
+        let mut acc = [(0u64, 0u64, 0u64, 0u64); 2];
+        let mut static_counts = (0u64, 0u64, 0u64, 0u64); // positions, threat, pp-threat, pairs
+        for fen in crate::search::BENCH_POSITIONS {
+            let mut board = Board::new();
+            board.set_fen(fen);
+            let before = feature_sets(&board);
+            static_counts.0 += 1;
+            static_counts.1 += before.0.len() as u64;
+            static_counts.2 += before.1.len() as u64;
+            static_counts.3 += before.2.len() as u64;
+            let moves = generate_legal_moves(&board);
+            for &mv in moves.as_slice() {
+                let is_pawn = board.piece_type_at(move_from(mv)) == PAWN;
+                if !board.make_move(mv) {
+                    continue;
+                }
+                let after = feature_sets(&board);
+                board.unmake_move();
+                let slot = &mut acc[if is_pawn { 0 } else { 1 }];
+                slot.0 += 1;
+                slot.1 += symdiff(&before.0, &after.0) as u64;
+                slot.2 += symdiff(&before.1, &after.1) as u64;
+                slot.3 += symdiff(&before.2, &after.2) as u64;
+            }
+        }
+        let p = static_counts.0 as f64;
+        eprintln!("static per position (both POVs): threat {:.1}, of which pawn-pawn {:.1}; pawn-pair {:.1}",
+            static_counts.1 as f64 / p, static_counts.2 as f64 / p, static_counts.3 as f64 / p);
+        for (name, s) in [("pawn moves", acc[0]), ("other moves", acc[1])] {
+            let n = s.0 as f64;
+            eprintln!("{:<11} n={:<5} rows/move (both POVs): threat {:.2}, of which pawn-pawn {:.2}; pawn-pair {:.2}",
+                name, s.0, s.1 as f64 / n, s.2 as f64 / n, s.3 as f64 / n);
+        }
+        let total_moves = (acc[0].0 + acc[1].0) as f64;
+        let thr = (acc[0].1 + acc[1].1) as f64 / total_moves;
+        let ppt = (acc[0].2 + acc[1].2) as f64 / total_moves;
+        let pr = (acc[0].3 + acc[1].3) as f64 / total_moves;
+        eprintln!("all moves   rows/move: threat {:.2} (pawn-pawn {:.2}), pawn-pair {:.2}; pawn-pair adds {:.1}% rows, dropping pawn-pawn threats removes {:.1}%",
+            thr, ppt, pr, 100.0 * pr / thr, 100.0 * ppt / thr);
+    }
+
     /// Sparsity measurement: feature activation frequency across many
     /// self-play positions. Ignored by default — run with
     /// `cargo test --release measure_feature_sparsity -- --nocapture --ignored`.
