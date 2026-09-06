@@ -492,15 +492,32 @@ pub fn generate_evasions(board: &Board, checkers: Bitboard, pinned: Bitboard) ->
 
     // Single check: can also block or capture the checker
     let checker_sq = lsb(checkers);
+    let occ_full = board.occupied();
     // target = capture the checker OR block the ray between king and checker.
     // between() is empty for non-sliding checkers (knight, pawn).
     let target = (1u64 << checker_sq) | between(king_sq as u32, checker_sq);
     let block_target = between(king_sq as u32, checker_sq); // blocking squares only
 
-    // Generate targeted non-king candidates and run the normal legality
-    // oracle. This keeps pinned-piece edge cases correct while still avoiding
-    // the full non-evasion move set.
-    let non_king = our_pieces & !(1u64 << king_sq);
+    // Non-king candidates: exclude PINNED pieces up front, which makes every
+    // generated non-king, non-EP evasion legal by construction and lets the
+    // per-move legality oracle go.
+    //
+    // Why a pinned piece can never resolve a check: it may only move along
+    // line(king, pinner), while every square that resolves the check (the
+    // checker's square, or a square between king and checker) lies on
+    // line(king, checker). The pinner is never the checker (a pinner has our
+    // piece between it and the king, so it is not giving check), so these
+    // are two distinct lines through the king square, and they meet only at
+    // the king square -- which no non-king move can reach. In double check
+    // we have already returned above. En passant is the one exception, since
+    // removing the captured pawn can open a rank discovered attack, so EP
+    // keeps the full oracle below.
+    //
+    // Previously every candidate paid is_legal(): for a non-pinned piece in
+    // single check that call re-derives the check mask the target set already
+    // encodes, then finds the piece unpinned and returns true. Same output,
+    // strictly less work. Perft pins the equivalence.
+    let non_king = our_pieces & !(1u64 << king_sq) & !pinned;
 
     // Knights
     let mut knights = board.pieces[KNIGHT as usize] & non_king;
@@ -509,10 +526,7 @@ pub fn generate_evasions(board: &Board, checkers: Bitboard, pinned: Bitboard) ->
         let mut attacks = knight_attacks(from as u32) & target;
         while attacks != 0 {
             let to = pop_lsb(&mut attacks) as u8;
-            let m = make_move(from, to, FLAG_NONE);
-            if board.is_legal(m, pinned, checkers) {
-                list.push(m);
-            }
+            list.push(make_move(from, to, FLAG_NONE));
         }
     }
 
@@ -520,13 +534,10 @@ pub fn generate_evasions(board: &Board, checkers: Bitboard, pinned: Bitboard) ->
     let mut bishops = board.pieces[BISHOP as usize] & non_king;
     while bishops != 0 {
         let from = pop_lsb(&mut bishops) as u8;
-        let mut attacks = bishop_attacks(from as u32, board.occupied()) & target;
+        let mut attacks = bishop_attacks(from as u32, occ_full) & target;
         while attacks != 0 {
             let to = pop_lsb(&mut attacks) as u8;
-            let m = make_move(from, to, FLAG_NONE);
-            if board.is_legal(m, pinned, checkers) {
-                list.push(m);
-            }
+            list.push(make_move(from, to, FLAG_NONE));
         }
     }
 
@@ -534,13 +545,10 @@ pub fn generate_evasions(board: &Board, checkers: Bitboard, pinned: Bitboard) ->
     let mut rooks = board.pieces[ROOK as usize] & non_king;
     while rooks != 0 {
         let from = pop_lsb(&mut rooks) as u8;
-        let mut attacks = rook_attacks(from as u32, board.occupied()) & target;
+        let mut attacks = rook_attacks(from as u32, occ_full) & target;
         while attacks != 0 {
             let to = pop_lsb(&mut attacks) as u8;
-            let m = make_move(from, to, FLAG_NONE);
-            if board.is_legal(m, pinned, checkers) {
-                list.push(m);
-            }
+            list.push(make_move(from, to, FLAG_NONE));
         }
     }
 
@@ -548,20 +556,17 @@ pub fn generate_evasions(board: &Board, checkers: Bitboard, pinned: Bitboard) ->
     let mut queens = board.pieces[QUEEN as usize] & non_king;
     while queens != 0 {
         let from = pop_lsb(&mut queens) as u8;
-        let mut attacks = queen_attacks(from as u32, board.occupied()) & target;
+        let mut attacks = queen_attacks(from as u32, occ_full) & target;
         while attacks != 0 {
             let to = pop_lsb(&mut attacks) as u8;
-            let m = make_move(from, to, FLAG_NONE);
-            if board.is_legal(m, pinned, checkers) {
-                list.push(m);
-            }
+            list.push(make_move(from, to, FLAG_NONE));
         }
     }
 
     // Pawns
     let pawns = board.pieces[PAWN as usize] & non_king;
     let checker_bb = 1u64 << checker_sq;
-    let empty = !board.occupied();
+    let empty = !occ_full;
 
     if us == WHITE {
         let promo_rank = RANK_8;
@@ -575,14 +580,9 @@ pub fn generate_evasions(board: &Board, checkers: Bitboard, pinned: Bitboard) ->
             let to = pop_lsb(&mut cl) as u8;
             let from = to - 7;
             if (1u64 << to) & promo_rank != 0 {
-                let before = list.len;
                 add_promotions(&mut list, from, to);
-                filter_new_legal(&mut list, before, board, pinned, checkers);
             } else {
-                let m = make_move(from, to, FLAG_NONE);
-                if board.is_legal(m, pinned, checkers) {
-                    list.push(m);
-                }
+                list.push(make_move(from, to, FLAG_NONE));
             }
         }
         let mut cr = capture_r;
@@ -590,14 +590,9 @@ pub fn generate_evasions(board: &Board, checkers: Bitboard, pinned: Bitboard) ->
             let to = pop_lsb(&mut cr) as u8;
             let from = to - 9;
             if (1u64 << to) & promo_rank != 0 {
-                let before = list.len;
                 add_promotions(&mut list, from, to);
-                filter_new_legal(&mut list, before, board, pinned, checkers);
             } else {
-                let m = make_move(from, to, FLAG_NONE);
-                if board.is_legal(m, pinned, checkers) {
-                    list.push(m);
-                }
+                list.push(make_move(from, to, FLAG_NONE));
             }
         }
 
@@ -610,23 +605,15 @@ pub fn generate_evasions(board: &Board, checkers: Bitboard, pinned: Bitboard) ->
             let to = pop_lsb(&mut p) as u8;
             let from = to - 8;
             if (1u64 << to) & promo_rank != 0 {
-                let before = list.len;
                 add_promotions(&mut list, from, to);
-                filter_new_legal(&mut list, before, board, pinned, checkers);
             } else {
-                let m = make_move(from, to, FLAG_NONE);
-                if board.is_legal(m, pinned, checkers) {
-                    list.push(m);
-                }
+                list.push(make_move(from, to, FLAG_NONE));
             }
         }
         let mut p = push2;
         while p != 0 {
             let to = pop_lsb(&mut p) as u8;
-            let m = make_move(to - 16, to, FLAG_DOUBLE_PUSH);
-            if board.is_legal(m, pinned, checkers) {
-                list.push(m);
-            }
+            list.push(make_move(to - 16, to, FLAG_DOUBLE_PUSH));
         }
 
         // En passant: only if the captured pawn IS the checking piece
@@ -662,14 +649,9 @@ pub fn generate_evasions(board: &Board, checkers: Bitboard, pinned: Bitboard) ->
             let to = pop_lsb(&mut cl) as u8;
             let from = to + 9;
             if (1u64 << to) & promo_rank != 0 {
-                let before = list.len;
                 add_promotions(&mut list, from, to);
-                filter_new_legal(&mut list, before, board, pinned, checkers);
             } else {
-                let m = make_move(from, to, FLAG_NONE);
-                if board.is_legal(m, pinned, checkers) {
-                    list.push(m);
-                }
+                list.push(make_move(from, to, FLAG_NONE));
             }
         }
         let mut cr = capture_r;
@@ -677,14 +659,9 @@ pub fn generate_evasions(board: &Board, checkers: Bitboard, pinned: Bitboard) ->
             let to = pop_lsb(&mut cr) as u8;
             let from = to + 7;
             if (1u64 << to) & promo_rank != 0 {
-                let before = list.len;
                 add_promotions(&mut list, from, to);
-                filter_new_legal(&mut list, before, board, pinned, checkers);
             } else {
-                let m = make_move(from, to, FLAG_NONE);
-                if board.is_legal(m, pinned, checkers) {
-                    list.push(m);
-                }
+                list.push(make_move(from, to, FLAG_NONE));
             }
         }
 
@@ -696,23 +673,15 @@ pub fn generate_evasions(board: &Board, checkers: Bitboard, pinned: Bitboard) ->
             let to = pop_lsb(&mut p) as u8;
             let from = to + 8;
             if (1u64 << to) & promo_rank != 0 {
-                let before = list.len;
                 add_promotions(&mut list, from, to);
-                filter_new_legal(&mut list, before, board, pinned, checkers);
             } else {
-                let m = make_move(from, to, FLAG_NONE);
-                if board.is_legal(m, pinned, checkers) {
-                    list.push(m);
-                }
+                list.push(make_move(from, to, FLAG_NONE));
             }
         }
         let mut p = push2;
         while p != 0 {
             let to = pop_lsb(&mut p) as u8;
-            let m = make_move(to + 16, to, FLAG_DOUBLE_PUSH);
-            if board.is_legal(m, pinned, checkers) {
-                list.push(m);
-            }
+            list.push(make_move(to + 16, to, FLAG_DOUBLE_PUSH));
         }
 
         // En passant
@@ -739,26 +708,6 @@ pub fn generate_evasions(board: &Board, checkers: Bitboard, pinned: Bitboard) ->
     }
 
     list
-}
-
-fn filter_new_legal(
-    list: &mut MoveList,
-    start: usize,
-    board: &Board,
-    pinned: Bitboard,
-    checkers: Bitboard,
-) {
-    let mut write = start;
-    for read in start..list.len {
-        let mv = list.get(read);
-        if board.is_legal(mv, pinned, checkers) {
-            if write != read {
-                list.set(write, mv);
-            }
-            write += 1;
-        }
-    }
-    list.len = write;
 }
 
 // ---------------------------------------------------------------------------
