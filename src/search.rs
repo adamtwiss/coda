@@ -5446,8 +5446,9 @@ fn negamax(
     }
 
     // IIR: moved after NMP so null search uses full depth, not IIR-reduced depth.
-    // All 6 reference engines run NMP at full depth; IIR only applies to the
-    // moves loop. Running IIR first silently reduces null depth by 1 at cut nodes.
+    // The reduction affects ProbCut and the move loop. Preserve the original
+    // depth separately for the LMP move budget below.
+    let pre_iir_depth = depth;
     if depth >= tp10(&IIR_MIN_DEPTH_10X) && tt_move == NO_MOVE && !in_check && (is_pv || cut_node) && FEAT_IIR.load(Ordering::Relaxed) {
         depth -= 1;
     }
@@ -5732,7 +5733,9 @@ fn negamax(
             && beta < MATE_IN_MAX_PLY  // forced-win guard: don't count-prune quiets while proving a win
             && FEAT_LMP.load(Ordering::Relaxed)
         {
-            let mut lmp_limit = (tp10(&LMP_BASE_10X) + depth * depth) / (2 - improving as i32);
+            // Missing a TT move reduces search depth, but need not also reduce
+            // how many candidate moves we try. Other LMP gates are unchanged.
+            let mut lmp_limit = (tp10(&LMP_BASE_10X) + pre_iir_depth * pre_iir_depth) / (2 - improving as i32);
             // Predictive margin dimension: a static eval already far below alpha
             // is the best in-node signal that this will fail low, so spend fewer
             // quiets on it. Guarded on static_eval being real (it is -INFINITY
