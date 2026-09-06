@@ -2884,6 +2884,11 @@ fn select_l1_kernel(
 pub struct NNUENet {
     pub hidden_size: usize,
     pub input_weights: AlignedVec<i16>,  // [NNUE_INPUT_SIZE × hidden_size] 64B-aligned (perf M2)
+    /// Measurement harness only (CODA_PSQ_I8=1): an i8 copy of the PSQ rows
+    /// that the hot update paths read instead of `input_weights`. Empty in
+    /// production.
+    pub input_weights_i8: AlignedVec<i8>,
+    pub psq_i8: bool,
     pub input_biases: Vec<i16>,   // [hidden_size]
     pub output_weights: Vec<i16>, // [NNUE_OUTPUT_BUCKETS × out_width]
     /// Quantized output weights for fast SCReLU: i16 but clamped to [-128, 127] range.
@@ -3226,6 +3231,31 @@ impl NNUENet {
         read_i16_slice(reader, &mut input_weights)?;
         input_weights.advise_collapse();
 
+        // Measurement harness for i8 PSQ storage. CODA_PSQ_CLAMP=1 clamps the
+        // PSQ rows to the i8 range in place (control arm, i16 storage);
+        // CODA_PSQ_I8=1 does the same and also keeps an i8 copy that the hot
+        // update paths read. Both arms evaluate identically, so a bench
+        // comparison between them measures storage width alone. Neither is
+        // set in production, where this block is a single env lookup.
+        let psq_env = |k: &str| std::env::var(k).map(|v| v == "1").unwrap_or(false);
+        let psq_i8 = psq_env("CODA_PSQ_I8");
+        let mut input_weights_i8: AlignedVec<i8> = AlignedVec::zeros(0);
+        if psq_i8 || psq_env("CODA_PSQ_CLAMP") {
+            let mut clipped = 0usize;
+            for w in input_weights.iter_mut() {
+                let c = (*w).clamp(-127, 127);
+                if c != *w { clipped += 1; }
+                *w = c;
+            }
+            eprintln!("info string PSQ rows clamped to the i8 range: {} of {} weights clipped{}",
+                clipped, input_weights.len(), if psq_i8 { ", i8 storage" } else { ", i16 storage" });
+            if psq_i8 {
+                input_weights_i8 = AlignedVec::hugepage_zeros(input_weights.len());
+                for (d, &w) in input_weights_i8.iter_mut().zip(input_weights.iter()) { *d = w as i8; }
+                input_weights_i8.advise_collapse();
+            }
+        }
+
         // Read input biases
         let mut input_biases = vec![0i16; hidden_size];
         read_i16_slice(reader, &mut input_biases)?;
@@ -3492,6 +3522,8 @@ impl NNUENet {
             hidden_size,
             num_pawn_pair_features,
             input_weights,
+            input_weights_i8,
+            psq_i8,
             input_biases,
             output_weights,
             output_weights_i8,
@@ -5689,6 +5721,27 @@ impl NNUEAccumulator {
         let w_king_sq = board.king_sq(WHITE);
         let b_king_sq = board.king_sq(BLACK);
 
+        if net.psq_i8 {
+            // i8 storage: the PSQ rows go through the threat row kernel,
+            // which already streams i8 rows into an i16 accumulator.
+            let n = dirty.n_changes as usize;
+            let (mut wa, mut ws, mut ba, mut bs) = ([0usize; 8], [0usize; 8], [0usize; 8], [0usize; 8]);
+            let (mut nwa, mut nws, mut nba, mut nbs) = (0usize, 0usize, 0usize, 0usize);
+            for i in 0..n {
+                let (add, color, pt, sq) = dirty.changes[i];
+                let wi = net.halfka_index(WHITE, w_king_sq, color, pt, sq);
+                let bi = net.halfka_index(BLACK, b_king_sq, color, pt, sq);
+                if add { wa[nwa] = wi; nwa += 1; ba[nba] = bi; nba += 1; }
+                else { ws[nws] = wi; nws += 1; bs[nbs] = bi; nbs += 1; }
+            }
+            let (parent_w, current_w) = self.psq.parent_and_current(parent_ply, top, WHITE as usize);
+            unsafe { crate::threats::apply_threat_indices(current_w, parent_w, &net.input_weights_i8, h, &wa[..nwa], &ws[..nws]); }
+            let (parent_b, current_b) = self.psq.parent_and_current(parent_ply, top, BLACK as usize);
+            unsafe { crate::threats::apply_threat_indices(current_b, parent_b, &net.input_weights_i8, h, &ba[..nba], &bs[..nbs]); }
+            self.stack[top].psq_accurate = [true; 2];
+            return;
+        }
+
         let n = dirty.n_changes as usize;
         let mut w_adds: [&[i16]; 8] = [&[]; 8];
         let mut w_subs: [&[i16]; 8] = [&[]; 8];
@@ -5786,6 +5839,21 @@ impl NNUEAccumulator {
         let parent_ply = top - 1;
 
         let king_sq = board.king_sq(perspective);
+
+        if net.psq_i8 {
+            let n = dirty.n_changes as usize;
+            let (mut ia, mut isub) = ([0usize; 8], [0usize; 8]);
+            let (mut na, mut ns) = (0usize, 0usize);
+            for i in 0..n {
+                let (add, color, pt, sq) = dirty.changes[i];
+                let idx = net.halfka_index(perspective, king_sq, color, pt, sq);
+                if add { ia[na] = idx; na += 1; } else { isub[ns] = idx; ns += 1; }
+            }
+            let (parent, current) = self.psq.parent_and_current(parent_ply, top, perspective as usize);
+            unsafe { crate::threats::apply_threat_indices(current, parent, &net.input_weights_i8, h, &ia[..na], &isub[..ns]); }
+            self.stack[top].psq_accurate[perspective as usize] = true;
+            return;
+        }
 
         let n = dirty.n_changes as usize;
 
@@ -6182,6 +6250,109 @@ unsafe fn finny_batch_apply_avx512(
     }
 }
 
+/// i8-storage twin of `finny_batch_apply_avx2` for the PSQ measurement
+/// harness: 16 i8 per load, widened to i16 before the add.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn finny_batch_apply_avx2_i8(
+    acc: &mut [i16],
+    w8: &[i8],
+    h: usize,
+    adds: &[usize],
+    subs: &[usize],
+) {
+    const REGS: usize = 12;
+    const CHUNK: usize = REGS * 16;
+    let acc_ptr = acc.as_mut_ptr();
+    let w_ptr = w8.as_ptr();
+    let mut offset = 0;
+    macro_rules! apply_chunk {
+        ($nregs:expr) => {{
+            let nregs: usize = $nregs;
+            let mut regs: [__m256i; REGS] = [_mm256_setzero_si256(); REGS];
+            for i in 0..nregs {
+                regs[i] = _mm256_loadu_si256(acc_ptr.add(offset + i * 16) as *const __m256i);
+            }
+            for &idx in adds {
+                let row = w_ptr.add(idx * h + offset);
+                for i in 0..nregs {
+                    let w = _mm256_cvtepi8_epi16(_mm_loadu_si128(row.add(i * 16) as *const __m128i));
+                    regs[i] = _mm256_add_epi16(regs[i], w);
+                }
+            }
+            for &idx in subs {
+                let row = w_ptr.add(idx * h + offset);
+                for i in 0..nregs {
+                    let w = _mm256_cvtepi8_epi16(_mm_loadu_si128(row.add(i * 16) as *const __m128i));
+                    regs[i] = _mm256_sub_epi16(regs[i], w);
+                }
+            }
+            for i in 0..nregs {
+                _mm256_storeu_si256(acc_ptr.add(offset + i * 16) as *mut __m256i, regs[i]);
+            }
+        }};
+    }
+    while offset + CHUNK <= h { apply_chunk!(REGS); offset += CHUNK; }
+    while offset + 64 <= h { apply_chunk!(4); offset += 64; }
+    while offset + 16 <= h { apply_chunk!(1); offset += 16; }
+    while offset < h {
+        for &idx in adds { *acc_ptr.add(offset) += *w_ptr.add(idx * h + offset) as i16; }
+        for &idx in subs { *acc_ptr.add(offset) -= *w_ptr.add(idx * h + offset) as i16; }
+        offset += 1;
+    }
+}
+
+/// i8-storage twin of `finny_batch_apply_avx512` for the PSQ measurement
+/// harness: 32 i8 per load, widened to i16 before the add.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f,avx512bw")]
+unsafe fn finny_batch_apply_avx512_i8(
+    acc: &mut [i16],
+    w8: &[i8],
+    h: usize,
+    adds: &[usize],
+    subs: &[usize],
+) {
+    const REGS: usize = 16;
+    const CHUNK: usize = REGS * 32;
+    let acc_ptr = acc.as_mut_ptr();
+    let w_ptr = w8.as_ptr();
+    let mut offset = 0;
+    macro_rules! apply_chunk {
+        ($nregs:expr) => {{
+            let nregs: usize = $nregs;
+            let mut regs: [__m512i; REGS] = [_mm512_setzero_si512(); REGS];
+            for i in 0..nregs {
+                regs[i] = _mm512_loadu_si512(acc_ptr.add(offset + i * 32) as *const __m512i);
+            }
+            for &idx in adds {
+                let row = w_ptr.add(idx * h + offset);
+                for i in 0..nregs {
+                    let w = _mm512_cvtepi8_epi16(_mm256_loadu_si256(row.add(i * 32) as *const __m256i));
+                    regs[i] = _mm512_add_epi16(regs[i], w);
+                }
+            }
+            for &idx in subs {
+                let row = w_ptr.add(idx * h + offset);
+                for i in 0..nregs {
+                    let w = _mm512_cvtepi8_epi16(_mm256_loadu_si256(row.add(i * 32) as *const __m256i));
+                    regs[i] = _mm512_sub_epi16(regs[i], w);
+                }
+            }
+            for i in 0..nregs {
+                _mm512_storeu_si512(acc_ptr.add(offset + i * 32) as *mut __m512i, regs[i]);
+            }
+        }};
+    }
+    while offset + CHUNK <= h { apply_chunk!(REGS); offset += CHUNK; }
+    while offset + 32 <= h { apply_chunk!(1); offset += 32; }
+    while offset < h {
+        for &idx in adds { *acc_ptr.add(offset) += *w_ptr.add(idx * h + offset) as i16; }
+        for &idx in subs { *acc_ptr.add(offset) -= *w_ptr.add(idx * h + offset) as i16; }
+        offset += 1;
+    }
+}
+
 /// Batch-apply add/sub weight rows to an accumulator (SIMD-aware dispatcher).
 /// Used by Finny refresh (both full-build and cache-diff). Must compile on
 /// every supported arch — a scalar fallback is always present.
@@ -6194,6 +6365,29 @@ fn finny_batch_apply(
     adds: &[usize],
     subs: &[usize],
 ) {
+    if net.psq_i8 {
+        let w8: &[i8] = &net.input_weights_i8;
+        #[cfg(target_arch = "x86_64")]
+        {
+            if net.has_avx512 && h.is_multiple_of(32) {
+                unsafe { finny_batch_apply_avx512_i8(acc, w8, h, adds, subs); }
+                return;
+            }
+            if net.has_avx2 && h.is_multiple_of(16) {
+                unsafe { finny_batch_apply_avx2_i8(acc, w8, h, adds, subs); }
+                return;
+            }
+        }
+        for &idx in adds {
+            let base = idx * h;
+            for j in 0..h { acc[j] += w8[base + j] as i16; }
+        }
+        for &idx in subs {
+            let base = idx * h;
+            for j in 0..h { acc[j] -= w8[base + j] as i16; }
+        }
+        return;
+    }
     #[cfg(target_arch = "x86_64")]
     if net.has_avx512 && h.is_multiple_of(32) {
         unsafe { finny_batch_apply_avx512(acc, input_weights, h, adds, subs); }
