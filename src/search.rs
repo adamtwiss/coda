@@ -61,6 +61,12 @@ const PAWN_HIST_SIZE: usize = 512;
 const ROOT_MOVE_BUCKETS: usize = 5;
 const ROOT_MOVE_TABLE_SIZE: usize = 64 * 64 * ROOT_MOVE_BUCKETS;
 
+static IIR_AUDIT: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
+fn iir_audit_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var_os("CODA_IIR_AUDIT").is_some())
+}
+
 // ============================================================================
 // Tunable search parameters (exposed as UCI options for SPSA tuning)
 // ============================================================================
@@ -5448,8 +5454,10 @@ fn negamax(
     // IIR: moved after NMP so null search uses full depth, not IIR-reduced depth.
     // All 6 reference engines run NMP at full depth; IIR only applies to the
     // moves loop. Running IIR first silently reduces null depth by 1 at cut nodes.
+    let pre_iir_depth = depth;
     if depth >= tp10(&IIR_MIN_DEPTH_10X) && tt_move == NO_MOVE && !in_check && (is_pv || cut_node) && FEAT_IIR.load(Ordering::Relaxed) {
         depth -= 1;
+        if iir_audit_enabled() { IIR_AUDIT[is_pv as usize].fetch_add(1, Ordering::Relaxed); }
     }
 
     // (RFP moved above NMP — see pre-NMP site.)
@@ -5483,6 +5491,14 @@ fn negamax(
     } else {
         false
     };
+    if iir_audit_enabled() && pre_iir_depth != depth && ply > 0 && !is_pv
+        && beta.abs() < MATE_IN_MAX_PLY && info.excluded_move[ply_u] == NO_MOVE
+        && !probcut_tt_noshot && king_zone_pressure < tp10(&PROBCUT_KING_ZONE_MAX_10X)
+        && FEAT_PROBCUT.load(Ordering::Relaxed)
+    {
+        if depth >= probcut_min_depth { IIR_AUDIT[2].fetch_add(1, Ordering::Relaxed); }
+        else if pre_iir_depth >= probcut_min_depth { IIR_AUDIT[3].fetch_add(1, Ordering::Relaxed); }
+    }
     if !in_check && ply > 0 && !is_pv && depth >= probcut_min_depth
         && beta.abs() < MATE_IN_MAX_PLY  // skip for mate/TB scores
         && info.excluded_move[ply_u] == NO_MOVE  // skip during SE verification
@@ -5562,6 +5578,9 @@ fn negamax(
 
             // Only do deeper search if qsearch also beats the candidate's beta.
             if score >= candidate_beta && pc_depth > 0 {
+                if iir_audit_enabled() && pre_iir_depth != depth {
+                    IIR_AUDIT[4].fetch_add(1, Ordering::Relaxed);
+                }
                 score = -negamax(board, info, -candidate_beta, -candidate_beta + 1, pc_depth, ply + 1, !cut_node);
             }
 
@@ -5744,6 +5763,14 @@ fn negamax(
             // pay the check-detection call when the count prune would actually
             // fire (node-count identical).
             if move_count > lmp_limit && (depth >= 4 || !board.gives_direct_check(mv)) {
+                if iir_audit_enabled() && pre_iir_depth != depth {
+                    IIR_AUDIT[5].fetch_add(1, Ordering::Relaxed);
+                    let mut old_limit = (tp10(&LMP_BASE_10X) + pre_iir_depth * pre_iir_depth) / (2 - improving as i32);
+                    if static_eval > -INFINITY && alpha - static_eval >= tp(&LMP_MARGIN_THRESH) {
+                        old_limit = (old_limit * tp(&LMP_MARGIN_PCT) / 100).max(1);
+                    }
+                    if move_count <= old_limit { IIR_AUDIT[6].fetch_add(1, Ordering::Relaxed); }
+                }
                 trace_gate!(info, board.hash, ply, mv, "lmp", depth, move_count);
                 info.stats.lmp_prunes += 1;
                 skip_quiets = true;
@@ -7525,6 +7552,7 @@ pub const BENCH_PATHOLOGY_POSITIONS: &[&str] = &[
 
 /// Run bench: fixed-depth search on standard positions, return total nodes.
 pub fn bench(depth: i32, nnue_path: Option<&str>) -> u64 {
+    for counter in &IIR_AUDIT { counter.store(0, Ordering::Relaxed); }
     bench_inner(depth, nnue_path, true)
 }
 
@@ -7839,6 +7867,10 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
     eprintln!("First-move cut: {:>5.1}%", if s.beta_cutoffs > 0 { s.first_move_cutoffs as f64 / s.beta_cutoffs as f64 * 100.0 } else { 0.0 });
 
     eprintln!("Total nodes:    {:>8}", total_nodes);
+    if iir_audit_enabled() {
+        eprintln!("IIR audit cut,pv,pc-eligible,pc-depth-blocked,pc-verifications,lmp-cuts,lmp-relieved,reserved: {:?}",
+            IIR_AUDIT.each_ref().map(|c| c.load(Ordering::Relaxed)));
+    }
 
     // RFP false-positive audit table (only when RFP_AUDIT=1 produced data).
     let audit_total: u64 = s.rfp_audit_attempts.iter().sum();
