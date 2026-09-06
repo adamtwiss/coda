@@ -382,22 +382,22 @@ tunables!(
     // PROBCUT_TT_DEPTH_SLACK: TT depth must be >= current depth - SLACK for
     // ProbCut-TT-noshot to consider the entry.
     (PROBCUT_TT_DEPTH_SLACK, 3, 0, 10, 0.5, false),
-    (HIST_BONUS_MULT, 249, 50, 400, 17.5, true),
-    (HIST_BONUS_MAX, 1638, 500, 3000, 125.0, true),
+    (HIST_BONUS_MULT, 247, 50, 400, 17.5, true),
+    (HIST_BONUS_MAX, 1635, 500, 3000, 125.0, true),
     // History bonus uses the offset shape `clamp(0, MAX, MULT*d - OFFSET)`
     // rather than `min(MAX, MULT*d)`. Without the offset the formula
     // saturates early and d=5 and d=10 earn the same bonus; the offset buys
     // depth discrimination. Capture history uses the same shape.
-    (HIST_BONUS_OFFSET, 18, 0, 400, 25.0, false),
+    (HIST_BONUS_OFFSET, 26, 0, 400, 25.0, false),
     (CAP_HIST_MULT, 333, 50, 400, 17.5, true),
     (CAP_HIST_MAX, 2032, 500, 3000, 125.0, true),
     // Malus constants are SEPARATE from the bonus constants rather than
     // hardwired to -bonus, so SPSA can tune the two slopes independently.
     // Whether malus should be steeper or shallower than bonus is
     // engine-specific and only discoverable by tuning.
-    (HIST_MALUS_MULT, 551, 50, 900, 40.0, true),
+    (HIST_MALUS_MULT, 519, 50, 900, 40.0, true),
     (HIST_MALUS_OFFSET, 30, 0, 400, 25.0, false),
-    (HIST_MALUS_MAX, 1168, 500, 4000, 175.0, true),
+    (HIST_MALUS_MAX, 1158, 500, 4000, 175.0, true),
     (CAP_HIST_MALUS_MULT, 268, 50, 900, 40.0, true),
     (CAP_HIST_MALUS_BASE, 42, 0, 400, 25.0, false),
     (CAP_HIST_MALUS_MAX, 2352, 500, 4000, 175.0, true),
@@ -509,7 +509,7 @@ tunables!(
     (SE_XRAY_BLOCKER_MARGIN_10X, 46, 0, 400, 20.0, false),
     // Continuation-history weight in quiet move ordering. Range runs to 0 so
     // SPSA can disable the term entirely rather than pinning at a floor.
-    (CONT_HIST_MULT_10X, 19, 0, 80, 15.0, true),
+    (CONT_HIST_MULT_10X, 20, 0, 80, 15.0, true),
     // Pawn-history weight in quiet move ordering, relative to main/cont/etc.
     // core: false — not yet validated Elo-positive, so kept out of --core to
     // avoid contributing loose-knob false gradients to the sweep.
