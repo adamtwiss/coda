@@ -162,6 +162,15 @@ tunables!(
     // input. Exposing it costs nothing and is behaviour-identical at 12000.
     (FUT_HIST_EXEMPT, 12485, 2000, 16384, 900.0, true),
     (FUT_LMR_DEPTH, 14, 6, 24, 2.0, true),
+    // LMR alpha-eval deficit (quiets, non-decisive alpha): the static eval
+    // sitting far below alpha is the best in-node fail-low signal — the same
+    // signal the merged LMP deficit gate (#3235) uses — so reduce such quiets
+    // more, and reduce less when the static eval is already above alpha
+    // (loose window). One depth-ply per LMR_DEFICIT_DIV cp, clamped to
+    // [-LO, +HI] cp so a single term cannot dominate the battery.
+    (LMR_DEFICIT_DIV, 400, 150, 1200, 40.0, true),
+    (LMR_DEFICIT_LO, 100, 0, 300, 15.0, false),
+    (LMR_DEFICIT_HI, 200, 0, 400, 20.0, false),
     // Move-count term: later quiets get a tighter futility margin. Default
     // FUT_PER_DEPTH / 8 — one depth-ply of margin per eight moves; capped at
     // the depth term so the margin never drops below FUT_BASE. Futility is
@@ -6121,6 +6130,11 @@ fn negamax(
                 // improving moves have already been found.
                 // CONTINUOUS (commit 2): x10 = /10 * LMR_SCALE without the floor.
                 reduction += alpha_raise_count * LMR_ALPHA_RAISE_10X.load(Ordering::Relaxed) * 10;
+                // Alpha-eval deficit term (see LMR_DEFICIT_DIV).
+                if static_eval > -INFINITY && !is_decisive(alpha) {
+                    let deficit = (alpha - static_eval).clamp(-tp(&LMR_DEFICIT_LO), tp(&LMR_DEFICIT_HI));
+                    reduction += deficit * LMR_SCALE / tp(&LMR_DEFICIT_DIV);
+                }
 
                 // Reduce less when the position is improving
                 if improving {
