@@ -1002,6 +1002,45 @@ fn iter_stats_enabled() -> bool {
     *F.get_or_init(|| std::env::var("CODA_ITER_STATS").is_ok())
 }
 
+/// Experiment switches for the drawn-endgame tree investigation
+/// (2026-09-06). Each is an env var read once; absent = -1 (off). They are
+/// deliberately env-only so the production search is untouched: a switch
+/// that pays on the corpus graduates to a tunable, the rest are deleted.
+macro_rules! exp_flag {
+    ($fn_name:ident, $env:literal) => {
+        #[inline(always)]
+        fn $fn_name() -> i32 {
+            static V: std::sync::OnceLock<i32> = std::sync::OnceLock::new();
+            *V.get_or_init(|| std::env::var($env).ok().and_then(|v| v.parse().ok()).unwrap_or(-1))
+        }
+    };
+}
+exp_flag!(exp_se_draw, "EXP_SE_DRAW");           // no singular/double extension when |tt score| <= this
+exp_flag!(exp_se_draw_dbl, "EXP_SE_DRAW_DBL");   // no DOUBLE extension when |tt score| <= this
+exp_flag!(exp_se_draw_npm, "EXP_SE_DRAW_NPM");   // ...and (for both SE gates) only when non-pawn material <= this
+exp_flag!(exp_corr_npm, "EXP_CORR_NPM");         // correction history off when non-pawn material <= this
+exp_flag!(exp_tt_guard_draw, "EXP_TT_GUARD_DRAW"); // TT node-type guard waived when |tt score| <= this
+exp_flag!(exp_tt_guard_npm, "EXP_TT_GUARD_NPM"); // TT node-type guard waived when non-pawn material <= this
+
+/// Whether the TT-cutoff node-type guard applies at this node: the ablation
+/// flag, minus the experiment waivers for draw-scored entries / low material.
+#[inline(always)]
+fn tt_guard_active(tt_score: i32, board: &Board) -> bool {
+    if !FEAT_TT_GUARD.load(Ordering::Relaxed) { return false; }
+    if exp_tt_guard_draw() >= 0 && tt_score.abs() <= exp_tt_guard_draw() { return false; }
+    if exp_tt_guard_npm() >= 0 && non_pawn_material(board) <= exp_tt_guard_npm() { return false; }
+    true
+}
+
+/// Total non-pawn material of both sides in SEE units (experiment gates).
+#[inline(always)]
+fn non_pawn_material(board: &Board) -> i32 {
+    let minors = popcount(board.pieces[KNIGHT as usize] | board.pieces[BISHOP as usize]) as i32;
+    let rooks = popcount(board.pieces[ROOK as usize]) as i32;
+    let queens = popcount(board.pieces[QUEEN as usize]) as i32;
+    minors * crate::eval::see_value(KNIGHT) + rooks * crate::eval::see_value(ROOK) + queens * crate::eval::see_value(QUEEN)
+}
+
 /// Snapshot of the counters an ITER line reports as deltas.
 #[derive(Default, Clone, Copy)]
 struct IterSnap {
@@ -2225,6 +2264,9 @@ fn cont_corr_value(info: &SearchInfo, ply: usize) -> i64 {
 /// to raw eval). Used by SE-margin formulas to gate extension confidence on
 /// |correction| — extend less on uncertain (drifting) evals.
 fn correction_value(info: &SearchInfo, board: &Board, ply: usize) -> i32 {
+    if exp_corr_npm() >= 0 && non_pawn_material(board) <= exp_corr_npm() {
+        return 0;
+    }
     let stm = board.side_to_move as usize;
     let pawn_idx = (board.pawn_hash as usize) & (CORR_HIST_SIZE - 1);
     let pawn_corr = info.pawn_corr[stm][pawn_idx] as i64;
@@ -4961,7 +5003,7 @@ fn negamax(
                 // are candidates minus cutoffs.
                 if tt_cut_is_pv {
                     info.stats.tt_refused_pv += 1;
-                } else if cut_node != score_above_beta && FEAT_TT_GUARD.load(Ordering::Relaxed) {
+                } else if cut_node != score_above_beta && tt_guard_active(tt_score, board) {
                     info.stats.tt_refused_guard += 1;
                 } else if !bound_matches {
                     info.stats.tt_refused_bound += 1;
@@ -4978,7 +5020,7 @@ fn negamax(
                 // Cost: one board-only make/unmake + one probe, deep cutoffs
                 // only. Shallow cutoffs and the bounds-collapse path below stay
                 // unverified (matching SF's single-site scope).
-                if !tt_cut_is_pv && (cut_node == score_above_beta || !FEAT_TT_GUARD.load(Ordering::Relaxed)) && bound_matches
+                if !tt_cut_is_pv && (cut_node == score_above_beta || !tt_guard_active(tt_score, board)) && bound_matches
                     && halfmove_ok
                     && !tt_cutoff_child_disagrees(info, board, tt_move, tt_score, beta, depth, ply)
                 {
@@ -6014,12 +6056,17 @@ fn negamax(
                                     - tp(&DEXT_MARGIN_CORR) * corr_abs / 128
                                     + tp(&DEXT_MARGIN_BASE);
 
-                    singular_extension = 1;
-                    info.stats.singular_ext += 1;
-                    if info.double_ext_count[ply_u] < tp(&DEXT_CAP) {
-                        let de = (singular_score < singular_beta - dext_margin) as i32;
-                        singular_extension += de;
-                        if de > 0 { info.stats.double_ext += 1; }
+                    let se_material_ok = exp_se_draw_npm() < 0 || non_pawn_material(board) <= exp_se_draw_npm();
+                    let draw_scored_se = se_material_ok && exp_se_draw() >= 0 && tt_score_local.abs() <= exp_se_draw();
+                    let draw_scored_dbl = se_material_ok && exp_se_draw_dbl() >= 0 && tt_score_local.abs() <= exp_se_draw_dbl();
+                    if !draw_scored_se {
+                        singular_extension = 1;
+                        info.stats.singular_ext += 1;
+                        if info.double_ext_count[ply_u] < tp(&DEXT_CAP) && !draw_scored_dbl {
+                            let de = (singular_score < singular_beta - dext_margin) as i32;
+                            singular_extension += de;
+                            if de > 0 { info.stats.double_ext += 1; }
+                        }
                     }
                 } else if tt_score_local >= beta {
                     // TT move fails high and alternatives competitive — strong reduce
