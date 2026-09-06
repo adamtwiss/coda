@@ -5446,8 +5446,9 @@ fn negamax(
     }
 
     // IIR: moved after NMP so null search uses full depth, not IIR-reduced depth.
-    // All 6 reference engines run NMP at full depth; IIR only applies to the
-    // moves loop. Running IIR first silently reduces null depth by 1 at cut nodes.
+    // Preserve pre-IIR depth for ProbCut verification; eligibility still uses
+    // the reduced depth, as do the normal move loop and its pruning gates.
+    let pre_iir_depth = depth;
     if depth >= tp10(&IIR_MIN_DEPTH_10X) && tt_move == NO_MOVE && !in_check && (is_pv || cut_node) && FEAT_IIR.load(Ordering::Relaxed) {
         depth -= 1;
     }
@@ -5501,7 +5502,7 @@ fn negamax(
         let pc_tt_see_threshold = (pc_tt_beta - static_eval).max(0);
         // Improving-conditioned ProbCut depth (SF d6483505) —
         // bundled near-miss; tuned with the LMP/ProbCut margin cluster.
-        let pc_depth = depth - 4 - improving as i32;
+        let pc_depth = pre_iir_depth - 4 - improving as i32;
         let pc_tt_move = if tt_move_noisy
             && is_pseudo_legal(board, tt_move)
             && board.is_legal(tt_move, pinned, checkers)
