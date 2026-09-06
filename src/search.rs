@@ -5666,6 +5666,7 @@ fn negamax(
     // Track quiet moves searched before beta cutoff for history penalty
     let mut quiets_tried = [NO_MOVE; 64];
     let mut quiets_count = 0usize;
+    let mut quiet_malus_relief = [false; 64];
 
     // Track captures searched before beta cutoff for capture history penalty
     let mut captures_tried: [(u8, u8, u8); 32] = [(0, 0, 0); 32]; // (piece, to, victim)
@@ -6043,6 +6044,9 @@ fn negamax(
         let score;
 
         // Track quiet moves for history penalty on beta cutoff
+        let quiet_slot = if !is_cap && !is_promo && quiets_count < 64 {
+            Some(quiets_count)
+        } else { None };
         if !is_cap && !is_promo && quiets_count < 64 {
             quiets_tried[quiets_count] = mv;
             quiets_count += 1;
@@ -6378,6 +6382,7 @@ fn negamax(
         // != 0: a negative reduction is a one-ply extension of the zero-window
         // probe; the re-search guard `new_depth > lmr_depth` is then false, so
         // the deeper probe stands and PVS proceeds at new_depth as usual.
+        let mut reduced_fail_low = false;
         if reduction != 0 {
             info.stats.lmr_searches += 1;
 
@@ -6385,6 +6390,7 @@ fn negamax(
             trace_gate!(info, board.hash, ply, mv, "lmr_reduced", reduction, move_count);
             let lmr_depth = new_depth - reduction;
             let mut lmr_score = -negamax(board, info, -alpha - 1, -alpha, lmr_depth, ply + 1, true);
+            reduced_fail_low = reduction > 0 && lmr_score <= alpha;
 
             // The reduction applies to the reduced search ONLY: zero the slot
             // before any re-search so children of the (near-)full-depth
@@ -6508,6 +6514,12 @@ fn negamax(
 
         if info.stop.load(Ordering::Relaxed) {
             return 0;
+        }
+
+        // A reduced-only fail-low close to the original alpha provides weaker
+        // negative evidence. Preserve this move's verdict before alpha changes.
+        if let Some(slot) = quiet_slot {
+            quiet_malus_relief[slot] = reduced_fail_low && score >= alpha - 32;
         }
 
         if score > best_score {
@@ -6641,6 +6653,9 @@ fn negamax(
 
                         // Penalize all quiet moves tried before the cutoff move
                         for i in 0..quiets_count.saturating_sub(1) {
+                            // Apply after saturation and cascade scaling, uniformly
+                            // to main, continuation and pawn-history penalties.
+                            let malus = if quiet_malus_relief[i] { malus * 3 / 4 } else { malus };
                             let q = quiets_tried[i];
                             let qf = move_from(q);
                             let qt = move_to(q);
