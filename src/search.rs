@@ -3586,8 +3586,10 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
 
         // Aspiration windows (skip for mate scores)
         if depth >= 4 && prev_score > -MATE_IN_MAX_PLY && prev_score < MATE_IN_MAX_PLY {
-            // Eval-dependent aspiration delta: wider for extreme scores
-            // Calm positions (avg~0): delta=13, winning (avg~500): delta=24, crushing (avg~1000): delta=55
+            // Eval-dependent aspiration delta: wider for extreme scores.
+            // With the live knobs (ASP_DELTA 11, ASP_SCORE_DIV 12000):
+            // calm (avg~0) delta=11, winning (avg~500) delta=31,
+            // crushing (avg~1000) delta=94.
             let avg = prev_score;
             let mut delta = tp(&ASP_DELTA) + (avg as i64 * avg as i64 / tp(&ASP_SCORE_DIV) as i64) as i32;
             let mut alpha = (prev_score - delta).max(-INFINITY);
@@ -7618,6 +7620,10 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
 
         // Accumulate stats across all positions
         total_stats.tt_probes += info.stats.tt_probes;
+        // These two were accumulated per search but never summed here, so the
+        // bench readout could not show them (2026-09-06 audit).
+        total_stats.ts_asp_fail_low += info.stats.ts_asp_fail_low;
+        total_stats.ts_asp_fail_high += info.stats.ts_asp_fail_high;
         total_stats.tt_hits += info.stats.tt_hits;
         total_stats.tt_cross_gen_hits += info.stats.tt_cross_gen_hits;
         total_stats.tt_cross_gen_cutoffs += info.stats.tt_cross_gen_cutoffs;
@@ -7699,6 +7705,11 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
         s.tt_cross_gen_cutoffs,
         if s.tt_cutoffs > 0 { s.tt_cross_gen_cutoffs as f64 / s.tt_cutoffs as f64 * 100.0 } else { 0.0 });
     eprintln!("TT near-miss:   {:>8}", s.tt_near_miss);
+    // Root aspiration failures. These were accumulated but never printed, so
+    // nobody had seen that ~75% of windows fail their first search (2026-09-06
+    // audit). Games say the narrow window is optimal regardless -- the
+    // re-searches are cheap -- but the rate should stay visible.
+    eprintln!("Asp fail-low:   {:>8}  fail-high: {}", s.ts_asp_fail_low, s.ts_asp_fail_high);
     eprintln!("NMP attempts:   {:>8}  cutoffs: {} ({:.0}%)", s.nmp_attempts, s.nmp_cutoffs,
         if s.nmp_attempts > 0 { s.nmp_cutoffs as f64 / s.nmp_attempts as f64 * 100.0 } else { 0.0 });
     eprintln!("RFP cutoffs:    {:>8}  ({:.1}% of nodes)", s.rfp_cutoffs, s.rfp_cutoffs as f64 / total_nodes as f64 * 100.0);
