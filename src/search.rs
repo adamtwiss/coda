@@ -162,6 +162,12 @@ tunables!(
     // input. Exposing it costs nothing and is behaviour-identical at 12000.
     (FUT_HIST_EXEMPT, 12485, 2000, 16384, 900.0, true),
     (FUT_LMR_DEPTH, 14, 6, 24, 2.0, true),
+    // Continuation-history continuity: each cont-hist update at offsets
+    // 1/2/4/6 is scaled by (CMHC_BASE_16 + contexts already positive) / 16,
+    // capped at 16/16. A move unproven in every context is dampened to
+    // BASE/16 of the update; each context that already rates it positive
+    // restores a sixteenth. Idea: consistency across the stack is evidence.
+    (CMHC_BASE_16, 12, 8, 16, 1.0, false),
     // Move-count term: later quiets get a tighter futility margin. Default
     // FUT_PER_DEPTH / 8 — one depth-ply of margin per eight moves; capped at
     // the depth term so the margin never drops below FUT_BASE. Futility is
@@ -2150,6 +2156,14 @@ fn cont_corr_value(info: &SearchInfo, ply: usize) -> i64 {
 /// Compute the correction value alone (the centipawn delta corrhist would apply
 /// to raw eval). Used by SE-margin formulas to gate extension confidence on
 /// |correction| — extend less on uncertain (drifting) evals.
+/// Continuity multiplier (out of 16) for a cont-hist update, given how many
+/// of the offsets visited so far (including this one) already hold a
+/// positive value for the move. See CMHC_BASE_16.
+#[inline]
+fn cmhc_mult(positive_seen: i32) -> i32 {
+    (tp(&CMHC_BASE_16) + positive_seen).min(16)
+}
+
 fn correction_value(info: &SearchInfo, board: &Board, ply: usize) -> i32 {
     let stm = board.side_to_move as usize;
     let pawn_idx = (board.pawn_hash as usize) & (CORR_HIST_SIZE - 1);
@@ -6445,6 +6459,7 @@ fn negamax(
                         let gp_mv = go_piece(moved_piece);
                         // base = current cont_hist + main_hist / 2 (concept from Stormphrax).
                         let main_score_v = info.history.main_score(from, to, enemy_attacks);
+                        let mut positive_seen = 0i32;
                         let ch_offsets = [1usize, 2, 4, 6];
                         for &off in &ch_offsets {
                             if ply_u >= off {
@@ -6454,8 +6469,9 @@ fn negamax(
                                     // Uniform bonus across offsets {1,2,4,6},
                                     // as Berserk/Alexandria/Stormphrax do —
                                     // NOT a [bonus, b/2, b/2, b/2] taper.
-                                    let ch_b = nudge_bonus;
                                     let cur_cont = info.history.cont_hist[prior_piece][prior_to][gp_mv][to as usize] as i32;
+                                    if cur_cont > 0 { positive_seen += 1; }
+                                    let ch_b = nudge_bonus * cmhc_mult(positive_seen) / 16;
                                     let base = cur_cont + main_score_v / 2;
                                     History::update_cont_history_with_base(
                                         &mut info.history.cont_hist[prior_piece][prior_to][gp_mv][to as usize],
@@ -6612,6 +6628,7 @@ fn negamax(
                             let gp_mv = go_piece(moved_piece);
                             // base = current cont_hist + main_hist / 2 (concept from Stormphrax).
                             let main_score_v = info.history.main_score(from, to, enemy_attacks);
+                            let mut positive_seen = 0i32;
                             let ch_offsets = [1usize, 2, 4, 6];
                             for &off in ch_offsets.iter() {
                                 if ply_u >= off {
@@ -6619,8 +6636,9 @@ fn negamax(
                                     let prior_to = info.moved_to_stack[ply_u - off] as usize;
                                     if prior_piece > 0 && prior_piece < crate::movepicker::CONT_PLANES && prior_to < 64 {
                                         // B1: uniform bonus (see LMR nudge site above).
-                                        let ch_bonus = bonus;
                                         let cur_cont = info.history.cont_hist[prior_piece][prior_to][gp_mv][to as usize] as i32;
+                                        if cur_cont > 0 { positive_seen += 1; }
+                                        let ch_bonus = bonus * cmhc_mult(positive_seen) / 16;
                                         let base = cur_cont + main_score_v / 2;
                                         History::update_cont_history_with_base(
                                             &mut info.history.cont_hist[prior_piece][prior_to][gp_mv][to as usize],
@@ -6658,6 +6676,7 @@ fn negamax(
                                 if q_piece != NO_PIECE {
                                     let gp_q = go_piece(q_piece);
                                     let q_main_score = info.history.main_score(qf, qt, enemy_attacks);
+                                    let mut positive_seen = 0i32;
                                     let ch_offsets = [1usize, 2, 4, 6];
                                     for &off in ch_offsets.iter() {
                                         if ply_u >= off {
@@ -6665,8 +6684,9 @@ fn negamax(
                                             let prior_to = info.moved_to_stack[ply_u - off] as usize;
                                             if prior_piece > 0 && prior_piece < crate::movepicker::CONT_PLANES && prior_to < 64 {
                                                 // B1: uniform penalty (see bonus site above).
-                                                let ch_pen = -malus;
                                                 let cur_cont = info.history.cont_hist[prior_piece][prior_to][gp_q][qt as usize] as i32;
+                                                if cur_cont > 0 { positive_seen += 1; }
+                                                let ch_pen = -malus * cmhc_mult(positive_seen) / 16;
                                                 let base = cur_cont + q_main_score / 2;
                                                 History::update_cont_history_with_base(
                                                     &mut info.history.cont_hist[prior_piece][prior_to][gp_q][qt as usize],
