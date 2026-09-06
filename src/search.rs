@@ -769,6 +769,9 @@ pub static FEAT_CORRECTION: AtomicBool = AtomicBool::new(true);
 pub static FEAT_PVS: AtomicBool = AtomicBool::new(true);
 pub static FEAT_TT_CUTOFF: AtomicBool = AtomicBool::new(true);
 pub static FEAT_TT_NEARMISS: AtomicBool = AtomicBool::new(true);
+/// Ablation: the TT-cutoff node-type guard (cut nodes accept only fail-high
+/// bounds, all-nodes only fail-low). `NO_TT_GUARD=1` disables the guard.
+pub static FEAT_TT_GUARD: AtomicBool = AtomicBool::new(true);
 pub static FEAT_TT_STORE: AtomicBool = AtomicBool::new(true);
 // Static-eval cache: reuse TT-stored static_eval instead of calling NNUE.
 // Ablate (NO_TT_STATIC_EVAL=1) to test whether skipping evals hurts more
@@ -972,6 +975,82 @@ pub struct PruneStats {
     pub ts_lmr_research: u64,
     pub ts_asp_fail_low: u64,
     pub ts_asp_fail_high: u64,
+    // Iteration-stats counters (CODA_ITER_STATS=1): why TT hits did not cut,
+    // and how the tree terminates in drawn positions. Cheap increments on
+    // paths that already branch on the same predicates.
+    pub tt_cut_candidates: u64,
+    pub tt_refused_depth: u64,
+    pub tt_refused_pv: u64,
+    pub tt_refused_guard: u64,
+    pub tt_refused_bound: u64,
+    pub tt_refused_halfmove: u64,
+    pub draw_rule50: u64,
+    pub draw_insuf: u64,
+    pub draw_rep: u64,
+    pub cuckoo_raise: u64,
+    pub cuckoo_cut: u64,
+    pub qs_draw: u64,
+    pub qs_cuckoo_cut: u64,
+}
+
+/// `CODA_ITER_STATS=1`: print one stderr line per completed root iteration
+/// (main thread) with node, aspiration, TT-acceptance and draw-terminal
+/// deltas for that iteration. Diagnostic for iteration-cost blow-ups in
+/// resolved (drawn) positions. Parsed once.
+fn iter_stats_enabled() -> bool {
+    static F: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *F.get_or_init(|| std::env::var("CODA_ITER_STATS").is_ok())
+}
+
+/// Snapshot of the counters an ITER line reports as deltas.
+#[derive(Default, Clone, Copy)]
+struct IterSnap {
+    nodes: u64, qnodes: u64, tt_probes: u64, tt_hits: u64, tt_cutoffs: u64, tt_near_miss: u64,
+    tt_cut_candidates: u64, tt_refused_depth: u64, tt_refused_pv: u64, tt_refused_guard: u64,
+    tt_refused_bound: u64, tt_refused_halfmove: u64, draw_rule50: u64, draw_insuf: u64,
+    draw_rep: u64, cuckoo_raise: u64, cuckoo_cut: u64, qs_draw: u64, qs_cuckoo_cut: u64,
+    singular_ext: u64, double_ext: u64, nmp_cutoffs: u64, rfp_cutoffs: u64, lmr_research: u64,
+}
+impl IterSnap {
+    fn take(info: &SearchInfo) -> Self {
+        let s = &info.stats;
+        IterSnap { nodes: info.nodes, qnodes: s.qnodes, tt_probes: s.tt_probes, tt_hits: s.tt_hits,
+            tt_cutoffs: s.tt_cutoffs, tt_near_miss: s.tt_near_miss, tt_cut_candidates: s.tt_cut_candidates,
+            tt_refused_depth: s.tt_refused_depth, tt_refused_pv: s.tt_refused_pv, tt_refused_guard: s.tt_refused_guard,
+            tt_refused_bound: s.tt_refused_bound, tt_refused_halfmove: s.tt_refused_halfmove,
+            draw_rule50: s.draw_rule50, draw_insuf: s.draw_insuf, draw_rep: s.draw_rep,
+            cuckoo_raise: s.cuckoo_raise, cuckoo_cut: s.cuckoo_cut, qs_draw: s.qs_draw, qs_cuckoo_cut: s.qs_cuckoo_cut,
+            singular_ext: s.singular_ext, double_ext: s.double_ext, nmp_cutoffs: s.nmp_cutoffs,
+            rfp_cutoffs: s.rfp_cutoffs, lmr_research: s.ts_lmr_research }
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn print(&self, info: &SearchInfo, depth: i32, score: i32, best: Move, flipped: bool,
+             asp_fl: u32, asp_fh: u32, research_nodes: u64) {
+        let b = Self::take(info);
+        let d = |a: u64, c: u64| a.saturating_sub(c);
+        let n = d(b.nodes, self.nodes).max(1);
+        let probes = d(b.tt_probes, self.tt_probes);
+        let cand = d(b.tt_cut_candidates, self.tt_cut_candidates);
+        let cuts = d(b.tt_cutoffs, self.tt_cutoffs);
+        eprintln!(
+            "ITER d={} sd={} score={} nodes={} iter_nodes={} qs%={:.0} asp[fl={} fh={} research_nodes={}] best={} flip={} \
+| tt[probes={} hit%={:.1} cut={} cand={} refused: depth={} pv={} guard={} bound={} hm={} child={} nearmiss={}] \
+| draws[r50={} insuf={} rep={} cuckoo_raise={} cuckoo_cut={} qs_draw={} qs_cuckoo={}] \
+| prune[nmp_cut={} rfp={} lmr_research={} se={} dbl={}]",
+            depth, info.sel_depth, score, b.nodes, n, d(b.qnodes, self.qnodes) as f64 * 100.0 / n as f64,
+            asp_fl, asp_fh, research_nodes, crate::types::move_to_uci(best), flipped as u8,
+            probes, if probes > 0 { d(b.tt_hits, self.tt_hits) as f64 * 100.0 / probes as f64 } else { 0.0 },
+            cuts, cand,
+            d(b.tt_refused_depth, self.tt_refused_depth), d(b.tt_refused_pv, self.tt_refused_pv),
+            d(b.tt_refused_guard, self.tt_refused_guard), d(b.tt_refused_bound, self.tt_refused_bound),
+            d(b.tt_refused_halfmove, self.tt_refused_halfmove), cand.saturating_sub(cuts),
+            d(b.tt_near_miss, self.tt_near_miss),
+            d(b.draw_rule50, self.draw_rule50), d(b.draw_insuf, self.draw_insuf), d(b.draw_rep, self.draw_rep),
+            d(b.cuckoo_raise, self.cuckoo_raise), d(b.cuckoo_cut, self.cuckoo_cut),
+            d(b.qs_draw, self.qs_draw), d(b.qs_cuckoo_cut, self.qs_cuckoo_cut),
+            d(b.nmp_cutoffs, self.nmp_cutoffs), d(b.rfp_cutoffs, self.rfp_cutoffs),
+            d(b.lmr_research, self.lmr_research), d(b.singular_ext, self.singular_ext), d(b.double_ext, self.double_ext));
+    }
 }
 
 /// Forced-move detection state (set by `detect_forced_move`).
@@ -2384,6 +2463,7 @@ pub(crate) fn init_feature_flags() {
             if std::env::var("NO_PVS").is_ok() { FEAT_PVS.store(false, Ordering::Relaxed); }
             if std::env::var("NO_TT_CUTOFF").is_ok() { FEAT_TT_CUTOFF.store(false, Ordering::Relaxed); }
             if std::env::var("NO_TT_NEARMISS").is_ok() { FEAT_TT_NEARMISS.store(false, Ordering::Relaxed); }
+            if std::env::var("NO_TT_GUARD").is_ok() { FEAT_TT_GUARD.store(false, Ordering::Relaxed); }
             if std::env::var("NO_TT_STORE").is_ok() { FEAT_TT_STORE.store(false, Ordering::Relaxed); }
             if std::env::var("NO_TT_STATIC_EVAL").is_ok() { FEAT_TT_STATIC_EVAL.store(false, Ordering::Relaxed); }
             if std::env::var("NO_SAT_TIEBREAK").is_ok() { FEAT_SAT_TIEBREAK.store(false, Ordering::Relaxed); }
@@ -3522,6 +3602,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     }
 
     let effective_max = info.max_depth.min(ROOT_DEPTH_MAX);
+    let mut iter_prev_best = NO_MOVE;
     for depth in 1..=effective_max {
         if info.should_stop() { break; }
         info.root_depth = depth;
@@ -3575,6 +3656,10 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                 info.tm_max_time = hard_remaining;
             }
         }
+        let iter_snap = if iter_stats_enabled() { Some(IterSnap::take(info)) } else { None };
+        let mut iter_first_nodes = 0u64;
+        let mut iter_asp_fl = 0u32;
+        let mut iter_asp_fh = 0u32;
         let iter_start = std::time::Instant::now();
 
         let score;
@@ -3593,6 +3678,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
 
             loop {
                 let result = negamax(board, info, alpha, beta, asp_depth, 0, false);
+                if iter_first_nodes == 0 { iter_first_nodes = info.nodes; }
 
                 // Capture this search's root PV before the widening
                 // re-search (or an abort) wipes it. A fail-high search populates
@@ -3610,6 +3696,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
 
                 if result <= alpha {
                     info.tm_asp_fail_low = info.tm_asp_fail_low.saturating_add(1);
+                    iter_asp_fl += 1;
                     info.stats.ts_asp_fail_low += 1;
                     // P1 (ponder instant-reply gate): root is failing low —
                     // publish it so a ponderhit arriving NOW does not
@@ -3675,6 +3762,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                     alpha = (result - delta).max(-INFINITY);
                 } else if result >= beta {
                     info.tm_asp_fail_high = info.tm_asp_fail_high.saturating_add(1);
+                    iter_asp_fh += 1;
                     info.stats.ts_asp_fail_high += 1;
                     // Fail high: contract alpha toward beta, widen beta
                     alpha = (5 * alpha + 3 * beta) / 8;
@@ -3791,6 +3879,11 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
         // Record cumulative nodes at this depth (for EBF calculation)
         if (depth as usize) < MAX_PLY {
             info.depth_nodes[depth as usize] = info.nodes;
+            if let Some(snap) = iter_snap {
+                let research = if iter_first_nodes > 0 { info.nodes.saturating_sub(iter_first_nodes) } else { 0 };
+                snap.print(info, depth, score, best_move, iter_prev_best != NO_MOVE && best_move != iter_prev_best, iter_asp_fl, iter_asp_fh, research);
+                iter_prev_best = best_move;
+            }
             info.completed_depth = depth;
         }
 
@@ -4539,12 +4632,15 @@ fn negamax(
     if ply > 0 {
         let draw_score: i32 = 0;
         if is_rule50_draw(board) {
+            info.stats.draw_rule50 += 1;
             return draw_score;
         }
         if board.is_insufficient_material() {
+            info.stats.draw_insuf += 1;
             return draw_score;
         }
         if board.is_repetition_draw(ply) {
+            info.stats.draw_rep += 1;
             return draw_score;
         }
     }
@@ -4746,7 +4842,9 @@ fn negamax(
     // If we're losing (alpha < 0) and a repetition can be forced, raise alpha to draw score.
     if ply > 0 && alpha < 0 && FEAT_CUCKOO.load(Ordering::Relaxed) && crate::cuckoo::has_game_cycle(board, ply) {
         alpha = 0;
+        info.stats.cuckoo_raise += 1;
         if alpha >= beta {
+            info.stats.cuckoo_cut += 1;
             return alpha;
         }
     }
@@ -4832,11 +4930,15 @@ fn negamax(
             // applied — it only biases the search, while returning a stale
             // tt_score is unsafe.
             let halfmove_ok = (board.halfmove as i32) < tp(&TT_CUTOFF_HALFMOVE_MAX);
+            let tt_depth_ok = tt_depth > depth - (tt_score <= beta) as i32;
+            if !tt_depth_ok {
+                info.stats.tt_refused_depth += 1;
+            }
             // Require +1 ply of TT depth for a fail-high (LOWER) cutoff, as
             // SF/Obsidian/PlentyChess do: fail-lows accept at tt_depth>=depth
             // but fail-highs need tt_depth>=depth+1. A symmetric `>= depth` is
             // notably more permissive on fail-highs.
-            if tt_depth > depth - (tt_score <= beta) as i32 && FEAT_TT_CUTOFF.load(Ordering::Relaxed) {
+            if tt_depth_ok && FEAT_TT_CUTOFF.load(Ordering::Relaxed) {
                 // Unified TT cutoff with node-type guard (Alexandria pattern):
                 // At non-PV nodes, accept TT cutoff when:
                 // - cut_node matches score direction (cut expects fail-high, all expects fail-low)
@@ -4854,6 +4956,20 @@ fn negamax(
                 // from the post-mate-dist window. alpha here is still
                 // alpha_orig — TT narrowing happens after this check.
                 let tt_cut_is_pv = beta - alpha > 1;
+                // Accounting only (first failing gate, same order as the condition
+                // below); the child-disagreement probe is not re-run — its refusals
+                // are candidates minus cutoffs.
+                if tt_cut_is_pv {
+                    info.stats.tt_refused_pv += 1;
+                } else if cut_node != score_above_beta && FEAT_TT_GUARD.load(Ordering::Relaxed) {
+                    info.stats.tt_refused_guard += 1;
+                } else if !bound_matches {
+                    info.stats.tt_refused_bound += 1;
+                } else if !halfmove_ok {
+                    info.stats.tt_refused_halfmove += 1;
+                } else {
+                    info.stats.tt_cut_candidates += 1;
+                }
                 // Child-consistency verification for DEEP cutoffs (concept
                 // from SF, independently re-implemented): at depth>=7,
                 // make the TT move, probe the child's entry, unmake; decline
@@ -4862,7 +4978,7 @@ fn negamax(
                 // Cost: one board-only make/unmake + one probe, deep cutoffs
                 // only. Shallow cutoffs and the bounds-collapse path below stay
                 // unverified (matching SF's single-site scope).
-                if !tt_cut_is_pv && cut_node == score_above_beta && bound_matches
+                if !tt_cut_is_pv && (cut_node == score_above_beta || !FEAT_TT_GUARD.load(Ordering::Relaxed)) && bound_matches
                     && halfmove_ok
                     && !tt_cutoff_child_disagrees(info, board, tt_move, tt_score, beta, depth, ply)
                 {
@@ -6970,6 +7086,7 @@ fn quiescence_with_depth(
     // Draw detection: repetition and 50-move rule. No contempt term.
     let draw_score = 0;
     if is_rule50_draw(board) {
+        info.stats.qs_draw += 1;
         return draw_score;
     }
     // FIDE Art 5.2: insufficient material to mate (any side). Mirrors
@@ -6978,9 +7095,11 @@ fn quiescence_with_depth(
     // KvK / KBvK / KBvKB-same-color without ever re-entering negamax's
     // check, so the parallel guard is needed here too.
     if board.is_insufficient_material() {
+        info.stats.qs_draw += 1;
         return draw_score;
     }
     if board.is_repetition_draw(ply) {
+        info.stats.qs_draw += 1;
         return draw_score;
     }
 
@@ -7015,6 +7134,7 @@ fn quiescence_with_depth(
     if ply > 0 && alpha < 0 && FEAT_CUCKOO.load(Ordering::Relaxed) && crate::cuckoo::has_game_cycle(board, ply) {
         alpha = 0;
         if alpha >= beta {
+            info.stats.qs_cuckoo_cut += 1;
             return alpha;
         }
     }
