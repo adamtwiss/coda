@@ -9161,5 +9161,44 @@ mod tests {
         eprintln!("  rows with any |w| > 127: {} of {} ({:.2}%)", sat_rows, rows, 100.0 * sat_rows as f64 / rows as f64);
         let above = (hist[4] + hist[5]) as f64;
         eprintln!("  weights outside i8 range: {:.4}%", 100.0 * above / n);
+        // Column concentration and per-row counts of the out-of-range weights.
+        let mut col_hit = vec![0u32; h];
+        let mut row_hist = [0usize; 6]; // 0,1-2,3-4,5-8,9-16,17+
+        let mut max_per_row = 0usize;
+        for r in 0..rows {
+            let mut k = 0usize;
+            for (c, &x) in w[r * h..(r + 1) * h].iter().enumerate() {
+                if (x as i32).abs() > 127 { col_hit[c] += 1; k += 1; }
+            }
+            max_per_row = max_per_row.max(k);
+            row_hist[match k { 0 => 0, 1..=2 => 1, 3..=4 => 2, 5..=8 => 3, 9..=16 => 4, _ => 5 }] += 1;
+        }
+        let cols_hit = col_hit.iter().filter(|&&c| c > 0).count();
+        let mut sorted: Vec<u32> = col_hit.clone(); sorted.sort_unstable_by(|a, b| b.cmp(a));
+        let top: u32 = sorted.iter().take(32).sum();
+        let top64: u32 = sorted.iter().take(64).sum();
+        eprintln!("  columns with any |w|>127: {} of {}; top 32 columns hold {:.1}%, top 64 hold {:.1}% of them",
+            cols_hit, h, 100.0 * top as f64 / above, 100.0 * top64 as f64 / above);
+        eprintln!("  per-row count of |w|>127: 0:{} 1-2:{} 3-4:{} 5-8:{} 9-16:{} 17+:{}  max {}",
+            row_hist[0], row_hist[1], row_hist[2], row_hist[3], row_hist[4], row_hist[5], max_per_row);
+        // By colored piece (rows are bucket-major: 12 pieces x 64 squares per bucket) and by king bucket.
+        let per_bucket = 12 * 64;
+        let mut by_piece = [0u64; 12];
+        let mut rows_by_piece = [0u64; 12];
+        let mut by_bucket = vec![0u64; rows / per_bucket + 1];
+        for r in 0..rows {
+            let cp = (r % per_bucket) / 64;
+            let b = r / per_bucket;
+            let mut k = 0u64;
+            for &x in &w[r * h..(r + 1) * h] { if (x as i32).abs() > 127 { k += 1; } }
+            by_piece[cp] += k;
+            if k > 0 { rows_by_piece[cp] += 1; }
+            by_bucket[b] += k;
+        }
+        let names = ["wP","wN","wB","wR","wQ","wK","bP","bN","bB","bR","bQ","bK"];
+        let mut line = String::from("  |w|>127 by colored piece (count / rows with any): ");
+        for i in 0..12 { line += &format!("{}:{}/{} ", names[i], by_piece[i], rows_by_piece[i]); }
+        eprintln!("{}", line);
+        eprintln!("  |w|>127 by king bucket: {:?}", &by_bucket[..rows / per_bucket]);
     }
 }
