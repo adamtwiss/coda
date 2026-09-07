@@ -324,6 +324,8 @@ pub const NNUE_OUTPUT_BUCKETS: usize = 8;
 /// Maximum king bucket count we allocate static tables for
 /// (uniform/consensus = 16).
 pub const NNUE_MAX_KING_BUCKETS: usize = 16;
+/// Fixed remainder slots per PSQ row for the i8 storage path (see `NNUENet::psq_res_col`).
+pub const PSQ_RES_K: usize = 8;
 /// Pairwise SIMD pack buffer size (bytes per perspective). Bounds the largest
 /// loadable net: pw = hidden_size/2 must be ≤ this, i.e. hidden_size ≤ 2×this.
 /// Enforced at net load (see Net::read) and asserted at the buffer.
@@ -2888,12 +2890,16 @@ pub struct NNUENet {
     /// `psq_res`) that the incremental update and Finny refresh read instead
     /// of `input_weights`; empty only when CODA_PSQ_I16=1 selects i16 storage.
     pub input_weights_i8: AlignedVec<i8>,
-    /// Exact residuals for the PSQ weights outside the i8 range, CSR by
-    /// row: `psq_res_start[r]..psq_res_start[r+1]` indexes `psq_res`,
-    /// each entry (column, i16 remainder). Applied after a row's i8 add or
-    /// subtract, so the accumulator equals the i16 computation exactly.
-    pub psq_res_start: Vec<u32>,
-    pub psq_res: Vec<(u16, i16)>,
+    /// Exact remainders for the PSQ weights outside the i8 range. Fixed
+    /// PSQ_RES_K slots per row (column, i16 remainder), zero-padded, applied
+    /// branch-free after a row's i8 add or subtract; rows with more than
+    /// PSQ_RES_K such weights (about 2% of the production net) spill the
+    /// rest into a CSR list. The accumulator equals the i16 computation
+    /// exactly.
+    pub psq_res_col: Vec<u16>,
+    pub psq_res_val: Vec<i16>,
+    pub psq_spill_start: Vec<u32>,
+    pub psq_spill: Vec<(u16, i16)>,
     pub psq_i8: bool,
     pub input_biases: Vec<i16>,   // [hidden_size]
     pub output_weights: Vec<i16>, // [NNUE_OUTPUT_BUCKETS × out_width]
@@ -3249,24 +3255,38 @@ impl NNUENet {
         let psq_env = |k: &str| std::env::var(k).map(|v| v == "1").unwrap_or(false);
         let psq_i8 = !psq_env("CODA_PSQ_I16");
         let mut input_weights_i8: AlignedVec<i8> = AlignedVec::zeros(0);
-        let mut psq_res_start: Vec<u32> = Vec::new();
-        let mut psq_res: Vec<(u16, i16)> = Vec::new();
+        let mut psq_res_col: Vec<u16> = Vec::new();
+        let mut psq_res_val: Vec<i16> = Vec::new();
+        let mut psq_spill_start: Vec<u32> = Vec::new();
+        let mut psq_spill: Vec<(u16, i16)> = Vec::new();
         if psq_i8 {
             let rows = input_weights.len() / hidden_size;
             input_weights_i8 = AlignedVec::hugepage_zeros(input_weights.len());
-            psq_res_start.reserve(rows + 1);
+            // Padding slots point at distinct low columns with a zero
+            // remainder, so the unrolled apply never chains stores through
+            // one address.
+            psq_res_col = (0..rows * PSQ_RES_K).map(|i| (i % PSQ_RES_K) as u16).collect();
+            psq_res_val = vec![0i16; rows * PSQ_RES_K];
+            psq_spill_start.reserve(rows + 1);
             for r in 0..rows {
-                psq_res_start.push(psq_res.len() as u32);
+                psq_spill_start.push(psq_spill.len() as u32);
                 let row = &input_weights[r * hidden_size..(r + 1) * hidden_size];
+                let mut k = 0usize;
                 for (c, &w) in row.iter().enumerate() {
                     let sat = w.clamp(-127, 127);
                     input_weights_i8[r * hidden_size + c] = sat as i8;
                     if sat != w {
-                        psq_res.push((c as u16, w - sat));
+                        if k < PSQ_RES_K {
+                            psq_res_col[r * PSQ_RES_K + k] = c as u16;
+                            psq_res_val[r * PSQ_RES_K + k] = w - sat;
+                            k += 1;
+                        } else {
+                            psq_spill.push((c as u16, w - sat));
+                        }
                     }
                 }
             }
-            psq_res_start.push(psq_res.len() as u32);
+            psq_spill_start.push(psq_spill.len() as u32);
             input_weights_i8.advise_collapse();
         }
 
@@ -3537,8 +3557,10 @@ impl NNUENet {
             num_pawn_pair_features,
             input_weights,
             input_weights_i8,
-            psq_res_start,
-            psq_res,
+            psq_res_col,
+            psq_res_val,
+            psq_spill_start,
+            psq_spill,
             psq_i8,
             input_biases,
             output_weights,
@@ -3618,16 +3640,41 @@ impl NNUENet {
     }
 
     /// Get input weight row for a feature index.
-    /// Apply the exact residuals of the given PSQ rows on top of their i8
-    /// contribution (see `psq_res`). A few scalar adds per affected row.
+    /// Apply the exact remainders of the given PSQ rows on top of their i8
+    /// contribution (see `psq_res_col`): PSQ_RES_K unconditional scalar
+    /// adds per row, then the rare spill.
+    #[inline]
     pub fn apply_psq_residuals(&self, acc: &mut [i16], adds: &[usize], subs: &[usize]) {
+        debug_assert!(acc.len() >= self.hidden_size);
+        let a = acc.as_mut_ptr();
+        let cols = self.psq_res_col.as_ptr();
+        let vals = self.psq_res_val.as_ptr();
         for &r in adds {
-            let (a, b) = (self.psq_res_start[r] as usize, self.psq_res_start[r + 1] as usize);
-            for &(c, d) in &self.psq_res[a..b] { acc[c as usize] += d; }
+            let base = r * PSQ_RES_K;
+            // SAFETY: columns are < hidden_size by construction and acc holds hidden_size entries.
+            unsafe {
+                for k in 0..PSQ_RES_K {
+                    let c = *cols.add(base + k) as usize;
+                    *a.add(c) = (*a.add(c)).wrapping_add(*vals.add(base + k));
+                }
+            }
+            let (s0, s1) = (self.psq_spill_start[r] as usize, self.psq_spill_start[r + 1] as usize);
+            if s0 != s1 {
+                for &(c, d) in &self.psq_spill[s0..s1] { acc[c as usize] = acc[c as usize].wrapping_add(d); }
+            }
         }
         for &r in subs {
-            let (a, b) = (self.psq_res_start[r] as usize, self.psq_res_start[r + 1] as usize);
-            for &(c, d) in &self.psq_res[a..b] { acc[c as usize] -= d; }
+            let base = r * PSQ_RES_K;
+            unsafe {
+                for k in 0..PSQ_RES_K {
+                    let c = *cols.add(base + k) as usize;
+                    *a.add(c) = (*a.add(c)).wrapping_sub(*vals.add(base + k));
+                }
+            }
+            let (s0, s1) = (self.psq_spill_start[r] as usize, self.psq_spill_start[r + 1] as usize);
+            if s0 != s1 {
+                for &(c, d) in &self.psq_spill[s0..s1] { acc[c as usize] = acc[c as usize].wrapping_sub(d); }
+            }
         }
     }
 
