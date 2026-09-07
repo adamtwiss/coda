@@ -19,6 +19,11 @@ fn exp_tt_samekey_gen() -> bool {
     *V.get_or_init(|| std::env::var("EXP_TT_SAMEKEY_GEN").is_ok())
 }
 #[inline(always)]
+fn exp_tt_age_penalty() -> i32 {
+    static V: std::sync::OnceLock<i32> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("EXP_TT_AGE_PENALTY").ok().and_then(|v| v.parse().ok()).unwrap_or(8))
+}
+#[inline(always)]
 fn exp_tt_samekey_slack() -> i32 {
     static V: std::sync::OnceLock<i32> = std::sync::OnceLock::new();
     *V.get_or_init(|| std::env::var("EXP_TT_SAMEKEY_SLACK").ok().and_then(|v| v.parse().ok()).unwrap_or(4))
@@ -520,7 +525,9 @@ impl TT {
             let is_special = (unpack_flag(slot_data) == TT_FLAG_NONE) | (recovered_upper == key_upper);
             special = if is_special & (special == BUCKET_SIZE) { i } else { special };
             let age = gen.wrapping_sub(unpack_generation(slot_data)) as i32;
-            let slot_score = unpack_depth(slot_data) - age * 8;
+            // EXPERIMENT: EXP_TT_AGE_PENALTY=k (production 8) — depth units an
+            // entry loses per generation of age when choosing the victim.
+            let slot_score = unpack_depth(slot_data) - age * exp_tt_age_penalty();
             let better = slot_score < replace_score;
             replace_score = if better { slot_score } else { replace_score };
             replace_idx = if better { i } else { replace_idx };
