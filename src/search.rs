@@ -5826,7 +5826,12 @@ fn negamax(
             && FEAT_SEE_PRUNE.load(Ordering::Relaxed)
         {
             let see_quiet_threshold = -tp(&SEE_QUIET_MULT) * lmr_d * lmr_d;
-            if !see_ge(board, mv, see_quiet_threshold) {
+            // A direct check forces a response. Give only borderline checking
+            // sacrifices one extra ply of SEE margin; still prune larger losses.
+            // This changes neither futility/LMP nor the actual search depth.
+            if !see_ge(board, mv, see_quiet_threshold)
+                && !(board.gives_direct_check(mv)
+                    && see_ge(board, mv, -tp(&SEE_QUIET_MULT) * (lmr_d + 1) * (lmr_d + 1))) {
                 trace_gate!(info, board.hash, ply, mv, "see_quiet", depth, move_count);
                 info.stats.see_prunes += 1;
                 continue;
