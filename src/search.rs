@@ -61,6 +61,85 @@ const PAWN_HIST_SIZE: usize = 512;
 const ROOT_MOVE_BUCKETS: usize = 5;
 const ROOT_MOVE_TABLE_SIZE: usize = 64 * 64 * ROOT_MOVE_BUCKETS;
 
+// Diagnostic only: independent fresh-TT counterfactuals, never live-tree writes.
+fn see_audit_enabled(info: &SearchInfo) -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    !info.rfp_audit_active && *ENABLED.get_or_init(|| std::env::var_os("CODA_SEE_AUDIT").is_some())
+}
+
+fn see_audit_sample(board: &Board, mv: Move) -> bool {
+    let mut key = board.hash ^ (mv as u64).wrapping_mul(0x9e3779b97f4a7c15);
+    key ^= key >> 30;
+    key = key.wrapping_mul(0xbf58476d1ce4e5b9);
+    (key ^ (key >> 27)) & 1023 == 0
+}
+
+fn see_audit_probe(source: &SearchInfo, parent: &Board, mv: Move,
+                   depth: i32, ply: i32, threshold: i32, verify: bool) -> (Option<i32>, u64) {
+    let mut child = parent.clone();
+    if !child.make_move(mv) { return (None, 0); }
+    let mut probe = SearchInfo::new(1);
+    probe.silent = true;
+    probe.rfp_audit_active = true;
+    if verify { probe.see_verify_ply = ply + 1; }
+    probe.max_nodes = 100_000;
+    probe.root_depth = source.root_depth;
+    probe.root_stm = source.root_stm;
+    probe.history.copy_from(&source.history);
+    probe.pawn_hist.copy_from_slice(&source.pawn_hist[..]);
+    probe.pawn_corr.copy_from_slice(&source.pawn_corr[..]);
+    probe.np_corr.copy_from_slice(&source.np_corr[..]);
+    probe.cont_corr.copy_from_slice(&source.cont_corr[..]);
+    probe.trans_corr.copy_from_slice(&source.trans_corr[..]);
+    probe.static_evals = source.static_evals;
+    probe.tt_pv_stack = source.tt_pv_stack;
+    probe.reductions = source.reductions;
+    probe.excluded_move = source.excluded_move;
+    probe.double_ext_count = source.double_ext_count;
+    probe.cutoff_count = source.cutoff_count;
+    probe.moved_piece_stack = source.moved_piece_stack;
+    probe.moved_to_stack = source.moved_to_stack;
+    probe.moved_piece_stack[ply as usize] = go_piece(parent.piece_at(move_from(mv))) as u8;
+    probe.moved_to_stack[ply as usize] = move_to(mv);
+    probe.reductions[ply as usize] = 0;
+    probe.nmp_min_ply = source.nmp_min_ply;
+    probe.nnue_net = source.nnue_net.clone();
+    probe.syzygy = source.syzygy.clone();
+    probe.tb_probe_depth = source.tb_probe_depth;
+    if let Some(net) = &probe.nnue_net {
+        probe.nnue_acc = Some(crate::nnue::NNUEAccumulator::new(net.hidden_size));
+        probe.threat_stack = crate::threat_accum::ThreatStack::new(net.hidden_size);
+        probe.threat_stack.active = net.has_threats;
+        if net.has_threats {
+            probe.threat_stack.pp_features = net.num_pawn_pair_features;
+            probe.threat_stack.refresh(&net.threat_weights, net.num_threat_features, &child, WHITE);
+            probe.threat_stack.refresh(&net.threat_weights, net.num_threat_features, &child, BLACK);
+        }
+    }
+    prepare_helper_for_search(&mut probe, &child);
+    let score = -negamax(&mut child, &mut probe, -threshold - 1, -threshold, depth - 1 + verify as i32, ply + 1, true);
+    (if probe.stop.load(Ordering::Relaxed) { None } else { Some(score) }, probe.nodes)
+}
+
+fn audit_see_gate(board: &Board, info: &SearchInfo, mv: Move, gate: &str,
+                  depth: i32, ply: i32, alpha: i32, beta: i32,
+                  threshold: i32, rejected: bool) {
+    if !see_audit_enabled(info) || !(2..=6).contains(&depth)
+        || is_decisive(alpha) || is_decisive(beta) || !see_audit_sample(board, mv) { return; }
+    let see = crate::see::see_value_of(board, mv);
+    // Sample all rejections plus survivors close enough to inform tightening.
+    if !rejected && see > threshold + 64 { return; }
+    for verify in [false, true] {
+    let (a, an) = see_audit_probe(info, board, mv, depth, ply, alpha, verify);
+    let (b, bn) = if beta == alpha + 1 { (a, an) }
+        else { see_audit_probe(info, board, mv, depth, ply, beta - 1, verify) };
+    let gate = if verify { format!("{gate}_verified") } else { gate.to_owned() };
+    eprintln!("SEE_AUDIT\t{gate}\t{rejected}\t{depth}\t{}\t{}\t{threshold}\t{see}\t{alpha}\t{beta}\t{}\t{}\t{an}\t{bn}\t{}\t{}",
+        info.root_depth, board.gives_direct_check(mv), a.map_or("NA".into(), |s| s.to_string()),
+        b.map_or("NA".into(), |s| s.to_string()), move_to_uci(mv), board.to_fen());
+    }
+}
+
 // ============================================================================
 // Tunable search parameters (exposed as UCI options for SPSA tuning)
 // ============================================================================
@@ -1057,6 +1136,8 @@ pub struct SearchInfo {
     /// nested audits (each audited cutoff would otherwise spawn audits at
     /// every RFP cutoff inside its own verification, compounding cost).
     pub rfp_audit_active: bool,
+    // Diagnostic confirmation: forbid static RFP at the replay root only.
+    pub see_verify_ply: i32,
     pub tt: std::sync::Arc<TT>,  // shared across Lazy SMP threads
     pub history: Box<History>,
     pub stop: std::sync::Arc<AtomicBool>,  // shared stop flag
@@ -1390,6 +1471,7 @@ impl SearchInfo {
             syzygy: None,
             tb_probe_depth: 4,
             rfp_audit_active: false,
+            see_verify_ply: -1,
         }
     }
 
@@ -5253,7 +5335,7 @@ fn negamax(
             && !is_promotion(tt_move);
         // TB/mate guard: every peer skips RFP when eval is near mate/TB range.
         // Without this, RFP could cut a node where NNUE sees forced mate. (RFP audit RFP-3)
-        if depth <= tp(&RFP_DEPTH) && ply > 0 && !tt_pv && !tt_move_is_quiet && info.excluded_move[ply_u] == NO_MOVE && FEAT_RFP.load(Ordering::Relaxed)
+        if depth <= tp(&RFP_DEPTH) && ply > 0 && ply != info.see_verify_ply && !tt_pv && !tt_move_is_quiet && info.excluded_move[ply_u] == NO_MOVE && FEAT_RFP.load(Ordering::Relaxed)
             && static_eval.abs() < MATE_SCORE - 200 {
             let mut margin = if improving { depth * tp(&RFP_MARGIN_IMP) } else { depth * tp(&RFP_MARGIN_NOIMP) };
             // Root-depth-aware relaxation: + depth*(root_depth-thresh)+ *coef/100.
@@ -5770,7 +5852,9 @@ fn negamax(
         {
             let cap_ch = crate::movepicker::capt_hist_score_static(board, &info.history, mv);
             let cap_margin = (depth * tp(&SEE_CAP_MULT) + cap_ch * tp(&SEE_CAP_HIST) / 1024).max(0);
-            if !see_ge(board, mv, -cap_margin) {
+            let rejected = !see_ge(board, mv, -cap_margin);
+            audit_see_gate(board, info, mv, "capture", depth, ply, alpha, beta, -cap_margin, rejected);
+            if rejected {
                 trace_gate!(info, board.hash, ply, mv, "see_cap", depth, move_count);
                 continue;
             }
@@ -5826,7 +5910,9 @@ fn negamax(
             && FEAT_SEE_PRUNE.load(Ordering::Relaxed)
         {
             let see_quiet_threshold = -tp(&SEE_QUIET_MULT) * lmr_d * lmr_d;
-            if !see_ge(board, mv, see_quiet_threshold) {
+            let rejected = !see_ge(board, mv, see_quiet_threshold);
+            audit_see_gate(board, info, mv, "quiet", depth, ply, alpha, beta, see_quiet_threshold, rejected);
+            if rejected {
                 trace_gate!(info, board.hash, ply, mv, "see_quiet", depth, move_count);
                 info.stats.see_prunes += 1;
                 continue;
@@ -5980,6 +6066,13 @@ fn negamax(
         // Bad noisy pruning: skip losing captures when eval is far below alpha.
         // Applied before MakeMove. Direct-check carve-out: don't prune moves
         // that give direct check.
+        if see_audit_enabled(info) && is_cap && !in_check && ply > 0
+            && depth <= tp10(&BAD_NOISY_DEPTH_10X) && mv != tt_move && !is_promo
+            && !is_loss(best_score) && static_eval > -INFINITY
+            && static_eval + depth * tp(&BAD_NOISY_MARGIN) <= alpha
+            && !board.gives_direct_check(mv) {
+            audit_see_gate(board, info, mv, "bad_noisy", depth, ply, alpha, beta, 0, !see_ge(board, mv, 0));
+        }
         if FEAT_BAD_NOISY.load(Ordering::Relaxed) && is_cap && !in_check && ply > 0 && depth <= tp10(&BAD_NOISY_DEPTH_10X) && mv != tt_move
             && !is_promo && !is_loss(best_score)
             && static_eval > -INFINITY && static_eval + depth * tp(&BAD_NOISY_MARGIN) <= alpha
@@ -6380,6 +6473,11 @@ fn negamax(
         // lmr_depth) keeps integer semantics. floor(floor-composed terms)
         // reproduces the old integer arithmetic bit-for-bit at defaults.
         reduction /= LMR_SCALE;
+
+        if see_audit_enabled(info) && !is_cap && !is_promo && ply > 0
+            && see_audit_sample(board, mv) {
+            eprintln!("SEE_DEPTH\t{depth}\t{lmr_d}\t{}\t{gives_check}\t{move_count}", new_depth - reduction);
+        }
 
         // Store reduction for child's hindsight gating
         // Hindsight slot stays non-negative (its readers compare to 0/2/3).
