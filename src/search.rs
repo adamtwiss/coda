@@ -1065,6 +1065,8 @@ exp_flag!(exp_corr_npm, "EXP_CORR_NPM");         // correction history off when 
 exp_flag!(exp_tt_guard_draw, "EXP_TT_GUARD_DRAW"); // TT node-type guard waived when |tt score| <= this
 exp_flag!(exp_tt_guard_npm, "EXP_TT_GUARD_NPM"); // TT node-type guard waived when non-pawn material <= this
 exp_flag!(exp_tt_pv_cutoff, "EXP_TT_PV_CUTOFF"); // 1: accept EXACT entries of sufficient depth as cutoffs at non-root PV nodes
+exp_flag!(exp_tt_damp_samegen, "EXP_TT_DAMP_SAMEGEN"); // 1: probe-time LOWER-bound dampening only for entries from THIS search
+exp_flag!(exp_se_samegen, "EXP_SE_SAMEGEN");           // 1: singular-extension eligibility only for entries from THIS search
 
 /// Whether the TT-cutoff node-type guard applies at this node: the ablation
 /// flag, minus the experiment waivers for draw-scored entries / low material.
@@ -5276,6 +5278,7 @@ fn negamax(
                     if beta - alpha_orig == 1
                         && tt_entry.flag == TT_FLAG_LOWER
                         && !is_decisive(tt_score)
+                        && !(exp_tt_damp_samegen() == 1 && tt_cross_gen)
                     {
                         let w10 = tp(&TT_DAMP_TT_WEIGHT_10X);
                         return (w10 * tt_score + 10 * beta) / (w10 + 10);
@@ -6109,6 +6112,7 @@ fn negamax(
             && tt_hit
             && tt_entry.flag != TT_FLAG_UPPER
             && tt_entry.depth >= depth - tp(&SE_TT_DEPTH_SLACK)
+            && !(exp_se_samegen() == 1 && tt_cross_gen)
             && FEAT_SINGULAR.load(Ordering::Relaxed)
         {
             // 50mr downgrade applies here too (SF: singular ttValue

@@ -19,6 +19,11 @@ fn exp_tt_samekey_gen() -> bool {
     *V.get_or_init(|| std::env::var("EXP_TT_SAMEKEY_GEN").is_ok())
 }
 #[inline(always)]
+fn exp_tt_refresh() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("EXP_TT_REFRESH").is_ok())
+}
+#[inline(always)]
 fn exp_tt_age_penalty() -> i32 {
     static V: std::sync::OnceLock<i32> = std::sync::OnceLock::new();
     *V.get_or_init(|| std::env::var("EXP_TT_AGE_PENALTY").ok().and_then(|v| v.parse().ok()).unwrap_or(8))
@@ -476,6 +481,18 @@ impl TT {
             return TTEntry::miss();
         }
         let data = datas[hit];
+        // EXPERIMENT: EXP_TT_REFRESH=1 — re-stamp a hit from an older search
+        // with the current generation so age only accrues on entries the
+        // search stopped touching. The generation lives in bits 56-63, so the
+        // XOR key (upper32(hash) ^ lower32(data)) is unchanged by the
+        // rewrite and a concurrent reader still verifies correctly.
+        if exp_tt_refresh() {
+            let cur = self.generation.load(Ordering::Relaxed);
+            if unpack_generation(data) != cur {
+                let refreshed = (data & !(0xFFu64 << 56)) | ((cur as u64) << 56);
+                bucket.data[hit].store(refreshed, Ordering::Release);
+            }
+        }
         TTEntry {
             best_move: unpack_move(data),
             flag: unpack_flag(data),
