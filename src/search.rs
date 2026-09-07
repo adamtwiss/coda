@@ -5770,7 +5770,12 @@ fn negamax(
         {
             let cap_ch = crate::movepicker::capt_hist_score_static(board, &info.history, mv);
             let cap_margin = (depth * tp(&SEE_CAP_MULT) + cap_ch * tp(&SEE_CAP_HIST) / 1024).max(0);
-            if !see_ge(board, mv, -cap_margin) {
+            // Bound the checking-capture allowance to one ply of SEE margin.
+            // The later bad-noisy gate already protects direct checks, but
+            // cannot recover a move rejected here. Not a blanket check exemption.
+            if !see_ge(board, mv, -cap_margin)
+                && !(board.gives_direct_check(mv)
+                    && see_ge(board, mv, -(cap_margin + tp(&SEE_CAP_MULT)))) {
                 trace_gate!(info, board.hash, ply, mv, "see_cap", depth, move_count);
                 continue;
             }
