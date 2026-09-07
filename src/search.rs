@@ -1069,6 +1069,9 @@ exp_flag!(exp_tt_damp_samegen, "EXP_TT_DAMP_SAMEGEN"); // 1: probe-time LOWER-bo
 exp_flag!(exp_se_samegen, "EXP_SE_SAMEGEN");           // 1: singular-extension eligibility only for entries from THIS search
 exp_flag!(exp_tt_no_qs_store, "EXP_TT_NO_QS_STORE");   // 1: qsearch does not store TT entries
 exp_flag!(exp_tt_no_eval_store, "EXP_TT_NO_EVAL_STORE"); // 1: no depth -2 static-eval-only store
+exp_flag!(exp_iir_depth_scale, "EXP_IIR_DEPTH_SCALE"); // k: IIR reduces 1 + depth/k plies instead of 1
+exp_flag!(exp_iir_shallow_tt, "EXP_IIR_SHALLOW_TT");   // k: IIR also fires when a TT move exists but tt_depth < depth - k
+exp_flag!(exp_iir_allnode, "EXP_IIR_ALLNODE");         // 1: IIR applies at all-nodes too
 
 /// Whether the TT-cutoff node-type guard applies at this node: the ablation
 /// flag, minus the experiment waivers for draw-scored entries / low material.
@@ -5714,8 +5717,14 @@ fn negamax(
     // IIR: moved after NMP so null search uses full depth, not IIR-reduced depth.
     // All 6 reference engines run NMP at full depth; IIR only applies to the
     // moves loop. Running IIR first silently reduces null depth by 1 at cut nodes.
-    if depth >= tp10(&IIR_MIN_DEPTH_10X) && tt_move == NO_MOVE && !in_check && (is_pv || cut_node) && FEAT_IIR.load(Ordering::Relaxed) {
-        depth -= 1;
+    {
+        let no_tt_move = tt_move == NO_MOVE;
+        let shallow_tt = exp_iir_shallow_tt() >= 0 && tt_hit && !no_tt_move && tt_entry.depth < depth - exp_iir_shallow_tt();
+        let node_ok = is_pv || cut_node || exp_iir_allnode() == 1;
+        if depth >= tp10(&IIR_MIN_DEPTH_10X) && (no_tt_move || shallow_tt) && !in_check && node_ok && FEAT_IIR.load(Ordering::Relaxed) {
+            depth -= 1;
+            if exp_iir_depth_scale() > 0 { depth -= depth / exp_iir_depth_scale(); }
+        }
     }
 
     // (RFP moved above NMP — see pre-NMP site.)
