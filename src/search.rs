@@ -1067,6 +1067,8 @@ exp_flag!(exp_tt_guard_npm, "EXP_TT_GUARD_NPM"); // TT node-type guard waived wh
 exp_flag!(exp_tt_pv_cutoff, "EXP_TT_PV_CUTOFF"); // 1: accept EXACT entries of sufficient depth as cutoffs at non-root PV nodes
 exp_flag!(exp_tt_damp_samegen, "EXP_TT_DAMP_SAMEGEN"); // 1: probe-time LOWER-bound dampening only for entries from THIS search
 exp_flag!(exp_se_samegen, "EXP_SE_SAMEGEN");           // 1: singular-extension eligibility only for entries from THIS search
+exp_flag!(exp_tt_no_qs_store, "EXP_TT_NO_QS_STORE");   // 1: qsearch does not store TT entries
+exp_flag!(exp_tt_no_eval_store, "EXP_TT_NO_EVAL_STORE"); // 1: no depth -2 static-eval-only store
 
 /// Whether the TT-cutoff node-type guard applies at this node: the ablation
 /// flag, minus the experiment waivers for draw-scored entries / low material.
@@ -5365,7 +5367,7 @@ fn negamax(
             //   - tt_pv carries current node's is_pv context so PV
             //     propagation is correct on re-visit.
             if !tt_hit && FEAT_TT_STORE.load(Ordering::Relaxed) {
-                info.tt.store(board.hash, -2, -INFINITY, TT_FLAG_UPPER, NO_MOVE, raw_eval, is_pv);
+                if exp_tt_no_eval_store() != 1 { info.tt.store(board.hash, -2, -INFINITY, TT_FLAG_UPPER, NO_MOVE, raw_eval, is_pv); }
             }
         }
         scaled_eval = apply_halfmove_scale(raw_eval, board.halfmove);
@@ -7537,7 +7539,7 @@ fn quiescence_with_depth(
             TT_FLAG_UPPER
         };
         if FEAT_TT_STORE.load(Ordering::Relaxed) && !info.stop.load(Ordering::Relaxed) {
-            info.tt.store(board.hash, -1, store_score, flag, best_move, -INFINITY, false);
+            if exp_tt_no_qs_store() != 1 { info.tt.store(board.hash, -1, store_score, flag, best_move, -INFINITY, false); }
         }
         return best_score;
     }
@@ -7609,8 +7611,8 @@ fn quiescence_with_depth(
             && FEAT_TT_STORE.load(Ordering::Relaxed)
             && !info.stop.load(Ordering::Relaxed)
         {
-            info.tt.store(board.hash, -1, score_to_tt(best_score, ply),
-                TT_FLAG_LOWER, NO_MOVE, raw_stand_pat, false);
+            if exp_tt_no_qs_store() != 1 { info.tt.store(board.hash, -1, score_to_tt(best_score, ply),
+                TT_FLAG_LOWER, NO_MOVE, raw_stand_pat, false); }
         }
         // QS beta blending, applied regardless of node type — none of the 6
         // reference engines gates this on non-PV.
@@ -7763,7 +7765,7 @@ fn quiescence_with_depth(
         // Store the halfmove-INDEPENDENT value so later probes at a
         // different halfmove get a correct scale — see the doc comment
         // in `SearchInfo::eval`.
-        info.tt.store(board.hash, -1, store_score, flag, best_move, raw_stand_pat, false);
+        if exp_tt_no_qs_store() != 1 { info.tt.store(board.hash, -1, store_score, flag, best_move, raw_stand_pat, false); }
     }
 
     // QS beta blending, regardless of node type (see the stand-pat exit).
