@@ -1072,6 +1072,7 @@ exp_flag!(exp_tt_no_eval_store, "EXP_TT_NO_EVAL_STORE"); // 1: no depth -2 stati
 exp_flag!(exp_iir_depth_scale, "EXP_IIR_DEPTH_SCALE"); // k: IIR reduces 1 + depth/k plies instead of 1
 exp_flag!(exp_iir_shallow_tt, "EXP_IIR_SHALLOW_TT");   // k: IIR also fires when a TT move exists but tt_depth < depth - k
 exp_flag!(exp_iir_allnode, "EXP_IIR_ALLNODE");         // 1: IIR applies at all-nodes too
+exp_flag!(exp_se_excess_pct, "EXP_SE_EXCESS_PCT");   // k: singular margin grows by k% of max(0, tt_score - beta)
 
 /// Whether the TT-cutoff node-type guard applies at this node: the ablation
 /// flag, minus the experiment waivers for draw-scored entries / low material.
@@ -6144,7 +6145,13 @@ fn negamax(
                 let xray_bonus = if our_xray_blockers & (1u64 << move_from(tt_move)) != 0 {
                     tp10(&SE_XRAY_BLOCKER_MARGIN_10X)
                 } else { 0 };
-                let singular_beta = tt_score_local - depth - xray_bonus;
+                // EXPERIMENT: the further the TT score already sits above beta,
+                // the harder the singular test is to pass (won positions made
+                // every node "singular" and ran ~18 plies past nominal depth).
+                let excess_margin = if exp_se_excess_pct() > 0 {
+                    (tt_score_local - beta).max(0) * exp_se_excess_pct() / 100
+                } else { 0 };
+                let singular_beta = tt_score_local - depth - xray_bonus - excess_margin;
                 let singular_depth = (depth - 1) / 2;
 
                 info.excluded_move[ply_u] = tt_move;
