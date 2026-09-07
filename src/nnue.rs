@@ -2884,10 +2884,16 @@ fn select_l1_kernel(
 pub struct NNUENet {
     pub hidden_size: usize,
     pub input_weights: AlignedVec<i16>,  // [NNUE_INPUT_SIZE × hidden_size] 64B-aligned (perf M2)
-    /// i8 copy of the PSQ rows (clamped at load) that the incremental update
-    /// and Finny refresh read instead of `input_weights`; empty only when
-    /// CODA_PSQ_I16=1 selects i16 storage.
+    /// i8 copy of the PSQ rows (saturated at ±127, exact remainder in
+    /// `psq_res`) that the incremental update and Finny refresh read instead
+    /// of `input_weights`; empty only when CODA_PSQ_I16=1 selects i16 storage.
     pub input_weights_i8: AlignedVec<i8>,
+    /// Exact residuals for the PSQ weights outside the i8 range, CSR by
+    /// row: `psq_res_start[r]..psq_res_start[r+1]` indexes `psq_res`,
+    /// each entry (column, i16 remainder). Applied after a row's i8 add or
+    /// subtract, so the accumulator equals the i16 computation exactly.
+    pub psq_res_start: Vec<u32>,
+    pub psq_res: Vec<(u16, i16)>,
     pub psq_i8: bool,
     pub input_biases: Vec<i16>,   // [hidden_size]
     pub output_weights: Vec<i16>, // [NNUE_OUTPUT_BUCKETS × out_width]
@@ -3231,31 +3237,37 @@ impl NNUENet {
         read_i16_slice(reader, &mut input_weights)?;
         input_weights.advise_collapse();
 
-        // i8 storage for the PSQ rows: clamp to the i8 range at load and keep
-        // an i8 copy that the incremental update and Finny refresh read. The
-        // rows are bandwidth-bound on every host measured (2026-09-06:
-        // +3.5% to +4.2% NPS single-threaded, +8% to +14% at two engines per
-        // core, identical trees); the clamp touches ~0.25% of the weights of
-        // the current production net. CODA_PSQ_I16=1 restores i16 storage
-        // unclamped; CODA_PSQ_CLAMP=1 with it clamps but keeps i16 (the
-        // eval-identical control arm for throughput measurement).
+        // i8 storage for the PSQ rows. The rows are bandwidth-bound on every
+        // host measured (2026-09-06: +3.5% to +4.2% NPS single-threaded, +8%
+        // to +14% at two engines per core, identical trees), so the hot
+        // update paths read an i8 copy. The i8 copy saturates at ±127; the
+        // weights beyond that (0.25% of the production net, max |w| 609) are
+        // kept exactly as a per-row residual table applied after the row, so
+        // the accumulator matches the i16 computation bit for bit. Clamping
+        // alone was tried first and cost ~90 Elo: those few large weights
+        // carry the material terms. CODA_PSQ_I16=1 keeps i16 storage.
         let psq_env = |k: &str| std::env::var(k).map(|v| v == "1").unwrap_or(false);
         let psq_i8 = !psq_env("CODA_PSQ_I16");
         let mut input_weights_i8: AlignedVec<i8> = AlignedVec::zeros(0);
-        if psq_i8 || psq_env("CODA_PSQ_CLAMP") {
-            let mut clipped = 0usize;
-            for w in input_weights.iter_mut() {
-                let c = (*w).clamp(-127, 127);
-                if c != *w { clipped += 1; }
-                *w = c;
+        let mut psq_res_start: Vec<u32> = Vec::new();
+        let mut psq_res: Vec<(u16, i16)> = Vec::new();
+        if psq_i8 {
+            let rows = input_weights.len() / hidden_size;
+            input_weights_i8 = AlignedVec::hugepage_zeros(input_weights.len());
+            psq_res_start.reserve(rows + 1);
+            for r in 0..rows {
+                psq_res_start.push(psq_res.len() as u32);
+                let row = &input_weights[r * hidden_size..(r + 1) * hidden_size];
+                for (c, &w) in row.iter().enumerate() {
+                    let sat = w.clamp(-127, 127);
+                    input_weights_i8[r * hidden_size + c] = sat as i8;
+                    if sat != w {
+                        psq_res.push((c as u16, w - sat));
+                    }
+                }
             }
-            eprintln!("info string PSQ rows clamped to the i8 range: {} of {} weights clipped{}",
-                clipped, input_weights.len(), if psq_i8 { ", i8 storage" } else { ", i16 storage" });
-            if psq_i8 {
-                input_weights_i8 = AlignedVec::hugepage_zeros(input_weights.len());
-                for (d, &w) in input_weights_i8.iter_mut().zip(input_weights.iter()) { *d = w as i8; }
-                input_weights_i8.advise_collapse();
-            }
+            psq_res_start.push(psq_res.len() as u32);
+            input_weights_i8.advise_collapse();
         }
 
         // Read input biases
@@ -3525,6 +3537,8 @@ impl NNUENet {
             num_pawn_pair_features,
             input_weights,
             input_weights_i8,
+            psq_res_start,
+            psq_res,
             psq_i8,
             input_biases,
             output_weights,
@@ -3604,6 +3618,19 @@ impl NNUENet {
     }
 
     /// Get input weight row for a feature index.
+    /// Apply the exact residuals of the given PSQ rows on top of their i8
+    /// contribution (see `psq_res`). A few scalar adds per affected row.
+    pub fn apply_psq_residuals(&self, acc: &mut [i16], adds: &[usize], subs: &[usize]) {
+        for &r in adds {
+            let (a, b) = (self.psq_res_start[r] as usize, self.psq_res_start[r + 1] as usize);
+            for &(c, d) in &self.psq_res[a..b] { acc[c as usize] += d; }
+        }
+        for &r in subs {
+            let (a, b) = (self.psq_res_start[r] as usize, self.psq_res_start[r + 1] as usize);
+            for &(c, d) in &self.psq_res[a..b] { acc[c as usize] -= d; }
+        }
+    }
+
     #[inline]
     pub fn input_weight_row(&self, idx: usize) -> &[i16] {
         let off = idx * self.hidden_size;
@@ -5738,8 +5765,10 @@ impl NNUEAccumulator {
             }
             let (parent_w, current_w) = self.psq.parent_and_current(parent_ply, top, WHITE as usize);
             unsafe { crate::threats::apply_threat_indices(current_w, parent_w, &net.input_weights_i8, h, &wa[..nwa], &ws[..nws]); }
+            net.apply_psq_residuals(current_w, &wa[..nwa], &ws[..nws]);
             let (parent_b, current_b) = self.psq.parent_and_current(parent_ply, top, BLACK as usize);
             unsafe { crate::threats::apply_threat_indices(current_b, parent_b, &net.input_weights_i8, h, &ba[..nba], &bs[..nbs]); }
+            net.apply_psq_residuals(current_b, &ba[..nba], &bs[..nbs]);
             self.stack[top].psq_accurate = [true; 2];
             return;
         }
@@ -5853,6 +5882,7 @@ impl NNUEAccumulator {
             }
             let (parent, current) = self.psq.parent_and_current(parent_ply, top, perspective as usize);
             unsafe { crate::threats::apply_threat_indices(current, parent, &net.input_weights_i8, h, &ia[..na], &isub[..ns]); }
+            net.apply_psq_residuals(current, &ia[..na], &isub[..ns]);
             self.stack[top].psq_accurate[perspective as usize] = true;
             return;
         }
@@ -6373,10 +6403,12 @@ fn finny_batch_apply(
         {
             if net.has_avx512 && h.is_multiple_of(32) {
                 unsafe { finny_batch_apply_avx512_i8(acc, w8, h, adds, subs); }
+                net.apply_psq_residuals(acc, adds, subs);
                 return;
             }
             if net.has_avx2 && h.is_multiple_of(16) {
                 unsafe { finny_batch_apply_avx2_i8(acc, w8, h, adds, subs); }
+                net.apply_psq_residuals(acc, adds, subs);
                 return;
             }
         }
@@ -6388,6 +6420,7 @@ fn finny_batch_apply(
             let base = idx * h;
             for j in 0..h { acc[j] -= w8[base + j] as i16; }
         }
+        net.apply_psq_residuals(acc, adds, subs);
         return;
     }
     #[cfg(target_arch = "x86_64")]
