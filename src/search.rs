@@ -437,6 +437,36 @@ tunables!(
     (DEXT_MARGIN_CORR, 13, 0, 64, 3.0, true),
     (DEXT_MARGIN_BASE, 37, -50, 150, 6.0, true),
     (DEXT_CAP, 9, 4, 32, 2.0, true),
+    // Decidedness widening of the singular window, in 1/128ths of |tt_score|.
+    // Fixed-point /128 and the "subtract to widen" sign both follow the existing
+    // SE margin terms (DEXT_MARGIN_CORR, SE_XRAY_BLOCKER_MARGIN_10X).
+    //
+    // Why it exists: `singular_beta = tt_score - depth` is a fixed, tiny margin,
+    // so once the TT score is far from a draw every alternative sits below it
+    // and the node reads as singular however many good moves it has. On
+    // real-game positions the seldepth excess (seldepth - depth) rises with how
+    // decided the node is — 6 plies in balanced endgames, 13 at +250..450cp, 18
+    // at +600cp — while a reference engine's stays flat at 3.
+    //
+    // Default from Coda's own measurements, not imported. Swept on those buckets
+    // (nodes to depth 12 vs main, seldepth excess in brackets):
+    //     8    MG 1.04 [11]  EGbal 1.01 [4]  +250cp 0.62 [10]  +600cp 0.34 [9]
+    //     16   MG 0.91 [11]  EGbal 0.80 [4]  +250cp 0.39  [5]  +600cp 0.19 [5]
+    //     32   MG 0.70 [10]  EGbal 0.75 [3]  +250cp 0.32  [2]  +600cp 0.13 [3]
+    //     64   MG 0.62  [8]  EGbal 0.68 [2]  +250cp 0.22  [1]  +600cp 0.09 [1]
+    //     128  MG 0.45  [5]  EGbal 0.49 [2]  +250cp 0.18  [0]  +600cp 0.07 [0]
+    // 8 is the largest value leaving the balanced cells inside noise while still
+    // cutting the decided ones; from 16 up the balanced columns move too, which
+    // is the signature of extending less everywhere rather than more
+    // selectively. Range stops at 64 — beyond ~32 the term is not selective and
+    // SPSA should not wander there.
+    //
+    // Coupling to |tt_score| rather than to (tt_score - beta) matters and was
+    // measured: the excess over beta is near zero deep inside a won subtree,
+    // because beta already tracks the winning score there, so that form moved
+    // the +600cp bucket only to 0.75x even at 100% and left its seldepth excess
+    // at 16. Distance from a draw is what "decided" means here.
+    (SE_DECIDED_MARGIN, 8, 0, 64, 3.0, true),
     (QUIET_CHECK_BONUS, 14805, 2000, 30000, 1400.0, false),
     // SEE gate on the quiet check bonus (SF movepick.cpp: check bonus only
     // applies when see_ge(m, -75)). Without it Coda orders losing check-sacs
@@ -5906,7 +5936,19 @@ fn negamax(
                 let xray_bonus = if our_xray_blockers & (1u64 << move_from(tt_move)) != 0 {
                     tp10(&SE_XRAY_BLOCKER_MARGIN_10X)
                 } else { 0 };
-                let singular_beta = tt_score_local - depth - xray_bonus;
+                // Decidedness widening: `tt_score - depth` is a fixed, tiny
+                // margin, so once the TT score is far from a draw every
+                // alternative sits below it and the node reads as singular no
+                // matter how many good moves it has. Scale the margin with
+                // |tt_score| — distance from a draw is what "decided" means
+                // here. The excess over beta was measured first and does not
+                // work: deep in a won subtree beta already tracks the winning
+                // score, so the excess is near zero at exactly the nodes that
+                // need widening (100% of it moved the +600cp bucket only to
+                // 0.75x, and its seldepth excess 18 -> 16).
+                let decided_margin =
+                    tp(&SE_DECIDED_MARGIN) * tt_score_local.abs() / 128;
+                let singular_beta = tt_score_local - depth - xray_bonus - decided_margin;
                 let singular_depth = (depth - 1) / 2;
 
                 info.excluded_move[ply_u] = tt_move;
