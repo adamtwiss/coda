@@ -5844,7 +5844,10 @@ fn negamax(
             // The gives_direct_check carve sits inside the movecount test — only
             // pay the check-detection call when the count prune would actually
             // fire (node-count identical).
-            if move_count > lmp_limit && (depth >= 4 || !board.gives_direct_check(mv)) {
+            // At shallow, TT-move-missing CUT nodes, allow two searched quiets
+            // before count-pruning the tail. SEE/futility still filter each move.
+            let quiet_coverage = depth <= 3 && cut_node && tt_move == NO_MOVE && quiets_count < 2;
+            if !quiet_coverage && move_count > lmp_limit && (depth >= 4 || !board.gives_direct_check(mv)) {
                 trace_gate!(info, board.hash, ply, mv, "lmp", depth, move_count);
                 info.stats.lmp_prunes += 1;
                 skip_quiets = true;
