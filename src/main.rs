@@ -46,6 +46,7 @@ mod search;
 mod thread_pool;
 mod uci;
 mod epd;
+mod tree_budget;
 pub mod nnue;
 pub mod book;
 pub mod tb;

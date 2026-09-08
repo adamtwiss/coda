@@ -408,6 +408,12 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>) {
             "position" => {
                 parse_position(&tokens, &mut board);
             }
+            "treebudget" => {
+                if let Some(handle) = search_handle.take() {
+                    if let Ok(returned_info) = handle.join() { info = returned_info; }
+                }
+                crate::tree_budget::dump();
+            }
             "treestats" => {
                 // Tree-shape counter dump, same line format as the
                 // instrumented-SF build (~/chess/instr-stockfish). Counters

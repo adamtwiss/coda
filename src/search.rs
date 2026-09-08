@@ -4614,12 +4614,17 @@ fn negamax(
     // TB probe, nor negamax mate-distance pruning (qsearch's TT cutoff at
     // depth >= -1 is a superset of the depth-0 requirement).
     if depth <= 0 {
+        let frontier = crate::tree_budget::key(board, ply, 0);
+        crate::tree_budget::add(frontier, if beta-alpha > 1 { "pv_frontier" } else { "zw_frontier" }, 1);
         return quiescence(board, info, alpha, beta, ply);
     }
 
     // TREESTATS: interior-node entry, bucketed by entry depth (captured once
     // so cutoff/width counters below use the same bucket).
     let ts_bucket = depth.min(31) as usize;
+    let budget = crate::tree_budget::key(board, ply, depth);
+    crate::tree_budget::add(budget, "interior", 1);
+    crate::tree_budget::add(budget, if beta-alpha > 1 { "pv_entry" } else if cut_node { "cut_entry" } else { "all_entry" }, 1);
     info.stats.nodes_by_depth[ts_bucket] += 1;
     trace_node!(info, board.hash, ply, "visit", depth);
 
@@ -5289,6 +5294,7 @@ fn negamax(
             let weak_winning_confirmation = alpha > 200 && v > alpha - 32;
             if v <= alpha && !weak_winning_confirmation {
                 info.stats.razor_cutoffs += 1;
+                crate::tree_budget::add(budget, "razor_exit", 1);
                 return v;
             }
         }
@@ -5319,6 +5325,7 @@ fn negamax(
             if static_eval - margin >= beta && !tb_loss_rfp_guard {
                 trace_node!(info, board.hash, ply, "rfp_cut", depth);
                 info.stats.rfp_cutoffs += 1;
+                crate::tree_budget::add(budget, "rfp_exit", 1);
                 // RFP_AUDIT (diagnostic): null-verify this static cutoff with
                 // the SAME R formula real NMP uses (sans post-capture +1), and
                 // count rejections per depth. The cutoff is returned regardless
@@ -5440,7 +5447,9 @@ fn negamax(
             info.moved_piece_stack[ply_u] = 0;
             info.moved_to_stack[ply_u] = 0;
         }
+        let budget_start = info.nodes;
         let null_score = -negamax(board, info, -beta, -beta + 1, depth - r, ply + 1, !cut_node);
+        crate::tree_budget::add(budget, "null_probe_nodes_inclusive", info.nodes-budget_start);
         if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
         if info.threat_stack.active { info.threat_stack.pop(); }
         board.unmake_null_move();
@@ -5632,6 +5641,7 @@ fn negamax(
 
             if score >= candidate_beta {
                 info.stats.probcut_cutoffs += 1;
+                crate::tree_budget::add(budget, "probcut_exit", 1);
                 // TT stores the RAW verified score (a tighter lower bound than
                 // the dampened value) and preserves the sticky PV flag — matches
                 // Stockfish. Prior code stored `dampened` and
@@ -5725,6 +5735,7 @@ fn negamax(
     // Track quiet moves searched before beta cutoff for history penalty
     let mut quiets_tried = [NO_MOVE; 64];
     let mut quiets_count = 0usize;
+    crate::tree_budget::add(budget, "move_loop", 1);
 
     // Track captures searched before beta cutoff for capture history penalty
     let mut captures_tried: [(u8, u8, u8); 32] = [(0, 0, 0); 32]; // (piece, to, victim)
@@ -5761,6 +5772,7 @@ fn negamax(
         // Pruned moves still count for LMR/LMP purposes — later moves in the ordering
         // should be reduced more regardless of whether earlier moves were pruned.
         move_count += 1;
+        crate::tree_budget::add(budget, "legal_considered", 1);
         info.stats.moves_searched += 1;
 
         let from = move_from(mv);
@@ -5772,6 +5784,7 @@ fn negamax(
         let is_promo = is_promotion(mv);
 
         if skip_quiets && !is_cap && !is_promo {
+            crate::tree_budget::add(budget, "skip_quiet", 1);
             trace_gate!(info, board.hash, ply, mv, "skip_quiets", depth, move_count);
             continue;
         }
@@ -5803,6 +5816,7 @@ fn negamax(
             if move_count > lmp_limit && (depth >= 4 || !board.gives_direct_check(mv)) {
                 trace_gate!(info, board.hash, ply, mv, "lmp", depth, move_count);
                 info.stats.lmp_prunes += 1;
+                crate::tree_budget::add(budget, "lmp_trigger", 1);
                 skip_quiets = true;
                 picker.skip_remaining_quiets();
                 continue;
@@ -5820,6 +5834,7 @@ fn negamax(
             let cap_ch = crate::movepicker::capt_hist_score_static(board, &info.history, mv);
             let cap_margin = (depth * tp(&SEE_CAP_MULT) + cap_ch * tp(&SEE_CAP_HIST) / 1024).max(0);
             if !see_ge(board, mv, -cap_margin) {
+                crate::tree_budget::add(budget, "capture_see", 1);
                 trace_gate!(info, board.hash, ply, mv, "see_cap", depth, move_count);
                 continue;
             }
@@ -5857,6 +5872,7 @@ fn negamax(
             if futility_value <= alpha && main_hist < tp(&FUT_HIST_EXEMPT) && !board.gives_direct_check(mv) {
                 trace_gate!(info, board.hash, ply, mv, "futility", depth, move_count);
                 info.stats.futility_prunes += 1;
+                crate::tree_budget::add(budget, "quiet_futility", 1);
                 // Unlike LMP, futility is move-specific: main history and the
                 // reduced depth can differ across the ordered quiet tail. Let
                 // later quiets face their own predicate instead of assuming
@@ -5876,6 +5892,7 @@ fn negamax(
         {
             let see_quiet_threshold = -tp(&SEE_QUIET_MULT) * lmr_d * lmr_d;
             if !see_ge(board, mv, see_quiet_threshold) {
+                crate::tree_budget::add(budget, "quiet_see", 1);
                 trace_gate!(info, board.hash, ply, mv, "see_quiet", depth, move_count);
                 info.stats.see_prunes += 1;
                 continue;
@@ -5929,7 +5946,10 @@ fn negamax(
                 let singular_depth = (depth - 1) / 2;
 
                 info.excluded_move[ply_u] = tt_move;
+                let budget_start = info.nodes;
                 let singular_score = negamax(board, info, singular_beta - 1, singular_beta, singular_depth, ply, false);
+                crate::tree_budget::add(budget, "singular_probe_nodes_inclusive", info.nodes-budget_start);
+                crate::tree_budget::add(budget, "singular_probe", 1);
                 info.excluded_move[ply_u] = NO_MOVE;
 
                 if info.stop.load(Ordering::Relaxed) {
@@ -6036,6 +6056,7 @@ fn negamax(
             && !board.gives_direct_check(mv)
         {
             trace_gate!(info, board.hash, ply, mv, "bad_noisy", depth, move_count);
+            crate::tree_budget::add(budget, "bad_noisy", 1);
             continue;
         }
 
@@ -6068,6 +6089,8 @@ fn negamax(
         }
 
         // Check if move gives check (opponent is now in check after make_move)
+        crate::tree_budget::add(budget, "searched_move", 1);
+        crate::tree_budget::add(budget, if is_cap || is_promo { "searched_noisy" } else { "searched_quiet" }, 1);
         let gives_check = board.in_check();
 
         let extension = 0;
@@ -6429,6 +6452,8 @@ fn negamax(
         // lmr_depth) keeps integer semantics. floor(floor-composed terms)
         // reproduces the old integer arithmetic bit-for-bit at defaults.
         reduction /= LMR_SCALE;
+        crate::tree_budget::add(budget, if reduction > 0 { "reduced_move" } else if reduction < 0 { "lmr_extended_move" } else { "unreduced_move" }, 1);
+        if reduction > 0 { crate::tree_budget::add(budget, "reduction_plies", reduction as u64); }
 
         // Store reduction for child's hindsight gating
         // Hindsight slot stays non-negative (its readers compare to 0/2/3).
@@ -6446,7 +6471,9 @@ fn negamax(
             // LMR: reduced depth, zero window
             trace_gate!(info, board.hash, ply, mv, "lmr_reduced", reduction, move_count);
             let lmr_depth = new_depth - reduction;
+            let budget_start = info.nodes;
             let mut lmr_score = -negamax(board, info, -alpha - 1, -alpha, lmr_depth, ply + 1, true);
+            crate::tree_budget::add(budget, "lmr_probe_nodes_inclusive", info.nodes-budget_start);
 
             // The reduction applies to the reduced search ONLY: zero the slot
             // before any re-search so children of the (near-)full-depth
@@ -6482,7 +6509,10 @@ fn negamax(
                 // reference engine guards with `if new_depth > lmr_depth`.
                 if new_depth > lmr_depth {
                     info.stats.ts_lmr_research += 1;
+                    let budget_start = info.nodes;
                     lmr_score = -negamax(board, info, -alpha - 1, -alpha, new_depth, ply + 1, !cut_node);
+                    crate::tree_budget::add(budget, "lmr_repair_nodes_inclusive", info.nodes-budget_start);
+                    crate::tree_budget::add(budget, "lmr_repair", 1);
                 }
 
                 // Post-LMR-research cont-hist nudge (Berserk pattern).
@@ -6531,7 +6561,9 @@ fn negamax(
 
             if lmr_score > alpha && lmr_score < beta && !info.stop.load(Ordering::Relaxed) {
                 // PVS failed high: full window re-search
+                let budget_start = info.nodes;
                 score = -negamax(board, info, -beta, -alpha, new_depth, ply + 1, false);
+                crate::tree_budget::add(budget, "pvs_repair_nodes_inclusive", info.nodes-budget_start);
             } else {
                 score = lmr_score;
             }
@@ -6541,7 +6573,9 @@ fn negamax(
             if pvs_score > alpha && pvs_score < beta && !info.stop.load(Ordering::Relaxed) {
                 num_fail_highs += 1; // Starzix T1 #1: PVS fail-high cascade.
                 // Failed high: full window re-search
+                let budget_start = info.nodes;
                 pvs_score = -negamax(board, info, -beta, -alpha, new_depth, ply + 1, false);
+                crate::tree_budget::add(budget, "pvs_repair_nodes_inclusive", info.nodes-budget_start);
             }
             score = pvs_score;
         } else {
@@ -7073,6 +7107,8 @@ fn quiescence_with_depth(
 ) -> i32 {
     info.stats.qnodes += 1;
     info.stats.nodes_by_depth[0] += 1; // TREESTATS: qsearch = bucket 0
+    let qs_budget = crate::tree_budget::key(board, ply, 0);
+    crate::tree_budget::add(qs_budget, "qs_entry", 1);
 
     // Triangular PV maintenance, mirroring negamax. QS is where a mate line
     // ends: once negamax runs out of depth the rest of the mate is proved by
@@ -7185,6 +7221,7 @@ fn quiescence_with_depth(
     let qs_pinned = board.pinned();
     let qs_checkers = board.checkers();
     let qs_in_check = qs_checkers != 0;
+    crate::tree_budget::add(qs_budget, if qs_in_check { "qs_in_check" } else { "qs_not_in_check" }, 1);
 
     // When in check, generate all evasion moves using main MovePicker
     // Full history scoring for quiet evasions
@@ -7499,6 +7536,7 @@ fn quiescence_with_depth(
             continue;
         }
         qs_move_count += 1;
+        crate::tree_budget::add(qs_budget, "qs_capture_searched", 1);
         if info.threat_stack.active {
             info.threat_stack.absorb_deltas(board);
         }
