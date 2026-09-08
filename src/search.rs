@@ -437,6 +437,24 @@ tunables!(
     (DEXT_MARGIN_CORR, 13, 0, 64, 3.0, true),
     (DEXT_MARGIN_BASE, 37, -50, 150, 6.0, true),
     (DEXT_CAP, 9, 4, 32, 2.0, true),
+    // Decidedness widening of the singular window, in 1/128ths of |tt_score|.
+    // Fixed-point /128 and the "subtract to widen" sign follow the existing SE
+    // margin terms (DEXT_MARGIN_CORR, SE_XRAY_BLOCKER_MARGIN_10X).
+    //
+    // `singular_beta = tt_score - depth` is a fixed, tiny margin, so once the TT
+    // score is far from a draw every alternative sits below it and the node
+    // reads as singular however many good moves it has. Measured on real-game
+    // positions, the seldepth excess rises with how decided the node is (6 plies
+    // in balanced endgames, 18 at +600cp) where a reference engine's stays at 3.
+    //
+    // A hand-picked 8 (chosen off a corpus statistic that could not see
+    // selectivity) lost 3.3 Elo at #3508 — but with the trunk's SE margins still
+    // calibrated for the unwidened window, so that measured the term AND a
+    // miscalibration together. The default here is deliberately small: this
+    // branch exists to be SPSA'd jointly with the other SE margins, and 4 keeps
+    // both perturbations inside the range instead of clipping at the floor.
+    // If the tune drives it to 0 and holds, the functional form adds nothing.
+    (SE_DECIDED_MARGIN, 4, 0, 64, 3.0, true),
     (QUIET_CHECK_BONUS, 14805, 2000, 30000, 1400.0, false),
     // SEE gate on the quiet check bonus (SF movepick.cpp: check bonus only
     // applies when see_ge(m, -75)). Without it Coda orders losing check-sacs
@@ -5925,7 +5943,9 @@ fn negamax(
                 let xray_bonus = if our_xray_blockers & (1u64 << move_from(tt_move)) != 0 {
                     tp10(&SE_XRAY_BLOCKER_MARGIN_10X)
                 } else { 0 };
-                let singular_beta = tt_score_local - depth - xray_bonus;
+                let decided_margin =
+                    tp(&SE_DECIDED_MARGIN) * tt_score_local.abs() / 128;
+                let singular_beta = tt_score_local - depth - xray_bonus - decided_margin;
                 let singular_depth = (depth - 1) / 2;
 
                 info.excluded_move[ply_u] = tt_move;
