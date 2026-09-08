@@ -4565,8 +4565,12 @@ fn diagnostic_scout(board: &mut Board, info: &mut SearchInfo, alpha: i32, beta: 
     };
     assert_eq!(info.num_threads,1,"matched replay and TT restore require Threads=1");
     crate::tree_budget::watch_pair(board.undo_stack.last().map_or(0,|u|u.hash),board.hash);
-    assert!(matches!(mode,"scout"|"full"|"repeat"|"warm-full"|"warm-full-restore-tt"|"scout-all"|"scout-no-rfp"|"scout-no-nmp"|"scout-no-se"|"scout-no-lmr"));
+    assert!(matches!(mode,"scout"|"full"|"repeat"|"warm-full"|"warm-full-restore-tt"|"warm-full-keep-score"|"warm-full-restore-order"|"scout-all"|"scout-no-rfp"|"scout-no-nmp"|"scout-no-se"|"scout-no-lmr"|"scout-no-lmp"|"scout-no-see"|"scout-no-futility"));
     let saved_tt=if mode=="warm-full-restore-tt" {Some(info.tt.diagnostic_snapshot())} else {None};
+    // Ordering tables only: correction histories and search stacks stay warm.
+    let saved_order=if mode=="warm-full-restore-order" {
+        let mut saved=History::boxed_zeroed(); saved.copy_from(&info.history); Some(saved)
+    } else {None};
     eprintln!("PAIRBEGIN id={} mode={} kind={} hash={} nodes={} iteration={} ply={} depth={} alpha={} beta={} cut={} prior_reduction={}",id,mode,kind,board.hash,info.nodes,info.root_depth,ply,depth,alpha,beta,cut,info.reductions[(ply-1) as usize]);
     eprintln!("PAIRFEN {}",board.to_fen());
     let before=crate::tree_budget::pair_snapshot();
@@ -4576,7 +4580,9 @@ fn diagnostic_scout(board: &mut Board, info: &mut SearchInfo, alpha: i32, beta: 
     // Scoped subtree ablations, not production policies. Restore before returning.
     let feature = match mode {
         "scout-no-rfp" => Some(&FEAT_RFP), "scout-no-nmp" => Some(&FEAT_NMP),
-        "scout-no-se" => Some(&FEAT_SINGULAR), "scout-no-lmr" => Some(&FEAT_LMR), _ => None,
+        "scout-no-se" => Some(&FEAT_SINGULAR), "scout-no-lmr" => Some(&FEAT_LMR),
+        "scout-no-lmp" => Some(&FEAT_LMP), "scout-no-see" => Some(&FEAT_SEE_PRUNE),
+        "scout-no-futility" => Some(&FEAT_FUTILITY), _ => None,
     };
     let previous=feature.map(|f|f.swap(false,Ordering::Relaxed));
     let mut score=-negamax(board,info,if full {-beta} else {-alpha-1},-alpha,depth,ply,if full || mode=="scout-all" {false} else {cut});
@@ -4584,8 +4590,10 @@ fn diagnostic_scout(board: &mut Board, info: &mut SearchInfo, alpha: i32, beta: 
     crate::tree_budget::pair_end();
     eprintln!("PAIRRESULT label=first score={} source={} cost={} stopped={}",score,crate::tree_budget::last_source(),info.nodes-start,info.stop.load(Ordering::Relaxed));
     crate::tree_budget::pair_counts(before,"first");
-    if matches!(mode,"repeat"|"warm-full"|"warm-full-restore-tt") && !info.stop.load(Ordering::Relaxed) {
+    let first_score=score;
+    if matches!(mode,"repeat"|"warm-full"|"warm-full-restore-tt"|"warm-full-keep-score"|"warm-full-restore-order") && !info.stop.load(Ordering::Relaxed) {
         if let Some(snapshot)=&saved_tt {info.tt.diagnostic_restore(snapshot);}
+        if let Some(saved)=&saved_order {info.history.copy_from(saved);}
         let before=crate::tree_budget::pair_snapshot();
         let start=info.nodes;
         crate::tree_budget::pair_trace(ply);
@@ -4595,6 +4603,10 @@ fn diagnostic_scout(board: &mut Board, info: &mut SearchInfo, alpha: i32, beta: 
         eprintln!("PAIRRESULT label=second score={} source={} cost={} stopped={}",score,crate::tree_budget::last_source(),info.nodes-start,info.stop.load(Ordering::Relaxed));
         crate::tree_budget::pair_counts(before,"second");
     }
+    // Diagnostic decomposition: preserve all verification side effects, but
+    // return the original scout score. This is deliberately not a search policy.
+    if mode=="warm-full-keep-score" { score=first_score; }
+    eprintln!("PAIRADOPT score={}",score);
     (score,id)
 }
 
