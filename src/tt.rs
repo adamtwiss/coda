@@ -305,6 +305,15 @@ pub struct TT {
     generation: std::sync::atomic::AtomicU8,
 }
 
+struct DiagnosticStore<'a> { tt: &'a TT, hash: u64, depth: i32, score: i32, flag: u8, mv: Move }
+impl Drop for DiagnosticStore<'_> {
+    fn drop(&mut self) {
+        let e=self.tt.probe(self.hash);
+        crate::tree_budget::watch_log(self.hash,format_args!("store hash={} requested_depth={} requested_score={} requested_flag={} requested_move={} resident_hit={} resident_depth={} resident_score={} resident_flag={} resident_move={} resident_pv={}",
+            self.hash,self.depth,self.score,self.flag,self.mv,e.hit,e.depth,e.score,e.flag,e.best_move,e.tt_pv));
+    }
+}
+
 // TT is safe to share: all fields use atomics or are immutable after construction.
 unsafe impl Sync for TT {}
 unsafe impl Send for TT {}
@@ -498,6 +507,7 @@ impl TT {
 
     /// Store an entry in the TT. Lock-free via atomic stores.
     pub fn store(&self, hash: u64, depth: i32, score: i32, flag: u8, best_move: Move, static_eval: i32, is_pv: bool) {
+        let _watch=if crate::tree_budget::watched(hash) {Some(DiagnosticStore{tt:self,hash,depth,score,flag,mv:best_move})} else {None};
         let idx = self.bucket_index(hash);
         let bucket = &self.buckets[idx];
         let gen = self.generation.load(Ordering::Relaxed);

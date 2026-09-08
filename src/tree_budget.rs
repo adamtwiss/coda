@@ -9,8 +9,22 @@ thread_local! {
     static PAIR_PLY: Cell<i32> = const { Cell::new(-1) };
     static PAIR_LINES: Cell<u64> = const { Cell::new(0) };
     static LAST_SOURCE: Cell<&'static str> = const { Cell::new("other") };
+    static WATCH: Cell<(u64,u64)> = const { Cell::new((0,0)) };
+    static WATCH_LINES: Cell<u32> = const { Cell::new(0) };
 }
-pub fn reset_pairs() { SCOUT_ID.with(|v|v.set(0)); }
+pub fn reset_pairs() { SCOUT_ID.with(|v|v.set(0)); WATCH.with(|v|v.set((0,0))); WATCH_LINES.with(|v|v.set(0)); }
+pub fn watch_pair(parent: u64, child: u64) {
+    WATCH.with(|v|v.set((parent,child)));
+    eprintln!("WATCHARM parent={} child={}",parent,child);
+}
+pub fn watched(hash: u64) -> bool { WATCH.with(|v|{let (a,b)=v.get();hash!=0 && (hash==a || hash==b)}) }
+pub fn watch_log(hash: u64, args: std::fmt::Arguments<'_>) {
+    if watched(hash) { WATCH_LINES.with(|v| {
+        if v.get()<2000 { eprintln!("WATCH {}",args); }
+        else if v.get()==2000 {eprintln!("WATCH truncated=1");}
+        v.set(v.get()+1);
+    }); }
+}
 pub fn next_scout() -> u64 { SCOUT_ID.with(|v|{v.set(v.get()+1);v.get()}) }
 pub fn pair_mode(id: u64) -> Option<&'static str> {
     static TARGET: OnceLock<u64> = OnceLock::new();
@@ -155,7 +169,9 @@ mod tests {
     #[test]
     fn scout_ids_reset_between_root_searches() {
         reset_pairs();assert_eq!(next_scout(),1);assert_eq!(next_scout(),2);
+        watch_pair(123,456);assert!(watched(123));assert!(watched(456));assert!(!watched(789));
         reset_pairs();assert_eq!(next_scout(),1);
+        assert!(!watched(123));assert!(!watched(456));
     }
     #[test]
     fn verification_marker_belongs_to_exact_next_call() {

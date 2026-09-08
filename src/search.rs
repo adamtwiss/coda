@@ -4564,6 +4564,7 @@ fn diagnostic_scout(board: &mut Board, info: &mut SearchInfo, alpha: i32, beta: 
         return (-negamax(board,info,-alpha-1,-alpha,depth,ply,cut),id);
     };
     assert_eq!(info.num_threads,1,"matched replay and TT restore require Threads=1");
+    crate::tree_budget::watch_pair(board.undo_stack.last().map_or(0,|u|u.hash),board.hash);
     assert!(matches!(mode,"scout"|"full"|"repeat"|"warm-full"|"warm-full-restore-tt"|"scout-all"|"scout-no-rfp"|"scout-no-nmp"|"scout-no-se"|"scout-no-lmr"));
     let saved_tt=if mode=="warm-full-restore-tt" {Some(info.tt.diagnostic_snapshot())} else {None};
     eprintln!("PAIRBEGIN id={} mode={} kind={} hash={} nodes={} iteration={} ply={} depth={} alpha={} beta={} cut={} prior_reduction={}",id,mode,kind,board.hash,info.nodes,info.root_depth,ply,depth,alpha,beta,cut,info.reductions[(ply-1) as usize]);
@@ -4597,9 +4598,26 @@ fn diagnostic_scout(board: &mut Board, info: &mut SearchInfo, alpha: i32, beta: 
     (score,id)
 }
 
+#[inline(always)]
+fn negamax(board: &mut Board, info: &mut SearchInfo, alpha: i32, beta: i32,
+    depth: i32, ply: i32, cut_node: bool) -> i32 {
+    let hash=board.hash;
+    if crate::tree_budget::watched(hash) {
+        let tt=info.tt.probe(hash);
+        crate::tree_budget::watch_log(hash,format_args!("entry hash={} nodes={} iteration={} ply={} depth={} alpha={} beta={} cut={} halfmove={} excluded={} tt_hit={} tt_depth={} tt_score={} tt_flag={} tt_move={} tt_pv={}",
+            hash,info.nodes,info.root_depth,ply,depth,alpha,beta,cut_node,board.halfmove,info.excluded_move.get(ply as usize).copied().unwrap_or(NO_MOVE),tt.hit,tt.depth,tt.score,tt.flag,tt.best_move,tt.tt_pv));
+    }
+    let score=negamax_impl(board,info,alpha,beta,depth,ply,cut_node);
+    if crate::tree_budget::watched(hash) {
+        crate::tree_budget::watch_log(hash,format_args!("return hash={} nodes={} iteration={} ply={} depth={} score={} source={} stopped={}",
+            hash,info.nodes,info.root_depth,ply,depth,score,crate::tree_budget::last_source(),info.stop.load(Ordering::Relaxed)));
+    }
+    score
+}
+
 /// Negamax alpha-beta search.
 /// Main negamax search with all pruning, extensions, and reductions.
-fn negamax(
+fn negamax_impl(
     board: &mut Board,
     info: &mut SearchInfo,
     mut alpha: i32,
