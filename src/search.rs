@@ -4597,8 +4597,14 @@ macro_rules! trace_node {
     };
 }
 
-/// Negamax alpha-beta search.
-/// Main negamax search with all pruning, extensions, and reductions.
+/// Verify marginal shallow scout cutoffs while retaining the scout's warmed state.
+#[inline(always)]
+fn verify_near_beta_scout(alpha: i32, beta: i32, score: i32, depth: i32) -> bool {
+    beta - alpha > 1 && (1..=4).contains(&depth)
+        && !is_decisive(score) && score >= beta && score - beta < 32
+}
+
+/// Negamax alpha-beta search with pruning, extensions, and reductions.
 fn negamax(
     board: &mut Board,
     info: &mut SearchInfo,
@@ -6582,7 +6588,9 @@ fn negamax(
                 }
             }
 
-            if lmr_score > alpha && lmr_score < beta && !info.stop.load(Ordering::Relaxed) {
+            if lmr_score > alpha
+                && (lmr_score < beta || verify_near_beta_scout(alpha, beta, lmr_score, new_depth))
+                && !info.stop.load(Ordering::Relaxed) {
                 // PVS failed high: full window re-search
                 score = -negamax(board, info, -beta, -alpha, new_depth, ply + 1, false);
             } else {
@@ -6591,8 +6599,11 @@ fn negamax(
         } else if move_count > 1 && FEAT_PVS.load(Ordering::Relaxed) {
             // PVS: zero-window for non-first moves
             let mut pvs_score = -negamax(board, info, -alpha - 1, -alpha, new_depth, ply + 1, !cut_node);
-            if pvs_score > alpha && pvs_score < beta && !info.stop.load(Ordering::Relaxed) {
-                num_fail_highs += 1; // Starzix T1 #1: PVS fail-high cascade.
+            if pvs_score > alpha
+                && (pvs_score < beta || verify_near_beta_scout(alpha, beta, pvs_score, new_depth))
+                && !info.stop.load(Ordering::Relaxed) {
+                // Preserve the original in-window fail-high cascade signal.
+                if pvs_score < beta { num_fail_highs += 1; }
                 // Failed high: full window re-search
                 pvs_score = -negamax(board, info, -beta, -alpha, new_depth, ply + 1, false);
             }
@@ -8081,6 +8092,19 @@ pub(crate) fn test_net_path() -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn near_beta_scout_verification_boundaries() {
+        assert!(verify_near_beta_scout(-216, -151, -121, 3));
+        assert!(verify_near_beta_scout(0, 100, 100, 1));
+        assert!(verify_near_beta_scout(0, 100, 131, 4));
+        assert!(!verify_near_beta_scout(0, 100, 132, 4));
+        assert!(!verify_near_beta_scout(0, 100, 99, 4));
+        assert!(!verify_near_beta_scout(99, 100, 100, 4));
+        assert!(!verify_near_beta_scout(0, 100, 100, 0));
+        assert!(!verify_near_beta_scout(0, 100, 100, 5));
+        assert!(!verify_near_beta_scout(0, MATE_IN_MAX_PLY, MATE_IN_MAX_PLY, 3));
+    }
 
     #[test]
     fn competitive_se_relaxes_only_boundary_fail_highs() {
