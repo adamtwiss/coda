@@ -337,6 +337,24 @@ impl TTEntry {
 }
 
 impl TT {
+    /// Diagnostic only, requires a quiescent single-worker table. Copies every
+    /// data/key word and generation; no heuristic reconstruction or fresh TT.
+    pub fn diagnostic_snapshot(&self) -> (u8, Vec<(u64,u32)>) {
+        let mut words=Vec::with_capacity(self.buckets.len()*BUCKET_SIZE);
+        for b in self.buckets.iter() { for i in 0..BUCKET_SIZE {
+            words.push((b.data[i].load(Ordering::Relaxed),b.keys[i].load(Ordering::Relaxed)));
+        }}
+        (self.generation.load(Ordering::Relaxed),words)
+    }
+    pub fn diagnostic_restore(&self, snapshot: &(u8, Vec<(u64,u32)>)) {
+        assert_eq!(snapshot.1.len(),self.buckets.len()*BUCKET_SIZE);
+        for (b,words) in self.buckets.iter().zip(snapshot.1.chunks_exact(BUCKET_SIZE)) {
+            for (i,(data,key)) in words.iter().enumerate() {
+                b.data[i].store(*data,Ordering::Relaxed);b.keys[i].store(*key,Ordering::Relaxed);
+            }
+        }
+        self.generation.store(snapshot.0,Ordering::Relaxed);
+    }
     /// Create a new TT with the given size in megabytes.
     pub fn new(mb: usize) -> Self {
         let bytes = mb * 1024 * 1024;
@@ -721,6 +739,18 @@ pub fn score_from_tt(score: i32, ply: i32, halfmove: u16) -> i32 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn diagnostic_snapshot_restores_all_words_and_generation() {
+        let tt=super::TT::new(1);
+        tt.store(0xabcdef0123456789,9,123,super::TT_FLAG_EXACT,1,-17,true);
+        let saved=tt.diagnostic_snapshot();
+        tt.clear();
+        tt.store(0x12345678abcdef01,3,-42,super::TT_FLAG_LOWER,2,15,false);
+        assert_ne!(tt.diagnostic_snapshot(),saved);
+        tt.diagnostic_restore(&saved);
+        assert_eq!(tt.diagnostic_snapshot(),saved);
+        assert_eq!(tt.probe(0xabcdef0123456789).score,123);
+    }
     use super::*;
 
     /// The mate-recognition boundary must (a) catch the deepest possible mate

@@ -3274,6 +3274,7 @@ fn emit_final_info(info: &SearchInfo, board: &Board, nodes: u64) {
 
 /// Run iterative deepening search.
 pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -> Move {
+    crate::tree_budget::reset_pairs();
     init_feature_flags();
 
     // Enable threat delta generation if we have a threat net
@@ -4531,6 +4532,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
 /// loop (or visited). Zero-cost when tracing is off (empty-vec check).
 macro_rules! trace_gate {
     ($info:expr, $hash:expr, $ply:expr, $mv:expr, $gate:literal, $depth:expr, $mc:expr) => {
+        crate::tree_budget::pair_log($ply,format_args!("gate={} hash={} ply={} depth={} move={} mc={}",$gate,$hash,$ply,$depth,$mv,$mc));
         if !$info.trace_hashes.is_empty() {
             let p = $ply as usize;
             if p < $info.trace_hashes.len()
@@ -4553,6 +4555,48 @@ macro_rules! trace_node {
     };
 }
 
+// Replay from an unchanged root prefix, then intervene at one numbered scout.
+// Only diagnostic flags select a call; ordinary searches take the exact original call.
+fn diagnostic_scout(board: &mut Board, info: &mut SearchInfo, alpha: i32, beta: i32,
+    depth: i32, ply: i32, cut: bool, kind: &str) -> (i32,u64) {
+    let id=crate::tree_budget::next_scout();
+    let Some(mode)=crate::tree_budget::pair_mode(id) else {
+        return (-negamax(board,info,-alpha-1,-alpha,depth,ply,cut),id);
+    };
+    assert_eq!(info.num_threads,1,"matched replay and TT restore require Threads=1");
+    assert!(matches!(mode,"scout"|"full"|"repeat"|"warm-full"|"warm-full-restore-tt"|"scout-all"|"scout-no-rfp"|"scout-no-nmp"|"scout-no-se"|"scout-no-lmr"));
+    let saved_tt=if mode=="warm-full-restore-tt" {Some(info.tt.diagnostic_snapshot())} else {None};
+    eprintln!("PAIRBEGIN id={} mode={} kind={} hash={} nodes={} iteration={} ply={} depth={} alpha={} beta={} cut={} prior_reduction={}",id,mode,kind,board.hash,info.nodes,info.root_depth,ply,depth,alpha,beta,cut,info.reductions[(ply-1) as usize]);
+    eprintln!("PAIRFEN {}",board.to_fen());
+    let before=crate::tree_budget::pair_snapshot();
+    let start=info.nodes;
+    crate::tree_budget::pair_trace(ply);
+    let full=mode=="full";
+    // Scoped subtree ablations, not production policies. Restore before returning.
+    let feature = match mode {
+        "scout-no-rfp" => Some(&FEAT_RFP), "scout-no-nmp" => Some(&FEAT_NMP),
+        "scout-no-se" => Some(&FEAT_SINGULAR), "scout-no-lmr" => Some(&FEAT_LMR), _ => None,
+    };
+    let previous=feature.map(|f|f.swap(false,Ordering::Relaxed));
+    let mut score=-negamax(board,info,if full {-beta} else {-alpha-1},-alpha,depth,ply,if full || mode=="scout-all" {false} else {cut});
+    if let Some(f)=feature { f.store(previous.unwrap(),Ordering::Relaxed); }
+    crate::tree_budget::pair_end();
+    eprintln!("PAIRRESULT label=first score={} source={} cost={} stopped={}",score,crate::tree_budget::last_source(),info.nodes-start,info.stop.load(Ordering::Relaxed));
+    crate::tree_budget::pair_counts(before,"first");
+    if matches!(mode,"repeat"|"warm-full"|"warm-full-restore-tt") && !info.stop.load(Ordering::Relaxed) {
+        if let Some(snapshot)=&saved_tt {info.tt.diagnostic_restore(snapshot);}
+        let before=crate::tree_budget::pair_snapshot();
+        let start=info.nodes;
+        crate::tree_budget::pair_trace(ply);
+        let full=mode!="repeat";
+        score=-negamax(board,info,if full {-beta} else {-alpha-1},-alpha,depth,ply,if full {false} else {cut});
+        crate::tree_budget::pair_end();
+        eprintln!("PAIRRESULT label=second score={} source={} cost={} stopped={}",score,crate::tree_budget::last_source(),info.nodes-start,info.stop.load(Ordering::Relaxed));
+        crate::tree_budget::pair_counts(before,"second");
+    }
+    (score,id)
+}
+
 /// Negamax alpha-beta search.
 /// Main negamax search with all pruning, extensions, and reductions.
 fn negamax(
@@ -4566,6 +4610,10 @@ fn negamax(
 ) -> i32 {
     let ply_u = ply as usize;
     let mut audit_return = crate::tree_budget::return_audit(ply, depth);
+    if crate::tree_budget::pair_active(ply) {
+        let tt = info.tt.probe(board.hash);
+        crate::tree_budget::pair_log(ply,format_args!("entry hash={} ply={} depth={} alpha={} beta={} cut={} tt_hit={} tt_depth={} tt_score={} tt_flag={} tt_move={} tt_pv={}",board.hash,ply,depth,alpha,beta,cut_node,tt.hit,tt.depth,tt.score,tt.flag,tt.best_move,tt.tt_pv));
+    }
 
     // Reset PV length FIRST — before any early return below — so the parent's
     // PV propagation reads `pv_len[ply_u+1] == 0` for nodes that take a
@@ -4618,6 +4666,7 @@ fn negamax(
         trace_node!(info, board.hash, ply, "qs_frontier", depth);
         let frontier = crate::tree_budget::key(board, ply, 0);
         crate::tree_budget::add(frontier, if beta-alpha > 1 { "pv_frontier" } else { "zw_frontier" }, 1);
+        audit_return.source = "qsearch";
         return quiescence(board, info, alpha, beta, ply);
     }
 
@@ -6506,7 +6555,7 @@ fn negamax(
             let lmr_depth = new_depth - reduction;
             let mut scout_depth = lmr_depth;
             let budget_start = info.nodes;
-            let mut lmr_score = -negamax(board, info, -alpha - 1, -alpha, lmr_depth, ply + 1, true);
+            let (mut lmr_score, mut scout_id) = diagnostic_scout(board, info, alpha, beta, lmr_depth, ply + 1, true, "lmr_initial");
             crate::tree_budget::add(budget, "lmr_probe_nodes_inclusive", info.nodes-budget_start);
 
             // The reduction applies to the reduced search ONLY: zero the slot
@@ -6546,7 +6595,7 @@ fn negamax(
                     let budget_start = info.nodes;
                     let owner_scope = crate::tree_budget::scope("owned_lmr_repair");
                     scout_depth = new_depth;
-                    lmr_score = -negamax(board, info, -alpha - 1, -alpha, new_depth, ply + 1, !cut_node);
+                    (lmr_score, scout_id) = diagnostic_scout(board, info, alpha, beta, new_depth, ply + 1, !cut_node, "lmr_repair");
                     drop(owner_scope);
                     crate::tree_budget::add(budget, "lmr_repair_nodes_inclusive", info.nodes-budget_start);
                     crate::tree_budget::add(budget, "lmr_repair", 1);
@@ -6600,7 +6649,7 @@ fn negamax(
                 // PVS failed high: full window re-search
                 let budget_start = info.nodes;
                 let pv_depth = crate::tree_budget::pv_depth(budget, new_depth, frontier_eligible, frontier_decisive);
-                let audit = crate::tree_budget::pvs_begin(board.hash,mv,info.root_depth,ply,lmr_score,scout_depth,pv_depth,alpha,beta,info.nodes);
+                let audit = crate::tree_budget::pvs_begin(scout_id,board.hash,mv,info.root_depth,ply,lmr_score,scout_depth,pv_depth,alpha,beta,info.nodes);
                 let owner_scope = crate::tree_budget::scope("owned_pvs_repair");
                 score = -negamax(board, info, -beta, -alpha, pv_depth, ply + 1, false);
                 drop(owner_scope);
@@ -6608,23 +6657,30 @@ fn negamax(
                 crate::tree_budget::pvs(budget, alpha, beta, score, info.stop.load(Ordering::Relaxed), info.nodes-budget_start);
                 crate::tree_budget::add(budget, "pvs_repair_nodes_inclusive", info.nodes-budget_start);
             } else {
+                if is_pv && lmr_score>=beta && !info.stop.load(Ordering::Relaxed) {
+                    crate::tree_budget::pvs_skipped(scout_id,board.hash,ply,scout_depth,new_depth,lmr_score,alpha,beta,info.nodes);
+                }
                 score = lmr_score;
             }
         } else if move_count > 1 && FEAT_PVS.load(Ordering::Relaxed) {
             // PVS: zero-window for non-first moves
-            let mut pvs_score = -negamax(board, info, -alpha - 1, -alpha, new_depth, ply + 1, !cut_node);
+            let (mut pvs_score, scout_id) = diagnostic_scout(board, info, alpha, beta, new_depth, ply + 1, !cut_node, "pvs");
+            let scout_cutoff = pvs_score >= beta;
             if pvs_score > alpha && pvs_score < beta && !info.stop.load(Ordering::Relaxed) {
                 num_fail_highs += 1; // Starzix T1 #1: PVS fail-high cascade.
                 // Failed high: full window re-search
                 let budget_start = info.nodes;
                 let pv_depth = crate::tree_budget::pv_depth(budget, new_depth, frontier_eligible, frontier_decisive);
-                let audit = crate::tree_budget::pvs_begin(board.hash,mv,info.root_depth,ply,pvs_score,new_depth,pv_depth,alpha,beta,info.nodes);
+                let audit = crate::tree_budget::pvs_begin(scout_id,board.hash,mv,info.root_depth,ply,pvs_score,new_depth,pv_depth,alpha,beta,info.nodes);
                 let owner_scope = crate::tree_budget::scope("owned_pvs_repair");
                 pvs_score = -negamax(board, info, -beta, -alpha, pv_depth, ply + 1, false);
                 drop(owner_scope);
                 audit.finish(pvs_score,info.nodes,info.stop.load(Ordering::Relaxed));
                 crate::tree_budget::pvs(budget, alpha, beta, pvs_score, info.stop.load(Ordering::Relaxed), info.nodes-budget_start);
                 crate::tree_budget::add(budget, "pvs_repair_nodes_inclusive", info.nodes-budget_start);
+            }
+            if is_pv && scout_cutoff && !info.stop.load(Ordering::Relaxed) {
+                crate::tree_budget::pvs_skipped(scout_id,board.hash,ply,new_depth,new_depth,pvs_score,alpha,beta,info.nodes);
             }
             score = pvs_score;
         } else {

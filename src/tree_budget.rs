@@ -4,6 +4,29 @@ use std::collections::BTreeMap;
 use std::sync::{Mutex, OnceLock};
 use crate::board::Board;
 use std::cell::Cell;
+thread_local! {
+    static SCOUT_ID: Cell<u64> = const { Cell::new(0) };
+    static PAIR_PLY: Cell<i32> = const { Cell::new(-1) };
+    static PAIR_LINES: Cell<u64> = const { Cell::new(0) };
+    static LAST_SOURCE: Cell<&'static str> = const { Cell::new("other") };
+}
+pub fn reset_pairs() { SCOUT_ID.with(|v|v.set(0)); }
+pub fn next_scout() -> u64 { SCOUT_ID.with(|v|{v.set(v.get()+1);v.get()}) }
+pub fn pair_mode(id: u64) -> Option<&'static str> {
+    static TARGET: OnceLock<u64> = OnceLock::new();
+    static MODE: OnceLock<String> = OnceLock::new();
+    if id != *TARGET.get_or_init(||std::env::var("CODA_PAIR_ID").ok().and_then(|s|s.parse().ok()).unwrap_or(0)) { return None; }
+    Some(MODE.get_or_init(||std::env::var("CODA_PAIR_MODE").unwrap_or_else(|_|"scout".into())).as_str())
+}
+pub fn pair_active(ply: i32) -> bool {
+    PAIR_PLY.with(|v|v.get()>=0 && ply<=v.get()+2)
+}
+pub fn pair_log(ply: i32, text: std::fmt::Arguments<'_>) {
+    if pair_active(ply) { PAIR_LINES.with(|v| { if v.get()<4000 {eprintln!("PAIRTRACE {}",text);} v.set(v.get()+1); }); }
+}
+pub fn pair_trace(ply: i32) { PAIR_PLY.with(|v|v.set(ply)); PAIR_LINES.with(|v|v.set(0)); }
+pub fn pair_end() { PAIR_PLY.with(|v|v.set(-1)); }
+pub fn last_source() -> &'static str { LAST_SOURCE.with(|v|v.get()) }
 thread_local! { static OWNER: Cell<&'static str> = const { Cell::new("owned_primary") }; }
 pub struct Scope(&'static str);
 impl Drop for Scope { fn drop(&mut self) { OWNER.with(|o| o.set(self.0)); } }
@@ -40,6 +63,8 @@ pub fn verify_depth(depth: i32) -> i32 {
 }
 impl Drop for ReturnAudit {
     fn drop(&mut self) {
+        LAST_SOURCE.with(|v|v.set(self.source));
+        pair_log(self.ply,format_args!("exit ply={} depth={} source={}",self.ply,self.depth,self.source));
         if self.trace { eprintln!("TRACE verify_return ply={} depth={} source={}", self.ply,self.depth,self.source); }
     }
 }
@@ -59,12 +84,18 @@ thread_local! {
 pub fn root_move(mv: u16) { ROOT_MOVE.with(|v| v.set(mv)); }
 pub fn extensions(n: i32) { if n>0 { EXTENSIONS.with(|v| v.set(v.get()+n as u64)); } }
 pub struct PvsAudit { prefix: Option<String>, nodes: u64, extensions: u64 }
-pub fn pvs_begin(hash: u64, mv: u16, root_depth: i32, ply: i32, scout: i32,
+pub fn pvs_skipped(id: u64, hash: u64, ply: i32, depth: i32, full_depth: i32, score: i32, alpha: i32, beta: i32, nodes: u64) {
+    static ON: OnceLock<bool> = OnceLock::new();
+    if *ON.get_or_init(||std::env::var_os("CODA_PVS_AUDIT").is_some()) {
+        eprintln!("PVSSKIP scout_id={} child={} ply={} scout_depth={} full_depth={} scout={} alpha={} beta={} start={}",id,hash,ply,depth,full_depth,score,alpha,beta,nodes);
+    }
+}
+pub fn pvs_begin(scout_id: u64, hash: u64, mv: u16, root_depth: i32, ply: i32, scout: i32,
     scout_depth: i32, full_depth: i32, alpha: i32, beta: i32, nodes: u64) -> PvsAudit {
     static ON: OnceLock<bool> = OnceLock::new();
     let prefix = if *ON.get_or_init(|| std::env::var_os("CODA_PVS_AUDIT").is_some()) {
-        Some(format!("PVSAUDIT child={} move={} rootmove={} iteration={} ply={} scout={} scout_depth={} full_depth={} alpha={} beta={} start={} owner={}",
-            hash,mv,ROOT_MOVE.with(|v|v.get()),root_depth,ply,scout,scout_depth,full_depth,alpha,beta,nodes,OWNER.with(|v|v.get())))
+        Some(format!("PVSAUDIT scout_id={} child={} move={} rootmove={} iteration={} ply={} scout={} scout_depth={} full_depth={} alpha={} beta={} start={} owner={}",
+            scout_id,hash,mv,ROOT_MOVE.with(|v|v.get()),root_depth,ply,scout,scout_depth,full_depth,alpha,beta,nodes,OWNER.with(|v|v.get())))
     } else { None };
     PvsAudit { prefix, nodes, extensions: EXTENSIONS.with(|v|v.get()) }
 }
@@ -84,6 +115,13 @@ fn enabled() -> bool {
 fn ledger() -> &'static Mutex<Ledger> {
     static DATA: OnceLock<Mutex<Ledger>> = OnceLock::new();
     DATA.get_or_init(|| Mutex::new(BTreeMap::new()))
+}
+pub fn pair_snapshot() -> BTreeMap<(Key, &'static str),u64> { ledger().lock().unwrap().clone() }
+pub fn pair_counts(before: BTreeMap<(Key, &'static str),u64>, label: &str) {
+    for ((key,event),count) in ledger().lock().unwrap().iter() {
+        let n=count-before.get(&(*key,*event)).copied().unwrap_or(0);
+        if n>0 { eprintln!("PAIRCOUNT label={} phase={} ply={} depth={} event={} count={}",label,key.0,key.1,key.2,event,n); }
+    }
 }
 pub fn key(board: &Board, ply: i32, depth: i32) -> Key {
     if !enabled() { return (0,0,0); }
@@ -114,6 +152,11 @@ pub fn dump() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn scout_ids_reset_between_root_searches() {
+        reset_pairs();assert_eq!(next_scout(),1);assert_eq!(next_scout(),2);
+        reset_pairs();assert_eq!(next_scout(),1);
+    }
     #[test]
     fn verification_marker_belongs_to_exact_next_call() {
         verify_next(false);
