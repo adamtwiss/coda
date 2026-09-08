@@ -4565,6 +4565,7 @@ fn negamax(
     cut_node: bool, // true at expected cut nodes (child of all-node, non-first child of PV)
 ) -> i32 {
     let ply_u = ply as usize;
+    let mut audit_return = crate::tree_budget::return_audit(ply, depth);
 
     // Reset PV length FIRST — before any early return below — so the parent's
     // PV propagation reads `pv_len[ply_u+1] == 0` for nodes that take a
@@ -4993,6 +4994,7 @@ fn negamax(
                             }
                         }
                     }
+                    audit_return.source = "tt_direct";
                     return tt_score;
                 }
 
@@ -5081,8 +5083,10 @@ fn negamax(
                         && !is_decisive(tt_score)
                     {
                         let w10 = tp(&TT_DAMP_TT_WEIGHT_10X);
+                        audit_return.source = "tt_narrow_blend";
                         return (w10 * tt_score + 10 * beta) / (w10 + 10);
                     }
+                    audit_return.source = "tt_narrow";
                     return tt_score;
                 }
             } else if tt_depth >= depth - 1
@@ -5095,10 +5099,12 @@ fn negamax(
                 let margin = 80;
                 if tt_entry.flag == TT_FLAG_LOWER && tt_score - margin >= beta {
                     info.stats.tt_near_miss += 1;
+                    audit_return.source = "tt_nearmiss_lower";
                     return tt_score - margin;
                 }
                 if tt_entry.flag == TT_FLAG_UPPER && tt_score + margin <= alpha {
                     info.stats.tt_near_miss += 1;
+                    audit_return.source = "tt_nearmiss_upper";
                     return tt_score + margin;
                 }
             }
@@ -5297,6 +5303,7 @@ fn negamax(
             if v <= alpha && !weak_winning_confirmation {
                 info.stats.razor_cutoffs += 1;
                 crate::tree_budget::add(budget, "razor_exit", 1);
+                audit_return.source = "razor";
                 return v;
             }
         }
@@ -5310,7 +5317,7 @@ fn negamax(
             && !is_promotion(tt_move);
         // TB/mate guard: every peer skips RFP when eval is near mate/TB range.
         // Without this, RFP could cut a node where NNUE sees forced mate. (RFP audit RFP-3)
-        if depth <= tp(&RFP_DEPTH) && ply > 0 && !tt_pv && !tt_move_is_quiet && info.excluded_move[ply_u] == NO_MOVE && FEAT_RFP.load(Ordering::Relaxed)
+        if !audit_return.skip_rfp() && depth <= tp(&RFP_DEPTH) && ply > 0 && !tt_pv && !tt_move_is_quiet && info.excluded_move[ply_u] == NO_MOVE && FEAT_RFP.load(Ordering::Relaxed)
             && static_eval.abs() < MATE_SCORE - 200 {
             let mut margin = if improving { depth * tp(&RFP_MARGIN_IMP) } else { depth * tp(&RFP_MARGIN_NOIMP) };
             // Root-depth-aware relaxation: + depth*(root_depth-thresh)+ *coef/100.
@@ -5396,6 +5403,7 @@ fn negamax(
                         info.stats.rfp_audit_var_fp[var_bucket] += 1;
                     }
                 }
+                audit_return.source = "rfp";
                 return static_eval - margin;
             }
         }
@@ -5477,10 +5485,11 @@ fn negamax(
                 info.nmp_min_ply = ply + 3 * (depth - r) / 4;
                 // Verification re-searches current position (no move made), so ply stays same
                 let owner_scope = crate::tree_budget::scope("owned_null_verify");
-                let v_score = negamax(board, info, beta - 1, beta, depth - r, ply, false);
+                crate::tree_budget::verify_next(info.trace_hashes.get(ply_u) == Some(&board.hash));
+                let v_score = negamax(board, info, beta - 1, beta, crate::tree_budget::verify_depth(depth-r), ply, false);
                 drop(owner_scope);
                 if info.trace_hashes.get(ply_u) == Some(&board.hash) {
-                    eprintln!("TRACE nmp_window ply={} root_depth={} depth={} verify_depth={} alpha={} beta={} null_score={} verified_score={} nodes={}", ply,info.root_depth,depth,depth-r,alpha,beta,null_score,v_score,info.nodes);
+                    eprintln!("TRACE nmp_window ply={} root_depth={} depth={} verify_depth={} alpha={} beta={} null_score={} verified_score={} nodes={}", ply,info.root_depth,depth,crate::tree_budget::verify_depth(depth-r),alpha,beta,null_score,v_score,info.nodes);
                 }
                 info.nmp_min_ply = old_nmp_min_ply;
                 // Stop-during-verification returns 0 from negamax; with
@@ -5495,12 +5504,14 @@ fn negamax(
                 if v_score >= beta {
                     info.stats.nmp_cutoffs += 1;
                     trace_node!(info, board.hash, ply, "nmp_verified_exit", depth);
+                    audit_return.source = "nmp_verified";
                     return nmp_score;
                 }
                 info.stats.nmp_verify_fail += 1;
             } else {
                 info.stats.nmp_cutoffs += 1;
                 trace_node!(info, board.hash, ply, "nmp_exit", depth);
+                audit_return.source = "nmp";
                 return nmp_score;
             }
         } else {
@@ -5674,6 +5685,7 @@ fn negamax(
                     board.hash, pc_depth.max(0) + 1, score_to_tt(score, ply),
                     TT_FLAG_LOWER, mv, raw_eval, tt_pv,
                 );
+                audit_return.source = "probcut";
                 if is_decisive(score) {
                     return score;
                 }
@@ -5984,6 +5996,7 @@ fn negamax(
                     // shapes tested WORSE here, so keep FIRING and fix only the
                     // returned value.
                     info.stats.multicut += 1;
+                    audit_return.source = "multicut";
                     if is_decisive(singular_score) {
                         return singular_beta;
                     }
@@ -6132,6 +6145,8 @@ fn negamax(
         }
 
         let mut new_depth = depth - 1 + extension + singular_extension;
+        crate::tree_budget::extensions(extension + singular_extension);
+        if ply == 0 { crate::tree_budget::root_move(mv); }
 
         // Propagate double extension counter to child
         if ply_u < MAX_PLY {
@@ -6489,6 +6504,7 @@ fn negamax(
             // LMR: reduced depth, zero window
             trace_gate!(info, board.hash, ply, mv, "lmr_reduced", reduction, move_count);
             let lmr_depth = new_depth - reduction;
+            let mut scout_depth = lmr_depth;
             let budget_start = info.nodes;
             let mut lmr_score = -negamax(board, info, -alpha - 1, -alpha, lmr_depth, ply + 1, true);
             crate::tree_budget::add(budget, "lmr_probe_nodes_inclusive", info.nodes-budget_start);
@@ -6529,6 +6545,7 @@ fn negamax(
                     info.stats.ts_lmr_research += 1;
                     let budget_start = info.nodes;
                     let owner_scope = crate::tree_budget::scope("owned_lmr_repair");
+                    scout_depth = new_depth;
                     lmr_score = -negamax(board, info, -alpha - 1, -alpha, new_depth, ply + 1, !cut_node);
                     drop(owner_scope);
                     crate::tree_budget::add(budget, "lmr_repair_nodes_inclusive", info.nodes-budget_start);
@@ -6583,9 +6600,12 @@ fn negamax(
                 // PVS failed high: full window re-search
                 let budget_start = info.nodes;
                 let pv_depth = crate::tree_budget::pv_depth(budget, new_depth, frontier_eligible, frontier_decisive);
+                let audit = crate::tree_budget::pvs_begin(board.hash,mv,info.root_depth,ply,lmr_score,scout_depth,pv_depth,alpha,beta,info.nodes);
                 let owner_scope = crate::tree_budget::scope("owned_pvs_repair");
                 score = -negamax(board, info, -beta, -alpha, pv_depth, ply + 1, false);
                 drop(owner_scope);
+                audit.finish(score,info.nodes,info.stop.load(Ordering::Relaxed));
+                crate::tree_budget::pvs(budget, alpha, beta, score, info.stop.load(Ordering::Relaxed), info.nodes-budget_start);
                 crate::tree_budget::add(budget, "pvs_repair_nodes_inclusive", info.nodes-budget_start);
             } else {
                 score = lmr_score;
@@ -6598,9 +6618,12 @@ fn negamax(
                 // Failed high: full window re-search
                 let budget_start = info.nodes;
                 let pv_depth = crate::tree_budget::pv_depth(budget, new_depth, frontier_eligible, frontier_decisive);
+                let audit = crate::tree_budget::pvs_begin(board.hash,mv,info.root_depth,ply,pvs_score,new_depth,pv_depth,alpha,beta,info.nodes);
                 let owner_scope = crate::tree_budget::scope("owned_pvs_repair");
                 pvs_score = -negamax(board, info, -beta, -alpha, pv_depth, ply + 1, false);
                 drop(owner_scope);
+                audit.finish(pvs_score,info.nodes,info.stop.load(Ordering::Relaxed));
+                crate::tree_budget::pvs(budget, alpha, beta, pvs_score, info.stop.load(Ordering::Relaxed), info.nodes-budget_start);
                 crate::tree_budget::add(budget, "pvs_repair_nodes_inclusive", info.nodes-budget_start);
             }
             score = pvs_score;
@@ -6887,6 +6910,7 @@ fn negamax(
     info.stats.width_cnt_by_depth[ts_bucket] += 1;
 
     if move_count == 0 {
+        audit_return.source = "no_moves";
         if info.excluded_move[ply_u] != NO_MOVE {
             // Singular verification: no alternative found, return alpha
             return alpha;
@@ -7058,9 +7082,11 @@ fn negamax(
         // Divisor floor: SPSA can perturb FH_BLEND_OFFSET to 0 AND
         // FH_BLEND_DEPTH_10X low enough that the gate admits depth=0,
         // producing a 0+0 divisor → div-by-zero panic. Clamp.
+        audit_return.source = "moves_blend";
         return (best_score * depth + beta) / (depth + tp(&FH_BLEND_OFFSET)).max(1);
     }
 
+    audit_return.source = "moves";
     best_score
 }
 
