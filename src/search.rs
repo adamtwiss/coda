@@ -311,7 +311,7 @@ tunables!(
     (LMR_CUTOFF_ALLNODE_CENTI, 19, 0, 150, 8.0, true),
     // Minimum depth at which singular extension is attempted. Too low and
     // singular_depth is itself too shallow to judge singularity reliably.
-    (SE_DEPTH_10X, 43, 40, 200, 20.0, true),
+    (SE_DEPTH_10X, 44, 40, 200, 20.0, true),
     (ASP_DELTA, 11, 5, 30, 1.5, false),
     (ASP_SCORE_DIV, 12000, 8000, 50000, 2100.0, false),
     // Late move pruning: quiets searched before the cutoff, on the shape
@@ -432,10 +432,10 @@ tunables!(
     //
     // TRIPLE extension is intentionally NOT part of this shape — it has been
     // tested for Coda's regime and the signal was not there.
-    (DEXT_MARGIN_PV, 169, 50, 400, 15.0, false),
+    (DEXT_MARGIN_PV, 176, 50, 400, 15.0, false),
     (DEXT_MARGIN_QUIET, 17, 0, 100, 4.0, false),
-    (DEXT_MARGIN_CORR, 13, 0, 64, 3.0, true),
-    (DEXT_MARGIN_BASE, 37, -50, 150, 6.0, true),
+    (DEXT_MARGIN_CORR, 14, 0, 64, 3.0, true),
+    (DEXT_MARGIN_BASE, 36, -50, 150, 6.0, true),
     (DEXT_CAP, 9, 4, 32, 2.0, true),
     // Root-decidedness gate on POSITIVE singular extensions. When the root score
     // says the game is already decided, the singular test stops discriminating:
