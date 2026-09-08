@@ -5132,11 +5132,13 @@ fn negamax(
                 let margin = 80;
                 if tt_entry.flag == TT_FLAG_LOWER && tt_score - margin >= beta {
                     info.stats.tt_near_miss += 1;
-                    return tt_score - margin;
+                    // Preserve pruning eligibility, but propagate only the
+                    // boundary established by this shallower-entry heuristic.
+                    return if is_decisive(beta) { tt_score - margin } else { beta };
                 }
                 if tt_entry.flag == TT_FLAG_UPPER && tt_score + margin <= alpha {
                     info.stats.tt_near_miss += 1;
-                    return tt_score + margin;
+                    return if is_decisive(alpha) { tt_score + margin } else { alpha };
                 }
             }
         }
