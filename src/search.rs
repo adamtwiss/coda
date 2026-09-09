@@ -1073,6 +1073,8 @@ exp_flag!(exp_iir_depth_scale, "EXP_IIR_DEPTH_SCALE"); // k: IIR reduces 1 + dep
 exp_flag!(exp_iir_shallow_tt, "EXP_IIR_SHALLOW_TT");   // k: IIR also fires when a TT move exists but tt_depth < depth - k
 exp_flag!(exp_iir_allnode, "EXP_IIR_ALLNODE");         // 1: IIR applies at all-nodes too
 exp_flag!(exp_se_excess_pct, "EXP_SE_EXCESS_PCT");   // k: singular margin grows by k% of max(0, tt_score - beta)
+exp_flag!(abl_nmp_max_ply, "ABL_NMP_MAX_PLY");      // n: null-move pruning disabled at plies <= n (Thor's reply-node probe)
+exp_flag!(abl_rfp_max_ply, "ABL_RFP_MAX_PLY");      // n: reverse futility pruning disabled at plies <= n
 
 /// Whether the TT-cutoff node-type guard applies at this node: the ablation
 /// flag, minus the experiment waivers for draw-scored entries / low material.
@@ -5515,7 +5517,7 @@ fn negamax(
             && !is_promotion(tt_move);
         // TB/mate guard: every peer skips RFP when eval is near mate/TB range.
         // Without this, RFP could cut a node where NNUE sees forced mate. (RFP audit RFP-3)
-        if depth <= tp(&RFP_DEPTH) && ply > 0 && !tt_pv && !tt_move_is_quiet && info.excluded_move[ply_u] == NO_MOVE && FEAT_RFP.load(Ordering::Relaxed)
+        if depth <= tp(&RFP_DEPTH) && ply > 0 && !tt_pv && !tt_move_is_quiet && info.excluded_move[ply_u] == NO_MOVE && (FEAT_RFP.load(Ordering::Relaxed) && !(abl_rfp_max_ply() >= 0 && ply <= abl_rfp_max_ply()))
             && static_eval.abs() < MATE_SCORE - 200 {
             let mut margin = if improving { depth * tp(&RFP_MARGIN_IMP) } else { depth * tp(&RFP_MARGIN_NOIMP) };
             // Root-depth-aware relaxation: + depth*(root_depth-thresh)+ *coef/100.
@@ -5617,7 +5619,7 @@ fn negamax(
         && beta.abs() < MATE_IN_MAX_PLY  // Skip NMP for mate/TB scores
         && info.excluded_move[ply_u] == NO_MOVE  // Skip NMP during SE verification
         && cut_node  // cut-node gate: only attempt NMP at expected fail-high nodes (closes 30%->57% NMP cutoff-rate gap)
-        && FEAT_NMP.load(Ordering::Relaxed)
+        && (FEAT_NMP.load(Ordering::Relaxed) && !(abl_nmp_max_ply() >= 0 && ply <= abl_nmp_max_ply()))
     {
         info.stats.nmp_attempts += 1;
         // Adaptive reduction: scales with depth and eval margin above beta
