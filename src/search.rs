@@ -3521,6 +3521,9 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                     wb.make_move(found);
                 }
                 if !info.trace_hashes.is_empty() {
+                    // Also record the position AFTER the last traced move, so the
+                    // parent-side depth bookkeeping fires for the last move too.
+                    info.trace_hashes.push(wb.hash);
                     eprintln!("TRACE armed: {} plies", info.trace_hashes.len());
                 }
             }
@@ -6723,12 +6726,20 @@ fn negamax(
         // != 0: a negative reduction is a one-ply extension of the zero-window
         // probe; the re-search guard `new_depth > lmr_depth` is then false, so
         // the deeper probe stands and PVS proceeds at new_depth as usual.
+        // Diag (CODA_TRACE_LINE): depth bookkeeping for the traced child —
+        // planned depth vs LMR probe vs re-search vs final full-window depth.
+        // (the move is already made here, so match the CHILD hash at ply+1)
+        let trace_child = traced_here!(info, board.hash, ply + 1) && ply_u < info.trace_line_mv.len() && info.trace_line_mv[ply_u] == mv;
+        let tr_planned = new_depth;
+        let (mut tr_probe, mut tr_research, mut tr_final, mut tr_fw, mut tr_route, mut tr_adj) = (new_depth, -1i32, new_depth, false, "first", 0i32);
         if reduction != 0 {
             info.stats.lmr_searches += 1;
+            tr_route = "lmr";
 
             // LMR: reduced depth, zero window
             trace_gate!(info, board.hash, ply, mv, "lmr_reduced", reduction, move_count);
             let lmr_depth = new_depth - reduction;
+            tr_probe = lmr_depth; tr_final = lmr_depth;
             let mut lmr_score = -negamax(board, info, -alpha - 1, -alpha, lmr_depth, ply + 1, true);
 
             // The reduction applies to the reduced search ONLY: zero the slot
@@ -6759,12 +6770,14 @@ fn negamax(
                 // runs the PV re-search SHALLOWER than the zero-window search
                 // that justified it.
                 new_depth += do_deeper_adj;
+                tr_adj = do_deeper_adj;
                 // Guard: only re-search when new_depth actually changed from lmr_depth.
                 // do_shallower with reduction==1 makes new_depth == lmr_depth — the
                 // re-search would duplicate the already-completed LMR search. Every
                 // reference engine guards with `if new_depth > lmr_depth`.
                 if new_depth > lmr_depth {
                     info.stats.ts_lmr_research += 1;
+                    tr_research = new_depth; tr_final = new_depth;
                     lmr_score = -negamax(board, info, -alpha - 1, -alpha, new_depth, ply + 1, !cut_node);
                 }
 
@@ -6814,16 +6827,19 @@ fn negamax(
 
             if lmr_score > alpha && lmr_score < beta && !info.stop.load(Ordering::Relaxed) {
                 // PVS failed high: full window re-search
+                tr_fw = true; tr_final = new_depth;
                 score = -negamax(board, info, -beta, -alpha, new_depth, ply + 1, false);
             } else {
                 score = lmr_score;
             }
         } else if move_count > 1 && FEAT_PVS.load(Ordering::Relaxed) {
             // PVS: zero-window for non-first moves
+            tr_route = "pvs";
             let mut pvs_score = -negamax(board, info, -alpha - 1, -alpha, new_depth, ply + 1, !cut_node);
             if pvs_score > alpha && pvs_score < beta && !info.stop.load(Ordering::Relaxed) {
                 num_fail_highs += 1; // Starzix T1 #1: PVS fail-high cascade.
                 // Failed high: full window re-search
+                tr_fw = true;
                 pvs_score = -negamax(board, info, -beta, -alpha, new_depth, ply + 1, false);
             }
             score = pvs_score;
@@ -6841,6 +6857,10 @@ fn negamax(
             score = -negamax(board, info, -beta, -alpha, new_depth, ply + 1, child_cut);
         }
 
+        if trace_child {
+            eprintln!("TRACE_REPLY parent ply={} rootdepth={} mv={} depth={} planned={} probe={} research={} final={} fullwindow={} shortened={} route={} reduction={} adj={} is_pv={} cut_node={} score={} alpha={} beta={} mc={}",
+                ply, info.root_depth, move_to_uci(mv), depth, tr_planned, tr_probe, tr_research, tr_final, tr_fw, tr_final < tr_planned, tr_route, reduction, tr_adj, is_pv, cut_node, score, alpha, beta, move_count);
+        }
         board.unmake_move();
         if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
         if info.threat_stack.active { info.threat_stack.pop(); }
