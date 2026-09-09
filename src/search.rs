@@ -979,8 +979,37 @@ impl SearchLimits {
 }
 
 /// Pruning counters for diagnostics.
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct PruneStats {
+    // research/score-lock: node-termination classes (never merged)
+    pub rs_draw_rule50: u64,
+    pub rs_draw_insufficient: u64,
+    pub rs_draw_repetition: u64,
+    pub rs_cuckoo_cut: u64,
+    pub rs_qs_draw: u64,
+    pub rs_qs_standpat_cut: u64,
+    pub rs_tt_cut_lower: u64,
+    pub rs_tt_cut_upper: u64,
+    pub rs_tt_cut_exact: u64,
+    pub rs_main_nodes: u64,
+    pub rs_tt_hits: u64,
+    pub rs_ttnc_depth: u64,
+    pub rs_ttnc_pv: u64,
+    pub rs_ttnc_nodetype: u64,
+    pub rs_ttnc_bound: u64,
+    pub rs_ttnc_halfmove: u64,
+    pub rs_tt_cheap_ok: u64,
+    pub rs_tt_cut_site1: u64,
+    pub rs_pv_nodes: u64,
+    pub rs_pv_qnodes: u64,
+    pub rs_ds: [u64; 6],
+    pub rs_ds_zero_zw: u64,
+    pub rs_ds_exact1: u64,
+    pub rs_nm_considered: u64,
+    pub rs_nm_zero: u64,
+    pub rs_dsgap: [u64; 5],
+    pub rs_ds_tt0: u64,
+    pub rs_ds_req: [u64; 4],
     pub tt_probes: u64,
     pub tt_hits: u64,
     pub tt_cross_gen_hits: u64,
@@ -1122,6 +1151,7 @@ pub struct SearchInfo {
     /// winning thread and aggregate counters are final.
     defer_final_info: bool,
     pub stats: PruneStats,
+    pub rs_prev_stats: PruneStats,
     // Eval-path decomposition counters.
     // `stats_tt_static_eval_hits` counts nodes where we used the TT's
     // cached static_eval and did NOT call NNUE. The NNUE counters live on
@@ -1396,6 +1426,7 @@ impl SearchInfo {
             silent: false,
             defer_final_info: false,
             stats: PruneStats::default(),
+            rs_prev_stats: PruneStats::default(),
             stats_tt_static_eval_hits: 0,
             tt,
             history: alloc_zeroed_box(),
@@ -2062,6 +2093,19 @@ fn apply_halfmove_scale(score: i32, halfmove: u16) -> i32 {
 /// horizon almost every position is an immediate draw; only an in-check node
 /// needs the rare legal-move test to distinguish mate from a claimable draw.
 #[inline]
+
+/// research/score-lock probe (never merged): CODA_DRAW_JITTER=1 makes every
+/// draw return alternate between +1 and -1 by node parity instead of exactly
+/// 0, so a drawn tree has a tie-breaker at zero-window nodes.
+fn rs_draw_value(info: &SearchInfo) -> i32 {
+    static JITTER: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if *JITTER.get_or_init(|| std::env::var("CODA_DRAW_JITTER").map(|v| v == "1").unwrap_or(false)) {
+        if info.nodes & 2 == 0 { 1 } else { -1 }
+    } else {
+        0
+    }
+}
+
 fn is_rule50_draw(board: &Board) -> bool {
     if board.halfmove < 100 {
         return false;
@@ -2266,6 +2310,13 @@ fn correction_value(info: &SearchInfo, board: &Board, ply: usize) -> i32 {
 /// old blend.
 #[inline]
 fn corrected_eval(info: &SearchInfo, board: &Board, raw_eval: i32, ply: usize) -> i32 {
+    // research/score-lock probe (never merged): CODA_EVAL_ZERO=all also zeroes
+    // the CORRECTED eval, so correction history cannot reintroduce a residual.
+    static ZERO_ALL: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if *ZERO_ALL.get_or_init(|| std::env::var("CODA_EVAL_ZERO").map(|x| x == "all").unwrap_or(false)) {
+        return 0;
+    }
+
     // There is deliberately no material damping here: the residual update
     // baseline makes corrhist converge to the true (~0) correction in
     // low-signal positions, so a piece-count fortress guard is redundant.
@@ -4025,6 +4076,26 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                 global, nps, elapsed,
                 info.tt.hashfull(), info.tb_hits, pv_str
             );
+            // research/score-lock: per-iteration termination-class deltas (CODA_ITER_STATS=1).
+            static ITER_STATS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+            if *ITER_STATS.get_or_init(|| std::env::var("CODA_ITER_STATS").map(|v| v == "1").unwrap_or(false)) {
+                let s = &info.stats; let p = &info.rs_prev_stats;
+                println!("info string iterstats depth={} seldepth={} nodes={} qnodes={} ttcut_lower={} ttcut_upper={} ttcut_exact={} rfp={} nmp={} razor={} lmp={} futility={} see={} draw_rep={} draw_r50={} draw_insuf={} cuckoo={} qs_draw={} qs_standpat={} beta_cuts={} first_move_cuts={}",
+                    depth, info.sel_depth, global,
+                    s.qnodes - p.qnodes, s.rs_tt_cut_lower - p.rs_tt_cut_lower, s.rs_tt_cut_upper - p.rs_tt_cut_upper, s.rs_tt_cut_exact - p.rs_tt_cut_exact,
+                    s.rfp_cutoffs - p.rfp_cutoffs, s.nmp_cutoffs - p.nmp_cutoffs, s.razor_cutoffs - p.razor_cutoffs, s.lmp_prunes - p.lmp_prunes,
+                    s.futility_prunes - p.futility_prunes, s.see_prunes - p.see_prunes, s.rs_draw_repetition - p.rs_draw_repetition,
+                    s.rs_draw_rule50 - p.rs_draw_rule50, s.rs_draw_insufficient - p.rs_draw_insufficient, s.rs_cuckoo_cut - p.rs_cuckoo_cut,
+                    s.rs_qs_draw - p.rs_qs_draw, s.rs_qs_standpat_cut - p.rs_qs_standpat_cut, s.beta_cutoffs - p.beta_cutoffs, s.first_move_cutoffs - p.first_move_cutoffs);
+                println!("info string iterstats2 depth={} tt_probes={} tt_hits={} ttnc_depth={} ttnc_pv={} ttnc_nodetype={} ttnc_bound={} ttnc_halfmove={} tt_cheap_ok={} tt_cut_site1={} asp_fail_low={} asp_fail_high={} pv_nodes={} pv_qnodes={} ds_hi_lower={} ds_hi_upper={} ds_hi_exact={} ds_lo_lower={} ds_lo_upper={} ds_lo_exact={} ds_zero_zw={} ds_exact1={} nm_considered={} nm_zero={} nm_accepted={} dsgap0={} dsgap1={} dsgap2={} dsgap3={} dsgap4p={} ds_tt0={} dsreq1={} dsreq23={} dsreq47={} dsreq8p={}",
+                    depth, s.tt_probes - p.tt_probes, s.rs_tt_hits - p.rs_tt_hits, s.rs_ttnc_depth - p.rs_ttnc_depth, s.rs_ttnc_pv - p.rs_ttnc_pv,
+                    s.rs_ttnc_nodetype - p.rs_ttnc_nodetype, s.rs_ttnc_bound - p.rs_ttnc_bound, s.rs_ttnc_halfmove - p.rs_ttnc_halfmove,
+                    s.rs_tt_cheap_ok - p.rs_tt_cheap_ok, s.rs_tt_cut_site1 - p.rs_tt_cut_site1, s.ts_asp_fail_low - p.ts_asp_fail_low, s.ts_asp_fail_high - p.ts_asp_fail_high, s.rs_pv_nodes - p.rs_pv_nodes, s.rs_pv_qnodes - p.rs_pv_qnodes,
+                    s.rs_ds[0]-p.rs_ds[0], s.rs_ds[1]-p.rs_ds[1], s.rs_ds[2]-p.rs_ds[2], s.rs_ds[3]-p.rs_ds[3], s.rs_ds[4]-p.rs_ds[4], s.rs_ds[5]-p.rs_ds[5], s.rs_ds_zero_zw - p.rs_ds_zero_zw, s.rs_ds_exact1 - p.rs_ds_exact1, s.rs_nm_considered - p.rs_nm_considered, s.rs_nm_zero - p.rs_nm_zero, s.tt_near_miss - p.tt_near_miss,
+                    s.rs_dsgap[0]-p.rs_dsgap[0], s.rs_dsgap[1]-p.rs_dsgap[1], s.rs_dsgap[2]-p.rs_dsgap[2], s.rs_dsgap[3]-p.rs_dsgap[3], s.rs_dsgap[4]-p.rs_dsgap[4], s.rs_ds_tt0 - p.rs_ds_tt0,
+                    s.rs_ds_req[0]-p.rs_ds_req[0], s.rs_ds_req[1]-p.rs_ds_req[1], s.rs_ds_req[2]-p.rs_ds_req[2], s.rs_ds_req[3]-p.rs_ds_req[3]);
+                info.rs_prev_stats = info.stats.clone();
+            }
         }
 
         // MultiPV secondary lines (analysis only). Save/restore the primary
@@ -4670,14 +4741,17 @@ fn negamax(
     // nonzero scaled eval — eval doesn't know about insufficient material
     // or repetition (only halfmove via the scale itself handles 50mr).
     if ply > 0 {
-        let draw_score: i32 = 0;
+        let draw_score: i32 = rs_draw_value(info);
         if is_rule50_draw(board) {
+            info.stats.rs_draw_rule50 += 1;
             return draw_score;
         }
         if board.is_insufficient_material() {
+            info.stats.rs_draw_insufficient += 1;
             return draw_score;
         }
         if board.is_repetition_draw(ply) {
+            info.stats.rs_draw_repetition += 1;
             return draw_score;
         }
     }
@@ -4786,7 +4860,7 @@ fn negamax(
         return 0;
     }
 
-    info.nodes += 1;
+    info.nodes += 1; if is_pv { info.stats.rs_pv_nodes += 1; }
 
 
     // (Draw detection lives above the MAX_PLY guard — see the note there.)
@@ -4887,8 +4961,9 @@ fn negamax(
     // Cuckoo cycle detection: proactive repetition avoidance (Stockfish/Berserk)
     // If we're losing (alpha < 0) and a repetition can be forced, raise alpha to draw score.
     if ply > 0 && alpha < 0 && FEAT_CUCKOO.load(Ordering::Relaxed) && crate::cuckoo::has_game_cycle(board, ply) {
-        alpha = 0;
+        alpha = alpha.max(rs_draw_value(info));
         if alpha >= beta {
+            info.stats.rs_cuckoo_cut += 1;
             return alpha;
         }
     }
@@ -4982,6 +5057,20 @@ fn negamax(
             // applied — it only biases the search, while returning a stale
             // tt_score is unsafe.
             let halfmove_ok = tt_halfmove_ok(tt_score, board.halfmove);
+            info.stats.rs_tt_hits += 1;
+            if !(tt_depth > depth - (tt_score <= beta) as i32) {
+                info.stats.rs_ttnc_depth += 1;
+                // research/score-lock: bucket the depth-short hits by score side and stored bound.
+                let side = if tt_score >= beta { 0 } else { 3 };
+                let b = match tt_entry.flag { TT_FLAG_LOWER => 0, TT_FLAG_UPPER => 1, _ => 2 };
+                info.stats.rs_ds[side + b] += 1;
+                if tt_score == 0 && beta - alpha == 1 && (beta == 0 || beta == 1) { info.stats.rs_ds_zero_zw += 1; }
+                if tt_depth == depth - 1 { info.stats.rs_ds_exact1 += 1; }
+                let gap = (depth - tt_depth).max(0) as usize;
+                info.stats.rs_dsgap[gap.min(4)] += 1; // 0 (the +1 fail-high rule), 1, 2, 3, 4+
+                if tt_depth <= 0 { info.stats.rs_ds_tt0 += 1; }
+                info.stats.rs_ds_req[match depth { 1 => 0, 2..=3 => 1, 4..=7 => 2, _ => 3 }] += 1;
+            }
             // Require +1 ply of TT depth for a fail-high (LOWER) cutoff, as
             // SF/Obsidian/PlentyChess do: fail-lows accept at tt_depth>=depth
             // but fail-highs need tt_depth>=depth+1. A symmetric `>= depth` is
@@ -5008,6 +5097,11 @@ fn negamax(
                 // from the post-mate-dist window. alpha here is still
                 // alpha_orig — TT narrowing happens after this check.
                 let tt_cut_is_pv = beta - alpha > 1;
+                if tt_cut_is_pv { info.stats.rs_ttnc_pv += 1; }
+                else if !(cut_node || !score_above_beta) { info.stats.rs_ttnc_nodetype += 1; }
+                else if !bound_matches { info.stats.rs_ttnc_bound += 1; }
+                else if !halfmove_ok { info.stats.rs_ttnc_halfmove += 1; }
+                else { info.stats.rs_tt_cheap_ok += 1; }
                 // Child-consistency verification for DEEP cutoffs (concept
                 // from SF, independently re-implemented): at depth>=7,
                 // make the TT move, probe the child's entry, unmake; decline
@@ -5023,6 +5117,8 @@ fn negamax(
                     && !child_disagrees
                 {
                     info.stats.tt_cutoffs += 1;
+                    info.stats.rs_tt_cut_site1 += 1;
+                    match tt_entry.flag { TT_FLAG_LOWER => info.stats.rs_tt_cut_lower += 1, TT_FLAG_UPPER => info.stats.rs_tt_cut_upper += 1, _ => info.stats.rs_tt_cut_exact += 1 }
                     if tt_cross_gen {
                         info.stats.tt_cross_gen_cutoffs += 1;
                     }
@@ -5105,6 +5201,7 @@ fn negamax(
                 if alpha >= beta && halfmove_ok {
                     if tt_move != NO_MOVE {
                         info.stats.tt_cutoffs += 1;
+                        match tt_entry.flag { TT_FLAG_LOWER => info.stats.rs_tt_cut_lower += 1, TT_FLAG_UPPER => info.stats.rs_tt_cut_upper += 1, _ => info.stats.rs_tt_cut_exact += 1 }
                         if tt_cross_gen {
                             info.stats.tt_cross_gen_cutoffs += 1;
                         }
@@ -5174,6 +5271,8 @@ fn negamax(
             {
                 // TT near-miss cutoffs: accept entries 1 ply short with a score margin
                 let margin = 80;
+                info.stats.rs_nm_considered += 1;
+                if tt_score == 0 { info.stats.rs_nm_zero += 1; }
                 if tt_entry.flag == TT_FLAG_LOWER && tt_score - margin >= beta {
                     info.stats.tt_near_miss += 1;
                     return tt_score - margin;
@@ -7189,8 +7288,9 @@ fn quiescence_with_depth(
     }
 
     // Draw detection: repetition and 50-move rule. No contempt term.
-    let draw_score = 0;
+    let draw_score = rs_draw_value(info);
     if is_rule50_draw(board) {
+        info.stats.rs_qs_draw += 1;
         return draw_score;
     }
     // FIDE Art 5.2: insufficient material to mate (any side). Mirrors
@@ -7199,9 +7299,11 @@ fn quiescence_with_depth(
     // KvK / KBvK / KBvKB-same-color without ever re-entering negamax's
     // check, so the parallel guard is needed here too.
     if board.is_insufficient_material() {
+        info.stats.rs_qs_draw += 1;
         return draw_score;
     }
     if board.is_repetition_draw(ply) {
+        info.stats.rs_qs_draw += 1;
         return draw_score;
     }
 
@@ -7213,7 +7315,7 @@ fn quiescence_with_depth(
     // Prefetch TT bucket early
     info.tt.prefetch(board.hash);
 
-    info.nodes += 1;
+    info.nodes += 1; if beta - alpha > 1 { info.stats.rs_pv_qnodes += 1; }
 
     // Track seldepth
     if ply > info.sel_depth {
@@ -7234,8 +7336,9 @@ fn quiescence_with_depth(
     // Gate QS cuckoo on ply > 0, mirroring the main-search check.
     // Cuckoo's root-boundary STM check is undefined at ply 0.
     if ply > 0 && alpha < 0 && FEAT_CUCKOO.load(Ordering::Relaxed) && crate::cuckoo::has_game_cycle(board, ply) {
-        alpha = 0;
+        alpha = alpha.max(rs_draw_value(info));
         if alpha >= beta {
+            info.stats.rs_cuckoo_cut += 1;
             return alpha;
         }
     }
@@ -7466,6 +7569,7 @@ fn quiescence_with_depth(
             }
     }
 
+    if best_score >= beta { info.stats.rs_qs_standpat_cut += 1; }
     if best_score >= beta {
         // Cache eval + LOWER bound on the stand-pat fail-high. This is the
         // most common QS exit; returning here without a TT store leaves the

@@ -109,7 +109,18 @@ pub fn evaluate_nnue(
     v += if board.side_to_move == crate::types::WHITE { mu } else { -mu };
     // Eval-scale normalization (EVAL_SCALE_PCT, default 100 = no-op).
     let pct = crate::search::EVAL_SCALE_PCT.load(std::sync::atomic::Ordering::Relaxed);
-    if pct != 100 { v * pct / 100 } else { v }
+    let v = if pct != 100 { v * pct / 100 } else { v };
+    // research/score-lock probe (never merged): CODA_EVAL_ZERO=all forces every
+    // static eval to 0; CODA_EVAL_ZERO=<n> forces 0 when |eval| < n cp. Tests
+    // whether an eval that is exactly 0 makes Coda's tree collapse the way
+    // Stockfish's does once its score locks to 0.00.
+    static ZERO_MODE: std::sync::OnceLock<i32> = std::sync::OnceLock::new();
+    let mode = *ZERO_MODE.get_or_init(|| match std::env::var("CODA_EVAL_ZERO") {
+        Ok(x) if x == "all" => -1,
+        Ok(x) => x.parse::<i32>().unwrap_or(0),
+        Err(_) => 0,
+    });
+    if mode == -1 || (mode > 0 && v.abs() < mode) { 0 } else { v }
 }
 
 /// Material-only value of a piece type (midgame, for SEE).
