@@ -6519,7 +6519,9 @@ fn negamax(
                 let mut do_deeper_adj = 0;
                 if lmr_score > best_score + 60 + 10 * reduction {
                     do_deeper_adj = 1;
-                } else if lmr_score < best_score + 20 {
+                // At PV nodes retain the planned verification/PV horizon even
+                // when the probe only narrowly improves the current best score.
+                } else if !is_pv && lmr_score < best_score + 20 {
                     do_deeper_adj = -1;
                 }
 
