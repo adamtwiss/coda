@@ -4597,8 +4597,26 @@ macro_rules! trace_node {
     };
 }
 
-/// Negamax alpha-beta search.
-/// Main negamax search with all pruning, extensions, and reductions.
+/// Low-material LMR protection, excluding only balanced four/five-piece rooks.
+#[inline]
+fn lmr_low_material_skip(board: &Board, threshold: u32) -> bool {
+    let pieces = board.occupied().count_ones();
+    if threshold == 0 || pieces > threshold {
+        return false;
+    }
+    // Preserve the mating-search protection except in KRKR / KRPKR.
+    // The five-piece gate can otherwise dominate drawn rook-ending trees.
+    // These classes are not assumed drawn: only ordinary LMR is restored.
+    let rooks = board.pieces[ROOK as usize];
+    let balanced_rooks = pieces <= 5 && rooks.count_ones() == 2
+        && rooks & board.colors[WHITE as usize] != 0
+        && rooks & board.colors[BLACK as usize] != 0
+        && board.occupied()
+            & !(rooks | board.pieces[KING as usize] | board.pieces[PAWN as usize]) == 0;
+    !balanced_rooks
+}
+
+/// Negamax alpha-beta search with pruning, extensions, and reductions.
 fn negamax(
     board: &mut Board,
     info: &mut SearchInfo,
@@ -6183,11 +6201,10 @@ fn negamax(
 
         // Late Move Reductions (LMR) + Principal Variation Search (PVS)
         let mut reduction = 0i32;
-        // Endgame gate: skip LMR in low-piece-count positions where
-        // mate-completing king-restriction moves would be over-reduced.
+        // Protect low-material mating searches, with a narrow exception
+        // for KRKR / KRPKR (ordinary reductions remain enabled there).
         let endgame_threshold = tp10(&LMR_ENDGAME_PIECES_10X) as u32;
-        let is_endgame_skip = endgame_threshold > 0
-            && crate::bitboard::popcount(board.occupied()) <= endgame_threshold;
+        let is_endgame_skip = lmr_low_material_skip(board, endgame_threshold);
         // Explicit `move_count > 1 && mv != tt_move` guards (defensive,
         // bench-neutral). Currently safe via LMR_TABLE zero-init at
         // depth<3 / move<3, but if the table is ever populated differently
@@ -8080,6 +8097,30 @@ pub(crate) fn test_net_path() -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn balanced_rook_lmr_exception_is_narrow() {
+        use super::{Board, lmr_low_material_skip};
+        for fen in [
+            "4k2r/8/8/8/8/8/8/R3K3 w - - 0 1",
+            "4k2r/8/8/8/8/8/P7/R3K3 w - - 0 1",
+            "4k2r/p7/8/8/8/8/8/R3K3 b - - 0 1",
+        ] {
+            assert!(!lmr_low_material_skip(&Board::from_fen(fen), 5), "{fen}");
+        }
+        for fen in [
+            "4k3/8/8/8/8/8/8/R3K3 w - - 0 1",
+            "4k3/8/8/8/8/8/P7/R3K3 w - - 0 1",
+            "4k2q/8/8/8/8/8/8/R3K3 w - - 0 1",
+            "4k2r/8/8/8/8/8/8/R3K2R w - - 0 1",
+            "4k2r/8/8/8/8/8/N7/R3K3 w - - 0 1",
+        ] {
+            assert!(lmr_low_material_skip(&Board::from_fen(fen), 5), "{fen}");
+        }
+        let six = Board::from_fen("4k2r/p7/8/8/8/8/P7/R3K3 w - - 0 1");
+        assert!(!lmr_low_material_skip(&six, 5));
+        assert!(lmr_low_material_skip(&six, 6));
+        assert!(!lmr_low_material_skip(&six, 0));
+    }
     use super::*;
 
     #[test]
