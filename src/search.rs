@@ -803,6 +803,57 @@ pub static ABL_RFP_MAX_PLY: AtomicI32 = AtomicI32::new(-1);
 // Zero-collapse trace: count, by ply, which return path produced a score at the
 // shallow plies of a search that has collapsed on 0.00.
 pub static TRACE_ZERO: AtomicBool = AtomicBool::new(false);
+// link 5: reply-node discriminators. Recorded ONLY at ply 1 (the opponent's
+// first reply) when RFP or NMP fires, so we can ask what separates a wrong cut
+// from a right one. Flat arrays: index 0 = RFP, 1 = NMP.
+pub static TRACE_REPLY: AtomicBool = AtomicBool::new(false);
+/// link 6a device: at a ply-1 RFP/NMP cut, verify with a small search before
+/// trusting it. -1 = off, 0 = qsearch only, d > 0 = negamax to depth d.
+pub static VERIFY_PLY1: AtomicI32 = AtomicI32::new(-1);
+/// True if the ply-1 verification search says the static cut does NOT hold.
+#[inline]
+fn reply_cut_refuted(board: &mut Board, info: &mut SearchInfo, beta: i32, ply: i32) -> bool {
+    let d = VERIFY_PLY1.load(Ordering::Relaxed);
+    if d < 0 || ply != 1 || info.reply_verify_active { return false; }
+    info.reply_verify_active = true;
+    let v = if d == 0 {
+        quiescence(board, info, beta - 1, beta, ply)
+    } else {
+        negamax(board, info, beta - 1, beta, d, ply, false)
+    };
+    info.reply_verify_active = false;
+    if info.stop.load(Ordering::Relaxed) { return false; }
+    v < beta
+}
+// (static_eval - beta) bucketed: <0,0-49,50-99,100-199,200-399,400-799,800+,-
+pub static RN_MARGIN: [AtomicU64; 16] = [const { AtomicU64::new(0) }; 16];
+// depth bucketed: 1-2,3-4,5-6,7-8,9-12,13+
+pub static RN_DEPTH: [AtomicU64; 12] = [const { AtomicU64::new(0) }; 12];
+// [feat*2 + was_prev_move_a_capture]
+pub static RN_PREVCAP: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
+// NMP verification: 0 = not run (returned on the raw null score), 1 = ran and
+// confirmed, 2 = ran and REFUTED (we kept searching)
+pub static RN_NMPVER: [AtomicU64; 3] = [const { AtomicU64::new(0) }; 3];
+#[inline]
+fn rn_bucket_margin(m: i32) -> usize {
+    if m < 0 { 0 } else if m < 50 { 1 } else if m < 100 { 2 } else if m < 200 { 3 }
+    else if m < 400 { 4 } else if m < 800 { 5 } else { 6 }
+}
+#[inline]
+fn rn_bucket_depth(d: i32) -> usize {
+    if d <= 2 { 0 } else if d <= 4 { 1 } else if d <= 6 { 2 }
+    else if d <= 8 { 3 } else if d <= 12 { 4 } else { 5 }
+}
+/// feat: 0 = RFP, 1 = NMP. Call only at the reply node.
+#[inline]
+pub fn rn_record(feat: usize, ply: i32, static_eval: i32, beta: i32, depth: i32, board: &Board) {
+    if !TRACE_REPLY.load(Ordering::Relaxed) || ply != 1 { return; }
+    RN_MARGIN[feat * 8 + rn_bucket_margin(static_eval - beta)].fetch_add(1, Ordering::Relaxed);
+    RN_DEPTH[feat * 6 + rn_bucket_depth(depth)].fetch_add(1, Ordering::Relaxed);
+    let prev_cap = board.undo_stack.last()
+        .map_or(0, |u| (u.captured != crate::types::NO_PIECE_TYPE) as usize);
+    RN_PREVCAP[feat * 2 + prev_cap].fetch_add(1, Ordering::Relaxed);
+}
 pub static TZ_REP: [AtomicU64; 6] = [const { AtomicU64::new(0) }; 6];
 pub static TZ_R50: [AtomicU64; 6] = [const { AtomicU64::new(0) }; 6];
 pub static TZ_INSUF: [AtomicU64; 6] = [const { AtomicU64::new(0) }; 6];
@@ -1111,6 +1162,8 @@ pub struct SearchInfo {
     /// nested audits (each audited cutoff would otherwise spawn audits at
     /// every RFP cutoff inside its own verification, compounding cost).
     pub rfp_audit_active: bool,
+    /// research/thor link 6a: prevents the ply-1 verification search recursing.
+    pub reply_verify_active: bool,
     pub tt: std::sync::Arc<TT>,  // shared across Lazy SMP threads
     pub history: Box<History>,
     pub stop: std::sync::Arc<AtomicBool>,  // shared stop flag
@@ -1449,6 +1502,7 @@ impl SearchInfo {
             syzygy: None,
             tb_probe_depth: 4,
             rfp_audit_active: false,
+            reply_verify_active: false,
         }
     }
 
@@ -2458,6 +2512,10 @@ pub(crate) fn init_feature_flags() {
                 if let Ok(n) = v.parse::<i32>() { ABL_RFP_MAX_PLY.store(n, Ordering::Relaxed); }
             }
             if std::env::var("TRACE_ZERO").is_ok() { TRACE_ZERO.store(true, Ordering::Relaxed); }
+            if std::env::var("TRACE_REPLY").is_ok() { TRACE_REPLY.store(true, Ordering::Relaxed); }
+            if let Ok(v) = std::env::var("VERIFY_PLY1") {
+                if let Ok(n) = v.parse::<i32>() { VERIFY_PLY1.store(n, Ordering::Relaxed); }
+            }
             if std::env::var("NO_IIR").is_ok() { FEAT_IIR.store(false, Ordering::Relaxed); }
             if std::env::var("NO_HINDSIGHT").is_ok() { FEAT_HINDSIGHT.store(false, Ordering::Relaxed); }
             if std::env::var("NO_CORRECTION").is_ok() { FEAT_CORRECTION.store(false, Ordering::Relaxed); }
@@ -3331,6 +3389,22 @@ fn emit_final_info(info: &SearchInfo, board: &Board, nodes: u64) {
                 TZ_QS[ply].load(Ordering::Relaxed), TZ_NMP[ply].load(Ordering::Relaxed),
                 TZ_RFP[ply].load(Ordering::Relaxed));
         }
+    }
+    if TRACE_REPLY.load(Ordering::Relaxed) {
+        let lab = ["<0", "0-49", "50-99", "100-199", "200-399", "400-799", "800+"];
+        for (f, fname) in [(0usize, "RFP"), (1usize, "NMP")] {
+            let m: Vec<u64> = (0..7).map(|i| RN_MARGIN[f*8+i].load(Ordering::Relaxed)).collect();
+            let d: Vec<u64> = (0..6).map(|i| RN_DEPTH[f*6+i].load(Ordering::Relaxed)).collect();
+            eprintln!("RN {} margin {}", fname,
+                lab.iter().zip(&m).map(|(l,v)| format!("{}={}", l, v)).collect::<Vec<_>>().join(" "));
+            eprintln!("RN {} depth 1-2={} 3-4={} 5-6={} 7-8={} 9-12={} 13+={}",
+                fname, d[0], d[1], d[2], d[3], d[4], d[5]);
+            eprintln!("RN {} prevmove quiet={} capture={}", fname,
+                RN_PREVCAP[f*2].load(Ordering::Relaxed), RN_PREVCAP[f*2+1].load(Ordering::Relaxed));
+        }
+        eprintln!("RN NMP verify notrun={} confirmed={} refuted={}",
+            RN_NMPVER[0].load(Ordering::Relaxed), RN_NMPVER[1].load(Ordering::Relaxed),
+            RN_NMPVER[2].load(Ordering::Relaxed));
     }
     if info.silent || info.completed_depth <= 0 {
         return;
@@ -5485,7 +5559,10 @@ fn negamax(
                     }
                 }
                 tz(&TZ_RFP, ply); // research/thor
-                return static_eval - margin;
+                rn_record(0, ply, static_eval, beta, depth, board); // link 5
+                if !reply_cut_refuted(board, info, beta, ply) { // link 6a
+                    return static_eval - margin;
+                }
             }
         }
     }
@@ -5576,12 +5653,28 @@ fn negamax(
                 if v_score >= beta {
                     info.stats.nmp_cutoffs += 1;
                     tz(&TZ_NMP, ply); // research/thor
-                    return nmp_score;
+                    rn_record(1, ply, static_eval, beta, depth, board); // link 5
+                    if TRACE_REPLY.load(Ordering::Relaxed) && ply == 1 {
+                        RN_NMPVER[1].fetch_add(1, Ordering::Relaxed); // ran, confirmed
+                    }
+                    if !reply_cut_refuted(board, info, beta, ply) { // link 6a
+                        return nmp_score;
+                    }
                 }
                 info.stats.nmp_verify_fail += 1;
+                if TRACE_REPLY.load(Ordering::Relaxed) && ply == 1 {
+                    RN_NMPVER[2].fetch_add(1, Ordering::Relaxed); // ran, REFUTED
+                }
             } else {
                 info.stats.nmp_cutoffs += 1;
-                return nmp_score;
+                tz(&TZ_NMP, ply); // research/thor — was MISSING, TZ_NMP undercounted
+                rn_record(1, ply, static_eval, beta, depth, board); // link 5
+                if TRACE_REPLY.load(Ordering::Relaxed) && ply == 1 {
+                    RN_NMPVER[0].fetch_add(1, Ordering::Relaxed); // verification not run
+                }
+                if !reply_cut_refuted(board, info, beta, ply) { // link 6a
+                    return nmp_score;
+                }
             }
         } else {
             // NMP failed low: extract opponent's best reply from TT for threat detection
