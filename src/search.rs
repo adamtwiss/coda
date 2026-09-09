@@ -1075,6 +1075,7 @@ exp_flag!(exp_iir_allnode, "EXP_IIR_ALLNODE");         // 1: IIR applies at all-
 exp_flag!(exp_se_excess_pct, "EXP_SE_EXCESS_PCT");   // k: singular margin grows by k% of max(0, tt_score - beta)
 exp_flag!(abl_nmp_max_ply, "ABL_NMP_MAX_PLY");      // n: null-move pruning disabled at plies <= n (Thor's reply-node probe)
 exp_flag!(abl_rfp_max_ply, "ABL_RFP_MAX_PLY");      // n: reverse futility pruning disabled at plies <= n
+exp_flag!(abl_razor_max_ply, "ABL_RAZOR_MAX_PLY");  // n: razoring disabled at plies <= n (separate switch, per Thor)
 
 /// Whether the TT-cutoff node-type guard applies at this node: the ablation
 /// flag, minus the experiment waivers for draw-scored entries / low material.
@@ -5493,6 +5494,7 @@ fn negamax(
         if !is_pv
             && ply > 0
             && depth <= tp10(&RAZOR_DEPTH_10X)
+            && !(abl_razor_max_ply() >= 0 && ply <= abl_razor_max_ply())
             && alpha.abs() < 2000
             && info.excluded_move[ply_u] == NO_MOVE
             && static_eval + tp(&RAZOR_MULT) * depth <= alpha
