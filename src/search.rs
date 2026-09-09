@@ -4733,6 +4733,12 @@ macro_rules! trace_gate {
         }
     };
 }
+/// True when this node is on the CODA_TRACE_LINE path (hash match at this ply).
+macro_rules! traced_here {
+    ($info:expr, $hash:expr, $ply:expr) => {
+        !$info.trace_hashes.is_empty() && ($ply as usize) < $info.trace_hashes.len() && $info.trace_hashes[$ply as usize] == $hash
+    };
+}
 macro_rules! trace_node {
     ($info:expr, $hash:expr, $ply:expr, $what:literal, $depth:expr) => {
         if !$info.trace_hashes.is_empty() {
@@ -5505,6 +5511,10 @@ fn negamax(
             // can preserve that advantage. Search those marginal cases.
             let weak_winning_confirmation = alpha > 200 && v > alpha - 32;
             if v <= alpha && !weak_winning_confirmation {
+                if traced_here!(info, board.hash, ply) {
+                    eprintln!("TRACE_REPLY cut=razor ply={} rootdepth={} depth={} se={} alpha={} beta={} margin={} qs={} tt_move={} tt_pv={} cut_node={}",
+                        ply, info.root_depth, depth, static_eval, alpha, beta, alpha - (static_eval + tp(&RAZOR_MULT) * depth), v, move_to_uci(tt_move), tt_pv, cut_node);
+                }
                 info.stats.razor_cutoffs += 1;
                 return v;
             }
@@ -5536,6 +5546,10 @@ fn negamax(
             if static_eval - margin >= beta && !tb_loss_rfp_guard {
                 trace_node!(info, board.hash, ply, "rfp_cut", depth);
                 info.stats.rfp_cutoffs += 1;
+                if traced_here!(info, board.hash, ply) {
+                    eprintln!("TRACE_REPLY cut=rfp ply={} rootdepth={} depth={} se={} alpha={} beta={} margin={} excess={} improving={} pawn_threats={} tt_move={} tt_pv={} cut_node={}",
+                        ply, info.root_depth, depth, static_eval, alpha, beta, margin, static_eval - margin - beta, improving, has_pawn_threats, move_to_uci(tt_move), tt_pv, cut_node);
+                }
                 // RFP_AUDIT (diagnostic): null-verify this static cutoff with
                 // the SAME R formula real NMP uses (sans post-capture +1), and
                 // count rejections per depth. The cutoff is returned regardless
@@ -5670,6 +5684,10 @@ fn negamax(
             // Return null score directly (no dampening — no top engine uses it)
             // Clamp mate scores to beta to avoid inflated mate distance
             let nmp_score = if is_decisive(null_score) { beta } else { null_score };
+            if traced_here!(info, board.hash, ply) {
+                eprintln!("TRACE_REPLY cut=nmp ply={} rootdepth={} depth={} se={} alpha={} beta={} threat_margin={} excess={} r={} null_score={} verify={} tt_move={} tt_pv={} cut_node={}",
+                    ply, info.root_depth, depth, static_eval, alpha, beta, nmp_threat_margin, static_eval - beta - nmp_threat_margin, r, null_score, depth >= tp10(&NMP_VERIFY_DEPTH_10X), move_to_uci(tt_move), tt_pv, cut_node);
+            }
 
             // Verification search at high depths to guard against zugzwang
             if depth >= tp10(&NMP_VERIFY_DEPTH_10X) {
@@ -5929,6 +5947,27 @@ fn negamax(
         MovePicker::new(board, tt_move, safe_ply, checkers, pinned, &info.history, prev_move, pawn_hist_ref, enemy_attacks, our_xray_blockers, &info.moved_piece_stack, &info.moved_to_stack)
     };
     picker.threat_sq = threat_sq;
+    if traced_here!(info, board.hash, ply) && ply_u < info.trace_line_mv.len() {
+        // Diag: rank + ordering score + history of the traced continuation move
+        // in THIS node's move list (fresh picker drained in order; pseudo-legal ranks).
+        let target = info.trace_line_mv[ply_u];
+        let mut p2 = if in_check {
+            MovePicker::new_evasion(tt_move, safe_ply, checkers, pinned, &info.history, prev_move, pawn_hist_ref, enemy_attacks, &info.moved_piece_stack, &info.moved_to_stack)
+        } else {
+            MovePicker::new(board, tt_move, safe_ply, checkers, pinned, &info.history, prev_move, pawn_hist_ref, enemy_attacks, our_xray_blockers, &info.moved_piece_stack, &info.moved_to_stack)
+        };
+        p2.threat_sq = threat_sq;
+        let (mut rank, mut found, mut score, mut n) = (0usize, false, i32::MIN, 0usize);
+        loop {
+            let m = p2.next(board);
+            if m == NO_MOVE { break; }
+            n += 1;
+            if !found { rank += 1; if m == target { found = true; score = p2.diag_last_score(); } }
+        }
+        let mh = info.history.main_score(move_from(target), move_to(target), enemy_attacks);
+        eprintln!("TRACE_REPLY order ply={} rootdepth={} depth={} se={} alpha={} beta={} target={} rank={} of={} score={} main_hist={} tt_move={} tt_pv={} cut_node={} in_check={} excluded={}",
+            ply, info.root_depth, depth, static_eval, alpha, beta, move_to_uci(target), if found { rank as i32 } else { -1 }, n, score, mh, move_to_uci(tt_move), tt_pv, cut_node, in_check, info.excluded_move[ply_u] != NO_MOVE);
+    }
 
     let mut best_move = NO_MOVE;
     let mut best_score = -INFINITY;

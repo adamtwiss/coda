@@ -906,6 +906,12 @@ impl MovePicker {
         }
     }
 
+    /// Diag: ordering score of the move most recently returned by `next()`
+    /// (i32::MIN for the TT-move stage, which carries no score).
+    pub fn diag_last_score(&self) -> i32 {
+        if self.index > 0 && self.index <= self.moves.len { unsafe { self.scores[self.index - 1].assume_init() } } else { i32::MIN }
+    }
+
     /// Selection sort: find best from current index, swap to front, return it.
     /// Selection sort: find best scored move and swap to front.
     fn pick_best(&mut self) -> Move {
