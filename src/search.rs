@@ -794,6 +794,30 @@ pub fn tp10(param: &AtomicI32) -> i32 {
 
 // Feature flags for ablation testing. All true = normal play.
 pub static FEAT_NMP: AtomicBool = AtomicBool::new(true);
+// === research/thor instrumentation — NEVER MERGED ===
+// Ply-gated ablation: disable NMP / RFP only at plies <= the given value, so we
+// can ask whether a suppressed line is suppressed AT THE REPLY NODE (ply 1)
+// specifically, rather than anywhere in the subtree. -1 = never disable.
+pub static ABL_NMP_MAX_PLY: AtomicI32 = AtomicI32::new(-1);
+pub static ABL_RFP_MAX_PLY: AtomicI32 = AtomicI32::new(-1);
+// Zero-collapse trace: count, by ply, which return path produced a score at the
+// shallow plies of a search that has collapsed on 0.00.
+pub static TRACE_ZERO: AtomicBool = AtomicBool::new(false);
+pub static TZ_REP: [AtomicU64; 6] = [const { AtomicU64::new(0) }; 6];
+pub static TZ_R50: [AtomicU64; 6] = [const { AtomicU64::new(0) }; 6];
+pub static TZ_INSUF: [AtomicU64; 6] = [const { AtomicU64::new(0) }; 6];
+pub static TZ_CUCKOO: [AtomicU64; 6] = [const { AtomicU64::new(0) }; 6];
+pub static TZ_TTCUT: [AtomicU64; 6] = [const { AtomicU64::new(0) }; 6];
+pub static TZ_QS: [AtomicU64; 6] = [const { AtomicU64::new(0) }; 6];
+pub static TZ_NMP: [AtomicU64; 6] = [const { AtomicU64::new(0) }; 6];
+pub static TZ_RFP: [AtomicU64; 6] = [const { AtomicU64::new(0) }; 6];
+pub static TZ_VISIT: [AtomicU64; 6] = [const { AtomicU64::new(0) }; 6];
+#[inline]
+pub fn tz(bucket: &[AtomicU64; 6], ply: i32) {
+    if TRACE_ZERO.load(Ordering::Relaxed) && (0..6).contains(&ply) {
+        bucket[ply as usize].fetch_add(1, Ordering::Relaxed);
+    }
+}
 /// TM diagnostic mode — emit per-move TM state via `info string tm-debug`.
 /// Off by default, controlled by UCI option `TMDebug`.
 pub static TM_DEBUG: AtomicBool = AtomicBool::new(false);
@@ -2426,6 +2450,14 @@ pub(crate) fn init_feature_flags() {
             if std::env::var("NO_BAD_NOISY").is_ok() { FEAT_BAD_NOISY.store(false, Ordering::Relaxed); }
             if std::env::var("NO_EXTENSIONS").is_ok() { FEAT_EXTENSIONS.store(false, Ordering::Relaxed); }
             if std::env::var("NO_FH_BLEND").is_ok() { FEAT_FH_BLEND.store(false, Ordering::Relaxed); }
+            // research/thor
+            if let Ok(v) = std::env::var("ABL_NMP_MAX_PLY") {
+                if let Ok(n) = v.parse::<i32>() { ABL_NMP_MAX_PLY.store(n, Ordering::Relaxed); }
+            }
+            if let Ok(v) = std::env::var("ABL_RFP_MAX_PLY") {
+                if let Ok(n) = v.parse::<i32>() { ABL_RFP_MAX_PLY.store(n, Ordering::Relaxed); }
+            }
+            if std::env::var("TRACE_ZERO").is_ok() { TRACE_ZERO.store(true, Ordering::Relaxed); }
             if std::env::var("NO_IIR").is_ok() { FEAT_IIR.store(false, Ordering::Relaxed); }
             if std::env::var("NO_HINDSIGHT").is_ok() { FEAT_HINDSIGHT.store(false, Ordering::Relaxed); }
             if std::env::var("NO_CORRECTION").is_ok() { FEAT_CORRECTION.store(false, Ordering::Relaxed); }
@@ -3287,6 +3319,19 @@ fn build_pv_string(info: &SearchInfo, board: &Board, target_depth: i32) -> Strin
 }
 
 fn emit_final_info(info: &SearchInfo, board: &Board, nodes: u64) {
+    // research/thor: dump the zero-collapse trace before the final info line.
+    if TRACE_ZERO.load(Ordering::Relaxed) {
+        eprintln!("TZ ply | visits    r50   insuf    rep  cuckoo   ttcut      qs     nmp     rfp");
+        for ply in 0..6 {
+            eprintln!("TZ  {}   | {:8} {:6} {:6} {:6} {:7} {:7} {:7} {:7} {:7}",
+                ply,
+                TZ_VISIT[ply].load(Ordering::Relaxed), TZ_R50[ply].load(Ordering::Relaxed),
+                TZ_INSUF[ply].load(Ordering::Relaxed), TZ_REP[ply].load(Ordering::Relaxed),
+                TZ_CUCKOO[ply].load(Ordering::Relaxed), TZ_TTCUT[ply].load(Ordering::Relaxed),
+                TZ_QS[ply].load(Ordering::Relaxed), TZ_NMP[ply].load(Ordering::Relaxed),
+                TZ_RFP[ply].load(Ordering::Relaxed));
+        }
+    }
     if info.silent || info.completed_depth <= 0 {
         return;
     }
@@ -4625,15 +4670,19 @@ fn negamax(
     // `apply_halfmove_scale(info.eval(board), halfmove)` returns a possibly-
     // nonzero scaled eval — eval doesn't know about insufficient material
     // or repetition (only halfmove via the scale itself handles 50mr).
+    tz(&TZ_VISIT, ply); // research/thor
     if ply > 0 {
         let draw_score: i32 = 0;
         if is_rule50_draw(board) {
+            tz(&TZ_R50, ply);
             return draw_score;
         }
         if board.is_insufficient_material() {
+            tz(&TZ_INSUF, ply);
             return draw_score;
         }
         if board.is_repetition_draw(ply) {
+            tz(&TZ_REP, ply);
             return draw_score;
         }
     }
@@ -4658,6 +4707,7 @@ fn negamax(
     // TB probe, nor negamax mate-distance pruning (qsearch's TT cutoff at
     // depth >= -1 is a superset of the depth-0 requirement).
     if depth <= 0 {
+        tz(&TZ_QS, ply); // research/thor
         return quiescence(board, info, alpha, beta, ply);
     }
 
@@ -4855,6 +4905,7 @@ fn negamax(
     if ply > 0 && alpha < 0 && FEAT_CUCKOO.load(Ordering::Relaxed) && crate::cuckoo::has_game_cycle(board, ply) {
         alpha = 0;
         if alpha >= beta {
+            tz(&TZ_CUCKOO, ply); // research/thor
             return alpha;
         }
     }
@@ -5030,6 +5081,7 @@ fn negamax(
                             }
                         }
                     }
+                    tz(&TZ_TTCUT, ply); // research/thor
                     return tt_score;
                 }
 
@@ -5346,7 +5398,8 @@ fn negamax(
             && !is_promotion(tt_move);
         // TB/mate guard: every peer skips RFP when eval is near mate/TB range.
         // Without this, RFP could cut a node where NNUE sees forced mate. (RFP audit RFP-3)
-        if depth <= tp(&RFP_DEPTH) && ply > 0 && !tt_pv && !tt_move_is_quiet && info.excluded_move[ply_u] == NO_MOVE && FEAT_RFP.load(Ordering::Relaxed)
+        if ply > ABL_RFP_MAX_PLY.load(Ordering::Relaxed)
+            && depth <= tp(&RFP_DEPTH) && ply > 0 && !tt_pv && !tt_move_is_quiet && info.excluded_move[ply_u] == NO_MOVE && FEAT_RFP.load(Ordering::Relaxed)
             && static_eval.abs() < MATE_SCORE - 200 {
             let mut margin = if improving { depth * tp(&RFP_MARGIN_IMP) } else { depth * tp(&RFP_MARGIN_NOIMP) };
             // Root-depth-aware relaxation: + depth*(root_depth-thresh)+ *coef/100.
@@ -5431,6 +5484,7 @@ fn negamax(
                         info.stats.rfp_audit_var_fp[var_bucket] += 1;
                     }
                 }
+                tz(&TZ_RFP, ply); // research/thor
                 return static_eval - margin;
             }
         }
@@ -5441,7 +5495,8 @@ fn negamax(
         (king_zone_pressure - (tp10(&NMP_KING_ZONE_MAX_10X) - 1)).max(0) * 64
         + (any_threat_count - 2).max(0) * 64;
 
-    if depth >= tp10(&NMP_MIN_DEPTH_10X) && !in_check && ply > 0 && stm_non_pawn != 0
+    if ply > ABL_NMP_MAX_PLY.load(Ordering::Relaxed)
+        && depth >= tp10(&NMP_MIN_DEPTH_10X) && !in_check && ply > 0 && stm_non_pawn != 0
         && beta - alpha == 1 && static_eval >= beta + nmp_threat_margin
         && !prev_was_null  // Prevent consecutive null moves
         && ply >= info.nmp_min_ply  // Ply barrier: verification subtree cannot re-trigger NMP (audit B1)
@@ -5520,6 +5575,7 @@ fn negamax(
                 }
                 if v_score >= beta {
                     info.stats.nmp_cutoffs += 1;
+                    tz(&TZ_NMP, ply); // research/thor
                     return nmp_score;
                 }
                 info.stats.nmp_verify_fail += 1;
