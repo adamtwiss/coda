@@ -437,6 +437,31 @@ tunables!(
     (DEXT_MARGIN_CORR, 13, 0, 64, 3.0, true),
     (DEXT_MARGIN_BASE, 37, -50, 150, 6.0, true),
     (DEXT_CAP, 9, 4, 32, 2.0, true),
+    // Depth of the reply-node verification search. 0 disables the device.
+    //
+    // At the opponent's FIRST reply node — ply 1 and nowhere else — reverse
+    // futility and null-move pruning can end the search on a static verdict:
+    // the defender's eval clears beta, so we return without trying a move.
+    // Measured on positions a stronger engine solves and we do not, RFP and NMP
+    // together terminate 69-79% of ply-1 nodes and ~0% of our own even plies,
+    // and the reply that refutes the verdict is our OWN best move at that node
+    // 84% of the time, first appearing at median depth 1. The information that
+    // would overturn the cut is exactly the information the cut declines to
+    // compute, which is why no property of the node itself separates a wrong
+    // cut from a right one — margin, depth and move quietness are all
+    // indistinguishable between the cases.
+    //
+    // Default 2 from a measured curve on 534 such positions: verification
+    // recovers 4.9% at depth 1, 9.4% at 2 and 11.2% at 4, against 18.0% for
+    // disabling RFP and NMP outright at ply 1. Depth 2 is the knee. Cost on 200
+    // neutral positions from real games is between -4.4% and +1.5% wall-clock
+    // at fixed depth, i.e. inside measurement noise either way.
+    //
+    // Confinement to ply 1 is the design, not an implementation detail:
+    // suppressing these features to ply 3 recovers nothing further and searches
+    // worse, and blanket ablation costs 2.4-4.7x the nodes for no gain.
+    // Non-core until it has earned its keep in games.
+    (REPLY_VERIFY_DEPTH, 2, 0, 6, 1.0, false),
     // Root-decidedness gate on POSITIVE singular extensions. When the root score
     // says the game is already decided, the singular test stops discriminating:
     // every alternative falls below `tt_score - depth`, so nearly every node
@@ -776,6 +801,26 @@ pub fn should_instant_reply(
         && !root_failing_low
 }
 
+/// True when a ply-1 static cut should be trusted.
+///
+/// Away from the reply node, or with the device off, this is always true and
+/// the caller returns exactly as before. At ply 1 it runs a small null-window
+/// search of the node and reports whether that search agrees with the static
+/// verdict; a cut is abandoned only when the search actively refutes it. See
+/// REPLY_VERIFY_DEPTH for why this applies at one ply and nowhere else.
+#[inline]
+fn reply_cut_holds(board: &mut Board, info: &mut SearchInfo, beta: i32, ply: i32) -> bool {
+    let d = tp(&REPLY_VERIFY_DEPTH);
+    if d <= 0 || ply != 1 || info.reply_verify_active {
+        return true;
+    }
+    info.reply_verify_active = true;
+    let v = negamax(board, info, beta - 1, beta, d, ply, false);
+    info.reply_verify_active = false;
+    // A stopped search returns 0 and means nothing; keep the static verdict.
+    info.stop.load(Ordering::Relaxed) || v >= beta
+}
+
 /// Get a tunable parameter value (inline for hot paths)
 #[inline(always)]
 fn tp(param: &AtomicI32) -> i32 {
@@ -1087,6 +1132,9 @@ pub struct SearchInfo {
     /// nested audits (each audited cutoff would otherwise spawn audits at
     /// every RFP cutoff inside its own verification, compounding cost).
     pub rfp_audit_active: bool,
+    /// Set while a reply-node verification search is running, so the
+    /// verification cannot trigger another one inside itself.
+    pub reply_verify_active: bool,
     pub tt: std::sync::Arc<TT>,  // shared across Lazy SMP threads
     pub history: Box<History>,
     pub stop: std::sync::Arc<AtomicBool>,  // shared stop flag
@@ -1425,6 +1473,7 @@ impl SearchInfo {
             syzygy: None,
             tb_probe_depth: 4,
             rfp_audit_active: false,
+            reply_verify_active: false,
         }
     }
 
@@ -5431,7 +5480,9 @@ fn negamax(
                         info.stats.rfp_audit_var_fp[var_bucket] += 1;
                     }
                 }
-                return static_eval - margin;
+                if reply_cut_holds(board, info, beta, ply) {
+                    return static_eval - margin;
+                }
             }
         }
     }
@@ -5520,12 +5571,16 @@ fn negamax(
                 }
                 if v_score >= beta {
                     info.stats.nmp_cutoffs += 1;
-                    return nmp_score;
+                    if reply_cut_holds(board, info, beta, ply) {
+                        return nmp_score;
+                    }
                 }
                 info.stats.nmp_verify_fail += 1;
             } else {
                 info.stats.nmp_cutoffs += 1;
-                return nmp_score;
+                if reply_cut_holds(board, info, beta, ply) {
+                    return nmp_score;
+                }
             }
         } else {
             // NMP failed low: extract opponent's best reply from TT for threat detection
