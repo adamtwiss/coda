@@ -6494,6 +6494,9 @@ fn negamax(
         // probe; the re-search guard `new_depth > lmr_depth` is then false, so
         // the deeper probe stands and PVS proceeds at new_depth as usual.
         if reduction != 0 {
+            // Keep the planned horizon for the eventual full-window PV search.
+            // Adaptive shallowing still applies to zero-window verification.
+            let planned_pv_depth = new_depth;
             info.stats.lmr_searches += 1;
 
             // LMR: reduced depth, zero window
@@ -6584,7 +6587,7 @@ fn negamax(
 
             if lmr_score > alpha && lmr_score < beta && !info.stop.load(Ordering::Relaxed) {
                 // PVS failed high: full window re-search
-                score = -negamax(board, info, -beta, -alpha, new_depth, ply + 1, false);
+                score = -negamax(board, info, -beta, -alpha, new_depth.max(planned_pv_depth), ply + 1, false);
             } else {
                 score = lmr_score;
             }
