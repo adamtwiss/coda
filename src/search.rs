@@ -1075,7 +1075,8 @@ exp_flag!(exp_iir_allnode, "EXP_IIR_ALLNODE");         // 1: IIR applies at all-
 exp_flag!(exp_se_excess_pct, "EXP_SE_EXCESS_PCT");   // k: singular margin grows by k% of max(0, tt_score - beta)
 exp_flag!(abl_nmp_max_ply, "ABL_NMP_MAX_PLY");      // n: null-move pruning disabled at plies <= n (Thor's reply-node probe)
 exp_flag!(abl_rfp_max_ply, "ABL_RFP_MAX_PLY");      // n: reverse futility pruning disabled at plies <= n
-exp_flag!(abl_razor_max_ply, "ABL_RAZOR_MAX_PLY");  // n: razoring disabled at plies <= n (separate switch, per Thor)
+exp_flag!(abl_razor_max_ply, "ABL_RAZOR_MAX_PLY");
+exp_flag!(diag_root_static, "DIAG_ROOT_STATIC");  // 1: print raw/scaled/corrected static eval at every root visit  // n: razoring disabled at plies <= n (separate switch, per Thor)
 
 /// Whether the TT-cutoff node-type guard applies at this node: the ablation
 /// flag, minus the experiment waivers for draw-scored entries / low material.
@@ -5389,6 +5390,9 @@ fn negamax(
         scaled_eval = apply_halfmove_scale(raw_eval, board.halfmove);
         // Apply correction history to the halfmove-scaled value
         static_eval = if FEAT_CORRECTION.load(Ordering::Relaxed) { corrected_eval(info, board, scaled_eval, ply_u) } else { scaled_eval };
+        if ply == 0 && diag_root_static() == 1 {
+            eprintln!("TRACE_ROOT_STATIC rootdepth={} raw={} scaled={} corrected={} tt_static_hit={}", info.root_depth, raw_eval, scaled_eval, static_eval, tt_static_eval_hit);
+        }
         if ply_u < MAX_PLY {
             info.static_evals[ply_u] = static_eval;
         }
