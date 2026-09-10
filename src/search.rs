@@ -486,6 +486,16 @@ tunables!(
     // Fixed-point /10.
     (CORR_BONUS_CAP_DIV_10X, 38, 10, 160, 15.0, false),
     (CORR_HIST_GRAIN_T, 13, 1, 32, 1.55, false),
+    // Corrhist lean (thread 3): when the correction history has pushed the
+    // static DOWN by a strong amount and the search still returns a score
+    // far above that corrected static, lean the returned score a bounded
+    // fraction toward the static. Units from corrhist's own range: the
+    // largest correction it can apply is sum(CORR_W_*) * CORR_HIST_LIMIT /
+    // CORR_HIST_DIV / CORR_HIST_GRAIN_T = 710*1024/292/13 ~= 191 cp; "strong"
+    // = a quarter of that (48), the disagreement gate K = half of it (96).
+    (CORR_LEAN_STRONG, 48, 16, 191, 6.0, false),   // |correction| that counts as strong, cp
+    (CORR_LEAN_K, 96, 32, 400, 10.0, false),       // search - corrected static gap that arms the lean, cp
+    (CORR_LEAN_PCT, 25, 5, 60, 4.0, false),        // fraction of the gap leaned toward the static, percent
     // Correction-history output scaling — the output is scaled rather than the
     // input pre-clamped:
     //   bonus = err * (depth+1).min(W) / CORR_ERR_DIV
@@ -7034,6 +7044,29 @@ fn negamax(
         // and self-stabilises. Both are in scaled space, so the err term
         // isolates positional miscalibration rather than halfmove decay.
         update_correction_history(info, board, best_score, static_eval, depth, ply_u);
+    }
+
+    // Corrhist lean (thread 3): at a non-PV node where the correction history
+    // has pushed the static eval DOWN by at least CORR_LEAN_STRONG and the
+    // search still returns a score more than CORR_LEAN_K above that corrected
+    // static, the search is holding a verdict the (corrected) eval does not
+    // credit — the measured shape of the slow-attack losses, where SF19 refutes
+    // the defence a few plies deeper. Lean the returned score CORR_LEAN_PCT of
+    // the gap toward the static. Bound semantics are preserved: a fail-high
+    // stays >= beta, a fail-low stays <= alpha (the lean only moves the score
+    // down, so the fail-low side needs no clamp). PV nodes, in-check nodes,
+    // decisive scores and SE verification are left untouched. The TT entry
+    // keeps the unleaned score; only the value handed to the parent leans.
+    if !is_pv
+        && !in_check
+        && info.excluded_move[ply_u] == NO_MOVE
+        && !is_decisive(best_score)
+        && scaled_eval > -(MATE_IN_MAX_PLY)
+        && scaled_eval - static_eval >= tp(&CORR_LEAN_STRONG)
+        && best_score - static_eval > tp(&CORR_LEAN_K)
+    {
+        let leaned = best_score - (best_score - static_eval) * tp(&CORR_LEAN_PCT) / 100;
+        best_score = if best_score >= beta { leaned.max(beta) } else { leaned };
     }
 
     // Fail-high score blending: dampen inflated cutoff scores at non-PV nodes.
