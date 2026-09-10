@@ -272,7 +272,17 @@ tunables!(
     (TM_FORCED_WEAK_1000, 631, 300, 950, 25.0, false),    // weak-forced * N/1000
     (TM_SUBTREE_MULT_100, 140, 90, 200, 4.0, false),      // (base-frac) * N/100
     (TM_FORCED_MARGIN_WEAK, 170, 80, 320, 8.0, false),    // weak-forced cp margin
-    (TM_FORCED_MARGIN_STRONG, 400, 200, 620, 12.0, false),// strong-forced cp margin
+    (TM_FORCED_MARGIN_STRONG, 400, 200, 620, 12.0, false),
+    // Worse-state floor on the time cuts (thread 5, 2026-09-10). When the root
+    // score is at or below -TM_WORSE_THRESH (own units; 100cp is the matched
+    // point for an opponent's -0.5) and not decisive, the forced-move and
+    // best-move-subtree multipliers are floored at 1.0 and so is the product.
+    // In 496 CCRL games Coda spent 1.10x its median move time when worse where
+    // every engine that held 100% of such positions spent 1.6-2.3x, and its
+    // lost episodes ran at 0.94x (0.79x right after an eval drop): a stably
+    // worse position with one defensive move reads as "confident" to all
+    // three compressing factors at once. Level and better states untouched.
+    (TM_WORSE_THRESH, 100, 40, 300, 15.0, false),// strong-forced cp margin
     (LMR_HIST_DIV, 23266, 2000, 100000, 4900.0, true),
     // Capture-LMR history divisor. Separate from the quiet divisor above:
     // capture history is single-source, so it needs a smaller divisor than
@@ -4224,6 +4234,10 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                 ForcedState::Weak   => tp(&TM_FORCED_WEAK_1000) as f64 / 1000.0,
                 ForcedState::None   => 1.0,
             };
+            // Worse-state floor (see TM_WORSE_THRESH): a bad position whose
+            // one defensive move is "obviously best" must not be played fast.
+            let worse_state = prev_score <= -tp(&TM_WORSE_THRESH) && !is_decisive(prev_score);
+            let forced_move_multiplier = if worse_state { forced_move_multiplier.max(1.0) } else { forced_move_multiplier };
 
             // Factor 4: Best-move subtree-size multiplier.
             // Formula: (1.62 - nodes_fraction) × 1.4, range ~[0.87, 2.27]
@@ -4248,6 +4262,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             } else {
                 1.0  // early depths: neutral
             };
+            let subtree_size_multiplier = if worse_state { subtree_size_multiplier.max(1.0) } else { subtree_size_multiplier };
 
             // Factor 5: Score-trend multiplier (falling-eval). The signal
             // `score_drop` (= tm_prev_score - prev_score, in cp; positive =
@@ -4321,6 +4336,9 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                 * subtree_size_multiplier
                 * score_trend_multiplier
                 * cross_thread_instability;
+            if worse_state {
+                multiplier = multiplier.max(1.0);
+            }
             // No-inc clamp: factor product up to 6.5× at no-inc TCs blows
             // adjusted_soft past hard_time via iteration-overflow even with
             // the smaller no-inc opt baseline — observed at 3+0 as a run of a
