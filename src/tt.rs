@@ -337,6 +337,15 @@ impl TTEntry {
 }
 
 impl TT {
+    pub fn pair_state(&self) {
+        use crate::pair_trace::State;
+        let mut out=Vec::new();
+        self.mask.put(&mut out);self.generation.load(Ordering::Relaxed).put(&mut out);
+        for b in self.buckets.iter() {for i in 0..BUCKET_SIZE {b.data[i].load(Ordering::Relaxed).put(&mut out);b.keys[i].load(Ordering::Relaxed).put(&mut out);}}
+        crate::pair_trace::save("tt",&out);
+        if let Some(bytes)=crate::pair_trace::restore("tt") {let mut input=bytes.as_slice();let mut mask=0usize;mask.get(&mut input);assert_eq!(mask,self.mask);let mut gen=0u8;gen.get(&mut input);self.generation.store(gen,Ordering::Relaxed);
+            for b in self.buckets.iter() {for i in 0..BUCKET_SIZE {let mut d=0u64;let mut k=0u32;d.get(&mut input);k.get(&mut input);b.data[i].store(d,Ordering::Relaxed);b.keys[i].store(k,Ordering::Relaxed);}}assert!(input.is_empty());eprintln!("STATE restored=tt");}
+    }
     /// Create a new TT with the given size in megabytes.
     pub fn new(mb: usize) -> Self {
         let bytes = mb * 1024 * 1024;

@@ -1,6 +1,18 @@
 //! T1-only diagnostic event tracing. No search policy changes unless a specific
 //! stage/node/gate intervention is explicitly selected by environment.
 use std::{cell::RefCell,fmt,sync::OnceLock};
+// Explicit scalar serialization: no struct padding, pointers, or atomics copied.
+pub trait State { fn put(&self, out:&mut Vec<u8>); fn get(&mut self, input:&mut &[u8]); }
+macro_rules! scalar { ($($t:ty),*) => {$ (impl State for $t {
+    fn put(&self,o:&mut Vec<u8>){o.extend_from_slice(&self.to_le_bytes());}
+    fn get(&mut self,i:&mut &[u8]){let n=std::mem::size_of::<Self>();*self=Self::from_le_bytes(i[..n].try_into().unwrap());*i=&i[n..];}
+})*}; }
+scalar!(u8,u16,u32,u64,i16,i32,usize);
+impl State for bool {fn put(&self,o:&mut Vec<u8>){o.push(*self as u8);}fn get(&mut self,i:&mut &[u8]){assert!(i[0]<=1);*self=i[0]!=0;*i=&i[1..];}}
+impl<T:State,const N:usize> State for [T;N] {fn put(&self,o:&mut Vec<u8>){for x in self{x.put(o)}}fn get(&mut self,i:&mut &[u8]){for x in self{x.get(i)}}}
+pub fn save(name:&str,data:&[u8]) {if let Ok(dir)=std::env::var("PAIR_SAVE") {std::fs::write(format!("{dir}/{name}.bin"),data).unwrap();}}
+pub fn restore(name:&str)->Option<Vec<u8>> {let groups=std::env::var("PAIR_RESTORE_GROUPS").unwrap_or_default();
+    if groups.split(',').any(|g|g==name) {Some(std::fs::read(format!("{}/{}.bin",std::env::var("PAIR_RESTORE").unwrap(),name)).unwrap())}else{None}}
 #[derive(Default)] struct Data {stage:Option<(&'static str,i32)>, stack:Vec<(u64,i32,u64)>, next:u64}
 thread_local!{static DATA:RefCell<Data>=RefCell::new(Data::default());}
 pub fn target(n:u64)->bool {static AT:OnceLock<Option<u64>>=OnceLock::new();

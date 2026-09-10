@@ -4611,6 +4611,20 @@ fn traced_probe(board:&mut Board,info:&mut SearchInfo,alpha:i32,depth:i32,ply:i3
     let _scope=crate::pair_trace::stage(info.nodes,"scout",ply);
     -negamax(board,info,-alpha-1,-alpha,depth,ply,cut)
 }
+fn pair_state(info:&mut SearchInfo,n:u64) {
+    if !crate::pair_trace::target(n) {return;}
+    assert_eq!(info.num_threads,1,"state intervention is T1-only");
+    use crate::pair_trace::State;
+    info.tt.pair_state();
+    macro_rules! group {($name:literal,$($field:expr),+) => {{
+        let mut out=Vec::new(); $($field.put(&mut out);)+
+        crate::pair_trace::save($name,&out);
+        if let Some(bytes)=crate::pair_trace::restore($name) {let mut input=bytes.as_slice();$($field.get(&mut input);)+assert!(input.is_empty());eprintln!("STATE restored={}",$name);}
+    }};}
+    group!("history",info.history.main,info.history.capture,info.history.cont_hist,*info.pawn_hist);
+    group!("correction",*info.pawn_corr,*info.np_corr,*info.cont_corr,*info.trans_corr);
+    group!("stack",info.static_evals,info.tt_pv_stack,info.reductions,info.excluded_move,info.double_ext_count,info.cutoff_count,info.moved_piece_stack,info.moved_to_stack,info.pv_table,info.pv_len,info.nmp_min_ply);
+}
 fn negamax_impl(
     board: &mut Board,
     info: &mut SearchInfo,
@@ -6619,6 +6633,7 @@ fn negamax_impl(
                 // PVS failed high: full window re-search
                 let _scope=crate::pair_trace::stage(pair_start,"full",ply+1);
                 let pair_full_start=info.nodes;
+                pair_state(info,pair_start);
                 score = -negamax(board, info, -beta, -alpha, new_depth, ply + 1, false);
                 eprintln!("PAIR route=lmr entry={} start={} hash={} ply={} scout_depth={} full_depth={} cut={} scout={} full={} alpha={} beta={} cost={} stopped={}",pair_start,pair_full_start,board.hash,ply+1,pair_depth,new_depth,pair_cut,lmr_score,score,alpha,beta,info.nodes-pair_full_start,info.stop.load(Ordering::Relaxed));
             } else {
@@ -6634,6 +6649,7 @@ fn negamax_impl(
                 let pair_scout=pvs_score;
                 let pair_full_start=info.nodes;
                 let _scope=crate::pair_trace::stage(pair_start,"full",ply+1);
+                pair_state(info,pair_start);
                 pvs_score = -negamax(board, info, -beta, -alpha, new_depth, ply + 1, false);
                 eprintln!("PAIR route=plain entry={} start={} hash={} ply={} scout_depth={} full_depth={} cut={} scout={} full={} alpha={} beta={} cost={} stopped={}",pair_start,pair_full_start,board.hash,ply+1,new_depth,new_depth,!cut_node,pair_scout,pvs_score,alpha,beta,info.nodes-pair_full_start,info.stop.load(Ordering::Relaxed));
             }
