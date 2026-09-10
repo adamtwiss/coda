@@ -5423,6 +5423,9 @@ fn negamax(
                         info.moved_piece_stack[ply_u] = 0;
                         info.moved_to_stack[ply_u] = 0;
                     }
+                    // A null move adds no double extension; inherit this path's
+                    // count, not the child slot left by a previous sibling.
+                    info.double_ext_count[ply_u + 1] = info.double_ext_count[ply_u];
                     let null_score = -negamax(board, info, -beta, -beta + 1, depth - r, ply + 1, !cut_node);
                     if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
                     if info.threat_stack.active { info.threat_stack.pop(); }
@@ -5486,6 +5489,8 @@ fn negamax(
             info.moved_piece_stack[ply_u] = 0;
             info.moved_to_stack[ply_u] = 0;
         }
+        // Match ordinary child setup, but a null move consumes no extension.
+        info.double_ext_count[ply_u + 1] = info.double_ext_count[ply_u];
         let null_score = -negamax(board, info, -beta, -beta + 1, depth - r, ply + 1, !cut_node);
         if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
         if info.threat_stack.active { info.threat_stack.pop(); }
@@ -5659,6 +5664,10 @@ fn negamax(
                 info.moved_piece_stack[ply_u] = go_piece(pc_moved_piece) as u8;
                 info.moved_to_stack[ply_u] = move_to(mv);
             }
+
+            // ProbCut applies no extensions. Reset for every candidate, before
+            // either verification search can observe a stale sibling budget.
+            info.double_ext_count[ply_u + 1] = info.double_ext_count[ply_u];
 
             // Cheap qsearch verification before expensive negamax (Stockfish pattern)
             let mut score = -quiescence(board, info, -candidate_beta, -candidate_beta + 1, ply + 1);
@@ -8083,6 +8092,86 @@ pub(crate) fn test_net_path() -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nmp_null_child_inherits_double_extension_budget() {
+        crate::init();
+        let depth = tp10(&NMP_MIN_DEPTH_10X);
+        assert!(depth < tp10(&NMP_VERIFY_DEPTH_10X), "fixture must cut before verification");
+        let cap = tp(&DEXT_CAP);
+        // Catch both failure modes: a spent path borrowing a fresh sibling's
+        // budget, and a fresh path being denied extensions by a spent sibling.
+        for (parent_count, stale_child_count) in [(cap, 0), (0, cap), (cap - 1, cap)] {
+            let mut info = SearchInfo::new(1);
+            let mut board = Board::from_fen(
+                "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+            );
+            let fen = board.to_fen();
+            let hash = board.hash;
+            let quiet = make_move(square(4, 1), square(4, 3), FLAG_NONE);
+            // Eval-only parent entry: too shallow for a cutoff; a quiet TT
+            // move excludes RFP. Static eval == beta permits actual NMP.
+            info.tt.store(hash, -2, 0, TT_FLAG_UPPER, quiet, 0, false);
+            board.make_null_move();
+            info.tt.store(board.hash, depth, -1, TT_FLAG_EXACT, NO_MOVE, 0, false);
+            board.unmake_null_move();
+            info.double_ext_count[1] = parent_count;
+            info.double_ext_count[2] = stale_child_count;
+
+            // The child fails low from TT, so NMP cuts before the ordinary
+            // move loop can mask a missing write. No NNUE net is required.
+            assert_eq!(negamax(&mut board, &mut info, -1, 0, depth, 1, true), 1);
+            assert_eq!(info.stats.nmp_attempts, 1);
+            assert_eq!(info.stats.nmp_cutoffs, 1);
+            assert_eq!(info.stats.nmp_verify, 0);
+            assert_eq!(info.stats.tt_cutoffs, 1, "null child must reach negamax");
+            assert_eq!(info.nodes, 2, "only the parent and null child are searched");
+            assert_eq!(info.double_ext_count[1], parent_count);
+            assert_eq!(info.double_ext_count[2], parent_count);
+            assert_eq!(board.hash, hash);
+            assert_eq!(board.to_fen(), fen);
+            assert!(board.undo_stack.is_empty());
+        }
+    }
+
+    #[test]
+    fn probcut_child_inherits_double_extension_budget() {
+        crate::init();
+        let cap = tp(&DEXT_CAP);
+        // At depth six, ProbCut's depth-4-improving search reaches negamax,
+        // not just qsearch. The rook wins an undefended queen with Rxa7.
+        let depth = 6;
+        for (parent_count, stale_child_count) in [(cap, 0), (0, cap), (cap - 1, cap)] {
+            let mut info = SearchInfo::new(1);
+            let mut board = Board::from_fen("7k/q7/8/8/8/8/8/R6K w - - 0 1");
+            let fen = board.to_fen();
+            let hash = board.hash;
+            let capture = make_move(square(0, 0), square(0, 6), FLAG_NONE);
+            // Eval == beta avoids RFP; cut_node=false avoids NMP. The shallow
+            // parent entry orders the capture without cutting or vetoing PC.
+            info.tt.store(hash, -2, 0, TT_FLAG_UPPER, capture, 0, false);
+            assert!(board.make_move(capture));
+            info.tt.store(
+                board.hash, depth, -see_value(QUEEN), TT_FLAG_EXACT, NO_MOVE, 0, false,
+            );
+            board.unmake_move();
+            info.double_ext_count[1] = parent_count;
+            info.double_ext_count[2] = stale_child_count;
+
+            assert!(negamax(&mut board, &mut info, -1, 0, depth, 1, false) > 0);
+            assert_eq!(info.stats.nmp_attempts, 0);
+            assert_eq!(info.stats.rfp_cutoffs, 0);
+            assert_eq!(info.stats.probcut_cutoffs, 1);
+            assert_eq!(info.stats.qnodes, 1, "candidate must pass qsearch first");
+            assert_eq!(info.stats.tt_cutoffs, 1, "candidate must also reach negamax");
+            assert_eq!(info.nodes, 3, "parent, qsearch and negamax only");
+            assert_eq!(info.double_ext_count[1], parent_count);
+            assert_eq!(info.double_ext_count[2], parent_count);
+            assert_eq!(board.hash, hash);
+            assert_eq!(board.to_fen(), fen);
+            assert!(board.undo_stack.is_empty());
+        }
+    }
 
     #[test]
     fn disagreeing_child_does_not_fall_back_to_narrow_cutoff() {
