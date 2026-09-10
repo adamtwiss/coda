@@ -2055,40 +2055,36 @@ mod tests {
         assert!(b.is_repetition_draw(0), "third occurrence in game history is draw");
     }
 
-    /// Irreversible-move boundary: an intervening pawn move resets
-    /// halfmove to 0, which MUST prevent rep detection from seeing
-    /// past it. Scenario: play Nf3 Nc6 then a pawn move, then
-    /// attempt to reach the post-Nf3-Nc6 hash would only happen if
-    /// we played more knight moves — but halfmove reset means the
-    /// earlier position is no longer reachable by definition.
-    ///
-    /// Test: construct a sequence where the current hash equals a
-    /// stack entry OLDER than the most recent pawn move, and verify
-    /// the limit capping prevents the false positive.
+    /// An injected same-side match beyond the irreversible-move boundary
+    /// must be rejected. The positive control puts that exact match on the
+    /// boundary, proving the fixture actually reaches the repetition scan.
     #[test]
     fn repetition_honours_halfmove_cap() {
         init();
         let mut b = Board::startpos();
-
-        // 1. Nf3 Nc6 — halfmove 1, 2
-        b.make_move(make_move(6, 21, FLAG_NONE)); // Nf3
-        b.make_move(make_move(57, 42, FLAG_NONE)); // Nc6
-
-        // Now play e4, which resets halfmove to 0. Any pre-e4 match
-        // must NOT be returned.
-        b.make_move(make_move(12, 28, FLAG_DOUBLE_PUSH)); // e2e4
+        b.make_move(make_move(6, 21, FLAG_NONE));   // Nf3
+        b.make_move(make_move(57, 42, FLAG_NONE));  // Nc6
+        b.make_move(make_move(21, 6, FLAG_NONE));   // Ng1
+        b.make_move(make_move(42, 57, FLAG_NONE));  // Nb8
+        b.make_move(make_move(12, 28, FLAG_DOUBLE_PUSH)); // e4
+        b.make_move(make_move(52, 36, FLAG_DOUBLE_PUSH)); // e5
         assert_eq!(b.halfmove, 0, "pawn move resets halfmove");
+        assert_eq!(b.undo_stack.len(), 6);
+        assert_eq!(b.plies_from_null, 6, "the null boundary must not mask this test");
 
-        // stack now has 3 entries: startpos, post-Nf3, post-Nc6.
-        // Current position is post-Nf3-Nc6-e4 with halfmove=0.
-        // Main-search: limit = min(0, 3) = 0, loop never executes → correctly returns false.
-        // Corrupt stack[2].hash (most recent = post-Nc6 state) to match current: main-search
-        // must NOT see it because limit = 0.
-        let saved2 = b.undo_stack[2].hash;
-        b.undo_stack[2].hash = b.hash;
-        assert!(!b.is_repetition_draw(3),
-            "halfmove=0 limit must block detection past irreversible move");
-        b.undo_stack[2].hash = saved2;
+        // Distance four is the first same-side position the scan examines.
+        // A real position cannot repeat across a pawn move, so inject the
+        // match to isolate the halfmove-cap invariant from hash correctness.
+        let match_index = b.undo_stack.len() - 4;
+        b.undo_stack[match_index].hash = b.hash;
+        assert!(!b.is_repetition_draw(6),
+            "halfmove=0 must hide the older matching position");
+        b.halfmove = 3;
+        assert!(!b.is_repetition_draw(6),
+            "a match immediately beyond the halfmove boundary must be hidden");
+        b.halfmove = 4;
+        assert!(b.is_repetition_draw(6),
+            "the same match exactly at the halfmove boundary must be visible");
     }
 
     /// Random-games fuzzer: the repetition helper must not panic and must
