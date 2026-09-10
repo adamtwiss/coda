@@ -273,6 +273,16 @@ tunables!(
     (TM_SUBTREE_MULT_100, 140, 90, 200, 4.0, false),      // (base-frac) * N/100
     (TM_FORCED_MARGIN_WEAK, 170, 80, 320, 8.0, false),    // weak-forced cp margin
     (TM_FORCED_MARGIN_STRONG, 400, 200, 620, 12.0, false),// strong-forced cp margin
+    // Static-deficit factor (thread 3): more time when the root SEARCH score
+    // holds a level verdict that the root STATIC eval does not credit. Units
+    // are derived from Coda's own correction-history range: the largest
+    // correction corrhist can apply is sum(CORR_W_*) * CORR_HIST_LIMIT /
+    // CORR_HIST_DIV / CORR_HIST_GRAIN_T = 710*1024/292/13 ~= 191 cp. A
+    // static-vs-search gap of half that (96) is one corrhist cannot explain
+    // away; a further full range (191) of gap adds +1.0 to the factor.
+    (TM_STATIC_DEFICIT_MARGIN, 96, 40, 250, 8.0, false),  // gap (search - static) that arms the factor, cp
+    (TM_STATIC_DEFICIT_DIV, 191, 60, 600, 15.0, false),   // cp of extra gap per +1.0 factor
+    (TM_STATIC_DEFICIT_MAX_100, 160, 100, 250, 6.0, false), // factor ceiling * 1/100
     (LMR_HIST_DIV, 23266, 2000, 100000, 4900.0, true),
     // Capture-LMR history divisor. Separate from the quiet divisor above:
     // capture history is single-source, so it needs a smaller divisor than
@@ -4315,12 +4325,35 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                 1.0
             };
 
+            // Factor 7: static-deficit (thread 3). The losses this targets
+            // have the root search holding ~0.00 while the root static eval
+            // (corrected) sits well below it: the search is banking on a
+            // defence the eval does not credit, and SF19 refutes it a few
+            // plies deeper. Ordinary "search found a tactic" optimism has the
+            // same static-vs-search gap but a WINNING search score, so the
+            // factor is keyed on both: gap >= margin AND the search score not
+            // above the margin (a defending, not a winning, verdict). Static
+            // is unavailable in check (not written that node); factor 1.0.
+            let static_deficit_multiplier = {
+                let root_static = info.static_evals[0];
+                let margin = tp(&TM_STATIC_DEFICIT_MARGIN);
+                if board.in_check() || root_static <= -MATE_IN_MAX_PLY || is_decisive(prev_score)
+                    || prev_score > margin || prev_score - root_static < margin {
+                    1.0
+                } else {
+                    let extra = (prev_score - root_static - margin) as f64;
+                    (1.0 + extra / tp(&TM_STATIC_DEFICIT_DIV).max(1) as f64)
+                        .min(tp(&TM_STATIC_DEFICIT_MAX_100) as f64 / 100.0)
+                }
+            };
+
             let mut multiplier = stability_multiplier
                 * failed_low_multiplier
                 * forced_move_multiplier
                 * subtree_size_multiplier
                 * score_trend_multiplier
-                * cross_thread_instability;
+                * cross_thread_instability
+                * static_deficit_multiplier;
             // No-inc clamp: factor product up to 6.5× at no-inc TCs blows
             // adjusted_soft past hard_time via iteration-overflow even with
             // the smaller no-inc opt baseline — observed at 3+0 as a run of a
