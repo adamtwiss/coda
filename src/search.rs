@@ -4575,6 +4575,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
 /// loop (or visited). Zero-cost when tracing is off (empty-vec check).
 macro_rules! trace_gate {
     ($info:expr, $hash:expr, $ply:expr, $mv:expr, $gate:literal, $depth:expr, $mc:expr) => {
+        crate::pair_trace::log($ply,format_args!("event=move gate={} hash={} move={} depth={} mc={}",$gate,$hash,$mv,$depth,$mc));
         if !$info.trace_hashes.is_empty() {
             let p = $ply as usize;
             if p < $info.trace_hashes.len()
@@ -4588,6 +4589,7 @@ macro_rules! trace_gate {
 }
 macro_rules! trace_node {
     ($info:expr, $hash:expr, $ply:expr, $what:literal, $depth:expr) => {
+        crate::pair_trace::log($ply,format_args!("event=node gate={} hash={} depth={}",$what,$hash,$depth));
         if !$info.trace_hashes.is_empty() {
             let p = $ply as usize;
             if p < $info.trace_hashes.len() && $info.trace_hashes[p] == $hash {
@@ -4599,7 +4601,17 @@ macro_rules! trace_node {
 
 /// Negamax alpha-beta search.
 /// Main negamax search with all pruning, extensions, and reductions.
-fn negamax(
+fn negamax(board:&mut Board,info:&mut SearchInfo,alpha:i32,beta:i32,depth:i32,ply:i32,cut_node:bool)->i32 {
+    let active=crate::pair_trace::enter(info.nodes,board.hash,ply,depth,alpha,beta,cut_node,
+        if ply>0 {info.reductions[(ply-1)as usize]}else{0});
+    let value=negamax_impl(board,info,alpha,beta,depth,ply,cut_node);
+    crate::pair_trace::exit(active,info.nodes,value,info.stop.load(Ordering::Relaxed));value
+}
+fn traced_probe(board:&mut Board,info:&mut SearchInfo,alpha:i32,depth:i32,ply:i32,cut:bool)->i32 {
+    let _scope=crate::pair_trace::stage(info.nodes,"scout",ply);
+    -negamax(board,info,-alpha-1,-alpha,depth,ply,cut)
+}
+fn negamax_impl(
     board: &mut Board,
     info: &mut SearchInfo,
     mut alpha: i32,
@@ -4908,6 +4920,7 @@ fn negamax(
         }
     }
     let tt_cur_gen = info.tt.current_generation();
+    crate::pair_trace::log(ply,format_args!("event=tt hit={} depth={} score={} flag={} move={} pv={}",tt_hit,tt_entry.depth,tt_entry.score,tt_entry.flag,tt_entry.best_move,tt_entry.tt_pv));
     let tt_cross_gen = tt_hit && tt_entry.generation != tt_cur_gen;
     info.stats.tt_probes += 1;
     if tt_hit {
@@ -4981,6 +4994,7 @@ fn negamax(
                     && !child_disagrees
                 {
                     info.stats.tt_cutoffs += 1;
+                    crate::pair_trace::log(ply,format_args!("event=cut gate=tt_direct"));
                     if tt_cross_gen {
                         info.stats.tt_cross_gen_cutoffs += 1;
                     }
@@ -5063,6 +5077,7 @@ fn negamax(
                 if alpha >= beta && halfmove_ok {
                     if tt_move != NO_MOVE {
                         info.stats.tt_cutoffs += 1;
+                        crate::pair_trace::log(ply,format_args!("event=cut gate=tt_narrow"));
                         if tt_cross_gen {
                             info.stats.tt_cross_gen_cutoffs += 1;
                         }
@@ -5210,6 +5225,9 @@ fn negamax(
         scaled_eval = apply_halfmove_scale(raw_eval, board.halfmove);
         // Apply correction history to the halfmove-scaled value
         static_eval = if FEAT_CORRECTION.load(Ordering::Relaxed) { corrected_eval(info, board, scaled_eval, ply_u) } else { scaled_eval };
+        if crate::pair_trace::block("static") {
+            static_eval=std::env::var("PAIR_STATIC_VALUE").expect("explicit static value").parse().unwrap();
+        }
         if ply_u < MAX_PLY {
             info.static_evals[ply_u] = static_eval;
         }
@@ -5265,6 +5283,7 @@ fn negamax(
     // think the position is quiet, reduce depth further.
     // Gate on prior_reduction (Stockfish >= 2, Alexandria >= 1).
     let prior_reduction = if ply_u >= 1 { info.reductions[ply_u - 1] } else { 0 };
+    crate::pair_trace::log(ply,format_args!("event=static eval={} raw={} scaled={} tt_static={} depth={} pv={} cut={} tt_pv={} prior={}",static_eval,raw_eval,scaled_eval,tt_static_eval_hit,depth,is_pv,cut_node,tt_pv,prior_reduction));
     if !in_check && ply >= 1 && depth >= tp10(&HINDSIGHT_MIN_DEPTH_10X) && ply_u >= 1
         && prior_reduction >= 2
         && info.static_evals[ply_u - 1] > -(MATE_IN_MAX_PLY)
@@ -5275,6 +5294,7 @@ fn negamax(
         // correlates with quiet positions where reduction is safe.
         let eval_sum = info.static_evals[ply_u - 1] + static_eval;
         if eval_sum > tp(&HINDSIGHT_THRESH) {
+            crate::pair_trace::log(ply,format_args!("event=depth gate=hindsight_reduce before={}",depth));
             depth -= 1;
         }
     }
@@ -5293,6 +5313,7 @@ fn negamax(
     {
         let eval_sum = info.static_evals[ply_u - 1] + static_eval;
         if eval_sum <= 0 {
+            crate::pair_trace::log(ply,format_args!("event=depth gate=hindsight_extend before={}",depth));
             depth += 1;
         }
     }
@@ -5362,7 +5383,7 @@ fn negamax(
             }
             // Widen margin when opponent pawns attack our pieces (Minic/Berserk pattern)
             if has_pawn_threats { margin += margin / 3; }
-            if static_eval - margin >= beta && !tb_loss_rfp_guard {
+            if static_eval - margin >= beta && !tb_loss_rfp_guard && !crate::pair_trace::block("rfp") {
                 trace_node!(info, board.hash, ply, "rfp_cut", depth);
                 info.stats.rfp_cutoffs += 1;
                 // RFP_AUDIT (diagnostic): null-verify this static cutoff with
@@ -5451,7 +5472,9 @@ fn negamax(
         && info.excluded_move[ply_u] == NO_MOVE  // Skip NMP during SE verification
         && cut_node  // cut-node gate: only attempt NMP at expected fail-high nodes (closes 30%->57% NMP cutoff-rate gap)
         && FEAT_NMP.load(Ordering::Relaxed)
+        && !crate::pair_trace::block("nmp")
     {
+        crate::pair_trace::log(ply,format_args!("event=try gate=nmp depth={}",depth));
         info.stats.nmp_attempts += 1;
         // Adaptive reduction: scales with depth and eval margin above beta
         let mut r = tp10(&NMP_BASE_R_10X) + depth / tp10(&NMP_DEPTH_DIV_10X);
@@ -5551,7 +5574,8 @@ fn negamax(
     // IIR: moved after NMP so null search uses full depth, not IIR-reduced depth.
     // All 6 reference engines run NMP at full depth; IIR only applies to the
     // moves loop. Running IIR first silently reduces null depth by 1 at cut nodes.
-    if depth >= tp10(&IIR_MIN_DEPTH_10X) && tt_move == NO_MOVE && !in_check && (is_pv || cut_node) && FEAT_IIR.load(Ordering::Relaxed) {
+    if depth >= tp10(&IIR_MIN_DEPTH_10X) && tt_move == NO_MOVE && !in_check && (is_pv || cut_node) && FEAT_IIR.load(Ordering::Relaxed) && !crate::pair_trace::block("iir") {
+        crate::pair_trace::log(ply,format_args!("event=depth gate=iir before={}",depth));
         depth -= 1;
     }
 
@@ -5678,6 +5702,7 @@ fn negamax(
 
             if score >= candidate_beta {
                 info.stats.probcut_cutoffs += 1;
+                crate::pair_trace::log(ply,format_args!("event=cut gate=probcut"));
                 // TT stores the RAW verified score (a tighter lower bound than
                 // the dampened value) and preserves the sticky PV flag — matches
                 // Stockfish. Prior code stored `dampened` and
@@ -5995,6 +6020,7 @@ fn negamax(
                     // shapes tested WORSE here, so keep FIRING and fix only the
                     // returned value.
                     info.stats.multicut += 1;
+                    crate::pair_trace::log(ply,format_args!("event=cut gate=multicut"));
                     if is_decisive(singular_score) {
                         return singular_beta;
                     }
@@ -6146,6 +6172,7 @@ fn negamax(
         }
 
         let mut new_depth = depth - 1 + extension + singular_extension;
+        crate::pair_trace::log(ply,format_args!("event=extension move={} ordinary={} singular={} child_depth={}",mv,extension,singular_extension,new_depth));
 
         // Propagate double extension counter to child
         if ply_u < MAX_PLY {
@@ -6496,12 +6523,15 @@ fn negamax(
         // probe; the re-search guard `new_depth > lmr_depth` is then false, so
         // the deeper probe stands and PVS proceeds at new_depth as usual.
         if reduction != 0 {
+            let mut pair_start=info.nodes;
+            let mut pair_depth=new_depth-reduction;
+            let mut pair_cut=true;
             info.stats.lmr_searches += 1;
 
             // LMR: reduced depth, zero window
             trace_gate!(info, board.hash, ply, mv, "lmr_reduced", reduction, move_count);
             let lmr_depth = new_depth - reduction;
-            let mut lmr_score = -negamax(board, info, -alpha - 1, -alpha, lmr_depth, ply + 1, true);
+            let mut lmr_score = traced_probe(board,info,alpha,lmr_depth,ply+1,true);
 
             // The reduction applies to the reduced search ONLY: zero the slot
             // before any re-search so children of the (near-)full-depth
@@ -6536,8 +6566,9 @@ fn negamax(
                 // re-search would duplicate the already-completed LMR search. Every
                 // reference engine guards with `if new_depth > lmr_depth`.
                 if new_depth > lmr_depth {
+                    pair_start=info.nodes;pair_depth=new_depth;pair_cut=!cut_node;
                     info.stats.ts_lmr_research += 1;
-                    lmr_score = -negamax(board, info, -alpha - 1, -alpha, new_depth, ply + 1, !cut_node);
+                    lmr_score = traced_probe(board,info,alpha,new_depth,ply+1,!cut_node);
                 }
 
                 // Post-LMR-research cont-hist nudge (Berserk pattern).
@@ -6586,17 +6617,25 @@ fn negamax(
 
             if lmr_score > alpha && lmr_score < beta && !info.stop.load(Ordering::Relaxed) {
                 // PVS failed high: full window re-search
+                let _scope=crate::pair_trace::stage(pair_start,"full",ply+1);
+                let pair_full_start=info.nodes;
                 score = -negamax(board, info, -beta, -alpha, new_depth, ply + 1, false);
+                eprintln!("PAIR route=lmr entry={} start={} hash={} ply={} scout_depth={} full_depth={} cut={} scout={} full={} alpha={} beta={} cost={} stopped={}",pair_start,pair_full_start,board.hash,ply+1,pair_depth,new_depth,pair_cut,lmr_score,score,alpha,beta,info.nodes-pair_full_start,info.stop.load(Ordering::Relaxed));
             } else {
                 score = lmr_score;
             }
         } else if move_count > 1 && FEAT_PVS.load(Ordering::Relaxed) {
             // PVS: zero-window for non-first moves
-            let mut pvs_score = -negamax(board, info, -alpha - 1, -alpha, new_depth, ply + 1, !cut_node);
+            let pair_start=info.nodes;
+            let mut pvs_score = traced_probe(board,info,alpha,new_depth,ply+1,!cut_node);
             if pvs_score > alpha && pvs_score < beta && !info.stop.load(Ordering::Relaxed) {
                 num_fail_highs += 1; // Starzix T1 #1: PVS fail-high cascade.
                 // Failed high: full window re-search
+                let pair_scout=pvs_score;
+                let pair_full_start=info.nodes;
+                let _scope=crate::pair_trace::stage(pair_start,"full",ply+1);
                 pvs_score = -negamax(board, info, -beta, -alpha, new_depth, ply + 1, false);
+                eprintln!("PAIR route=plain entry={} start={} hash={} ply={} scout_depth={} full_depth={} cut={} scout={} full={} alpha={} beta={} cost={} stopped={}",pair_start,pair_full_start,board.hash,ply+1,new_depth,new_depth,!cut_node,pair_scout,pvs_score,alpha,beta,info.nodes-pair_full_start,info.stop.load(Ordering::Relaxed));
             }
             score = pvs_score;
         } else {

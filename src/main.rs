@@ -43,6 +43,7 @@ mod see;
 mod tt;
 mod movepicker;
 mod search;
+mod pair_trace;
 mod thread_pool;
 mod uci;
 mod epd;
