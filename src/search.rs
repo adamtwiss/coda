@@ -5503,9 +5503,10 @@ fn negamax(
             // Verification search at high depths to guard against zugzwang
             if depth >= tp10(&NMP_VERIFY_DEPTH_10X) {
                 info.stats.nmp_verify += 1;
-                // Set ply barrier so NMP cannot fire again inside the verification
-                // subtree. All peer engines do this (Alexandria: nmpPlies = ply + (depth-R)*2/3).
-                // Without this, NMP can verify itself, defeating zugzwang detection.
+                // Temporarily block NMP near the verification root so the
+                // confirmation cannot immediately repeat the null cutoff.
+                // Deeper nodes may use NMP again after the barrier; restore
+                // the enclosing barrier when this verification returns.
                 let old_nmp_min_ply = info.nmp_min_ply;
                 info.nmp_min_ply = ply + 3 * (depth - r) / 4;
                 // Verification re-searches current position (no move made), so ply stays same
