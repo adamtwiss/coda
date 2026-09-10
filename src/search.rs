@@ -437,6 +437,22 @@ tunables!(
     (DEXT_MARGIN_CORR, 13, 0, 64, 3.0, true),
     (DEXT_MARGIN_BASE, 37, -50, 150, 6.0, true),
     (DEXT_CAP, 9, 4, 32, 2.0, true),
+    // "Thin defence": how far the static eval must sit BELOW alpha before we treat
+    // the node as one where the search is overriding a pessimistic static.
+    //
+    // UNITS. This is Coda's INTERNAL score scale, not the cp a GUI prints.
+    // `format_uci_score` scales display by REPORT_SCALE_PCT (default 39), measured
+    // directly at 924 displayed for 2370 internal, so internal ~= 2.56x displayed.
+    // Getting this wrong once already cost a test (#3508's sibling), so the
+    // conversion is written out rather than assumed.
+    //
+    // Default from thread 3's measured chain, converted once. At the positions after
+    // the opponent's attack the raw static sat below the search score in 5/6 cases,
+    // the worked example being -3.56 static against -0.68 search: a gap of 2.88
+    // displayed pawns = 288 displayed cp = ~740 internal. That is a single worked
+    // example, not a distribution, so the range is wide and this wants SPSA rather
+    // than trust. Non-core until it earns its keep.
+    (THIN_DEFENCE_MARGIN, 740, 200, 2000, 60.0, false),
     // Root-decidedness gate on POSITIVE singular extensions. When the root score
     // says the game is already decided, the singular test stops discriminating:
     // every alternative falls below `tt_score - depth`, so nearly every node
@@ -1287,6 +1303,10 @@ pub struct SearchInfo {
     /// byte-identical.
     pub root_ban: Vec<Move>,
     static_evals: [i32; MAX_PLY + 1],
+    /// Per ply: the static eval sat at least THIN_DEFENCE_MARGIN below
+    /// alpha at this node. Read by the CHILD, which is why it is stored
+    /// per ply rather than passed down.
+    thin_defence: [bool; MAX_PLY + 1],
     /// Per-ply tt_pv, so a child can inherit its parent's PV-region flag.
     tt_pv_stack: [bool; MAX_PLY + 1],
     /// LMR reduction applied at each ply (for hindsight reduction gating)
@@ -1403,6 +1423,7 @@ impl SearchInfo {
             trace_line_mv: Vec::new(),
             nmp_min_ply: 0,
             static_evals: [0; MAX_PLY + 1],
+            thin_defence: [false; MAX_PLY + 1],
             tt_pv_stack: [false; MAX_PLY + 1],
             reductions: [0; MAX_PLY + 1],
             excluded_move: [NO_MOVE; MAX_PLY + 1],
@@ -3063,6 +3084,7 @@ pub(crate) fn search_helper(board: &mut Board, info: &mut SearchInfo, _limits: &
     // NOT clear it here. Reset only per-search scratch state.
     info.stats = PruneStats::default();
     info.static_evals = [0; MAX_PLY + 1];
+    info.thin_defence = [false; MAX_PLY + 1];
     info.reductions = [0; MAX_PLY + 1];
     info.excluded_move = [NO_MOVE; MAX_PLY + 1];
     info.moved_piece_stack = [0; MAX_PLY + 1];
@@ -3412,6 +3434,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     }
     // Clear static evals, excluded moves, depth tracking
     info.static_evals = [0; MAX_PLY + 1];
+    info.thin_defence = [false; MAX_PLY + 1];
     info.depth_nodes = [0; MAX_PLY + 1];
     info.completed_depth = 0;
     // Reset the shared instant-reply gate inputs for THIS search. The UCI
@@ -5212,6 +5235,8 @@ fn negamax(
         static_eval = if FEAT_CORRECTION.load(Ordering::Relaxed) { corrected_eval(info, board, scaled_eval, ply_u) } else { scaled_eval };
         if ply_u < MAX_PLY {
             info.static_evals[ply_u] = static_eval;
+            info.thin_defence[ply_u] = alpha > -INFINITY + 1
+                && static_eval <= alpha - tp(&THIN_DEFENCE_MARGIN);
         }
         // Improving: our eval is better than 2 plies ago.
         //
@@ -5236,6 +5261,8 @@ fn negamax(
     } else {
         if ply_u < MAX_PLY {
             info.static_evals[ply_u] = -INFINITY;
+            // In check there is no usable static, so the signal is undefined.
+            info.thin_defence[ply_u] = false;
         }
     }
 
@@ -5348,7 +5375,14 @@ fn negamax(
             && !is_promotion(tt_move);
         // TB/mate guard: every peer skips RFP when eval is near mate/TB range.
         // Without this, RFP could cut a node where NNUE sees forced mate. (RFP audit RFP-3)
-        if depth <= tp(&RFP_DEPTH) && ply > 0 && !tt_pv && !tt_move_is_quiet && info.excluded_move[ply_u] == NO_MOVE && FEAT_RFP.load(Ordering::Relaxed)
+        // Thin defence (T3-C): our PARENT was holding alpha on a static that sat far
+        // below it. That is the shape where our search overrides a pessimistic static
+        // with a defence that does not survive deeper search, so a STATIC cut here —
+        // which decides without searching a move — is the decision least entitled to
+        // be trusted. Keyed on the parent because thread 1's link 5 showed nothing at
+        // this node distinguishes a wrong static cut from a right one.
+        let thin_parent = ply_u >= 1 && info.thin_defence[ply_u - 1];
+        if !thin_parent && depth <= tp(&RFP_DEPTH) && ply > 0 && !tt_pv && !tt_move_is_quiet && info.excluded_move[ply_u] == NO_MOVE && FEAT_RFP.load(Ordering::Relaxed)
             && static_eval.abs() < MATE_SCORE - 200 {
             let mut margin = if improving { depth * tp(&RFP_MARGIN_IMP) } else { depth * tp(&RFP_MARGIN_NOIMP) };
             // Root-depth-aware relaxation: + depth*(root_depth-thresh)+ *coef/100.
@@ -5443,7 +5477,10 @@ fn negamax(
         (king_zone_pressure - (tp10(&NMP_KING_ZONE_MAX_10X) - 1)).max(0) * 64
         + (any_threat_count - 2).max(0) * 64;
 
-    if depth >= tp10(&NMP_MIN_DEPTH_10X) && !in_check && ply > 0 && stm_non_pawn != 0
+    // Thin defence (T3-C): see the note at the RFP gate above — same signal, and a
+    // null move is the same kind of decision, made without searching a real reply.
+    if !(ply_u >= 1 && info.thin_defence[ply_u - 1])
+        && depth >= tp10(&NMP_MIN_DEPTH_10X) && !in_check && ply > 0 && stm_non_pawn != 0
         && beta - alpha == 1 && static_eval >= beta + nmp_threat_margin
         && !prev_was_null  // Prevent consecutive null moves
         && ply >= info.nmp_min_ply  // Ply barrier: verification subtree cannot re-trigger NMP (audit B1)
