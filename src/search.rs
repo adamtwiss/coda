@@ -170,6 +170,11 @@ tunables!(
     // input. Exposing it costs nothing and is behaviour-identical at 12000.
     (FUT_HIST_EXEMPT, 12485, 2000, 16384, 900.0, true),
     (FUT_LMR_DEPTH, 14, 6, 24, 2.0, true),
+    // Exposed for curve tests (defaults reproduce main exactly):
+    // hindsight extension fires when the parent's reduction was at least this;
+    // the singular negative-extension tier applied at cut nodes.
+    (HINDSIGHT_EXT_MIN_RED, 3, 1, 6, 1.0, false),
+    (SE_NEG_CUT, 2, 1, 4, 1.0, false),
     // Move-count term: later quiets get a tighter futility margin. Default
     // FUT_PER_DEPTH / 8 — one depth-ply of margin per eight moves; capped at
     // the depth term so the margin never drops below FUT_BASE. Futility is
@@ -5276,7 +5281,7 @@ fn negamax(
     // find the threat we missed. Non-PV only (PV already searched fully).
     if !in_check && ply >= 1 && ply_u >= 1
         && !is_pv
-        && prior_reduction >= 3
+        && prior_reduction >= tp(&HINDSIGHT_EXT_MIN_RED)
         && info.static_evals[ply_u - 1] > -(MATE_IN_MAX_PLY)
         && static_eval > -INFINITY
         && FEAT_HINDSIGHT.load(Ordering::Relaxed)
@@ -6026,7 +6031,7 @@ fn negamax(
                     info.stats.negative_ext += 1;
                 } else if cut_node {
                     // Cut node with competitive alternatives — moderate reduce
-                    singular_extension = competitive_se_reduction(-2, singular_score, singular_beta);
+                    singular_extension = competitive_se_reduction(-tp(&SE_NEG_CUT), singular_score, singular_beta);
                     info.stats.negative_ext += 1;
                 } else {
                     // All-node with competitive alternatives — mild reduce
