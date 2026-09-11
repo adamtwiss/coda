@@ -71,10 +71,39 @@ use std::sync::atomic::AtomicI32;
 /// UCI/SPSA parameter list. c_end is the SPSA end-of-tune perturbation;
 /// target >= 1.5 for narrow-range int params (so int boundaries can be
 /// crossed) or ~5% of range for wider params.
+/// Storage for a search tunable. With the `tune` feature (OpenBench builds)
+/// it is an atomic that SPSA and `setoption` can write. Without it, it is an
+/// immutable static holding the default, so every read in the search
+/// compiles to the literal and the surrounding arithmetic folds.
+#[cfg(feature = "tune")]
+pub type ParamCell = AtomicI32;
+
+#[cfg(not(feature = "tune"))]
+pub struct ParamCell(i32);
+
+#[cfg(not(feature = "tune"))]
+impl ParamCell {
+    pub const fn new(v: i32) -> Self { ParamCell(v) }
+    #[inline(always)]
+    pub fn load(&self, _o: Ordering) -> i32 { self.0 }
+    /// Writes only exist under the `tune` feature; say so rather than
+    /// silently ignoring a `--set` on a release build.
+    pub fn store(&self, _v: i32, _o: Ordering) {
+        eprintln!("info string tunable write ignored: this build has the tunables compiled as constants (build with --features tune)");
+    }
+}
+
+/// Anything `tp`/`tp10` can read: a `ParamCell` or one of the standalone
+/// atomics that stay writable in every build.
+pub trait ParamRead { fn get(&self) -> i32; }
+impl ParamRead for AtomicI32 { #[inline(always)] fn get(&self) -> i32 { self.load(Ordering::Relaxed) } }
+#[cfg(not(feature = "tune"))]
+impl ParamRead for ParamCell { #[inline(always)] fn get(&self) -> i32 { self.0 } }
+
 macro_rules! tunables {
     ( $( ($name:ident, $default:expr, $min:expr, $max:expr, $c_end:expr, $core:expr) ),* $(,)? ) => {
-        // Declare each as a pub static AtomicI32
-        $( pub static $name: AtomicI32 = AtomicI32::new($default); )*
+        // Declare each as a pub static ParamCell (atomic under `tune`, constant otherwise)
+        $( pub static $name: ParamCell = ParamCell::new($default); )*
 
         /// List of all tunable parameters for UCI/SPSA.
         /// Tuple: (name, &atomic, default, min, max, c_end, is_core).
@@ -83,7 +112,7 @@ macro_rules! tunables {
         /// retunes. Non-core tunables are kept in the source (still loadable
         /// via UCI for full-sweep tunes) but excluded from --core SPSA runs
         /// to improve per-parameter SNR on the meaningful axes.
-        pub fn tunable_params() -> Vec<(&'static str, &'static AtomicI32, i32, i32, i32, f32, bool)> {
+        pub fn tunable_params() -> Vec<(&'static str, &'static ParamCell, i32, i32, i32, f32, bool)> {
             vec![
                 $( (stringify!($name), &$name, $default, $min, $max, $c_end, $core), )*
             ]
@@ -778,8 +807,8 @@ pub fn should_instant_reply(
 
 /// Get a tunable parameter value (inline for hot paths)
 #[inline(always)]
-fn tp(param: &AtomicI32) -> i32 {
-    param.load(Ordering::Relaxed)
+fn tp<P: ParamRead>(param: &P) -> i32 {
+    param.get()
 }
 
 /// Read a `_10X`-scaled tunable, returning the effective integer value
@@ -787,8 +816,8 @@ fn tp(param: &AtomicI32) -> i32 {
 /// suffix store 10× their effective value so SPSA can express decimal
 /// precision and retain decimal progress across tune cycles.
 #[inline(always)]
-pub fn tp10(param: &AtomicI32) -> i32 {
-    let v = param.load(Ordering::Relaxed);
+pub fn tp10<P: ParamRead>(param: &P) -> i32 {
+    let v = param.get();
     if v >= 0 { (v + 5) / 10 } else { (v - 5) / 10 }
 }
 
