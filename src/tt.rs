@@ -546,6 +546,13 @@ impl TT {
     /// x86_64 uses `_mm_prefetch`; aarch64 issues `PRFM` via inline asm
     /// because the `_prefetch` intrinsic is still unstable. Locals are
     /// scoped into the arch blocks so other builds stay warning-clean.
+    /// Quiescence-node store: variant under test — quiescence results are NOT
+    /// stored. Measured (thread 7): QS entries cost 1–3% of nodes to remove on
+    /// game-position sets with ~half of positions cheaper without them, while
+    /// they are ~30% of all stores competing for slots with deep entries.
+    #[inline]
+    pub fn store_qs(&self, _hash: u64, _depth: i32, _score: i32, _flag: u8, _best_move: Move, _static_eval: i32, _is_pv: bool) {}
+
     #[inline]
     pub fn prefetch(&self, hash: u64) {
         #[cfg(target_arch = "x86_64")]

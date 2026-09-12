@@ -7400,7 +7400,7 @@ fn quiescence_with_depth(
             TT_FLAG_UPPER
         };
         if FEAT_TT_STORE.load(Ordering::Relaxed) && !info.stop.load(Ordering::Relaxed) {
-            info.tt.store(board.hash, -1, store_score, flag, best_move, -INFINITY, false);
+            info.tt.store_qs(board.hash, -1, store_score, flag, best_move, -INFINITY, false);
         }
         return best_score;
     }
@@ -7472,7 +7472,7 @@ fn quiescence_with_depth(
             && FEAT_TT_STORE.load(Ordering::Relaxed)
             && !info.stop.load(Ordering::Relaxed)
         {
-            info.tt.store(board.hash, -1, score_to_tt(best_score, ply),
+            info.tt.store_qs(board.hash, -1, score_to_tt(best_score, ply),
                 TT_FLAG_LOWER, NO_MOVE, raw_stand_pat, false);
         }
         // QS beta blending, applied regardless of node type — none of the 6
@@ -7626,7 +7626,7 @@ fn quiescence_with_depth(
         // Store the halfmove-INDEPENDENT value so later probes at a
         // different halfmove get a correct scale — see the doc comment
         // in `SearchInfo::eval`.
-        info.tt.store(board.hash, -1, store_score, flag, best_move, raw_stand_pat, false);
+        info.tt.store_qs(board.hash, -1, store_score, flag, best_move, raw_stand_pat, false);
     }
 
     // QS beta blending, regardless of node type (see the stand-pat exit).
