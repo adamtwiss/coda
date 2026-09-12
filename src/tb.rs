@@ -22,6 +22,10 @@ pub struct SyzygyTB {
     tb: Tablebase<Chess>,
     max_pieces: usize,
     cache: TbCache,
+    #[cfg(test)]
+    audit_wdl_key: Option<(u64, u16)>,
+    #[cfg(test)]
+    pub(crate) audit_wdl_calls: std::sync::atomic::AtomicU64,
 }
 
 /// Split a `SyzygyPath` value into individual directories using the
@@ -88,7 +92,13 @@ impl SyzygyTB {
         eprintln!("info string Syzygy tablebases loaded: {} pieces from {}{}, cache {} MB",
                   max_pieces, path, dir_note, cache.size_mb());
 
-        Ok(SyzygyTB { tb, max_pieces, cache })
+        Ok(SyzygyTB {
+            tb, max_pieces, cache,
+            #[cfg(test)]
+            audit_wdl_key: None,
+            #[cfg(test)]
+            audit_wdl_calls: std::sync::atomic::AtomicU64::new(0),
+        })
     }
 
     /// Seed one WDL cache entry without loading external tables. Search tests
@@ -103,7 +113,16 @@ impl SyzygyTB {
             tb: Tablebase::new(),
             max_pieces: crate::bitboard::popcount(board.occupied()) as usize,
             cache,
+            audit_wdl_key: Some((board.hash, board.halfmove)),
+            audit_wdl_calls: std::sync::atomic::AtomicU64::new(0),
         }
+    }
+
+    // Observe target-node probe attempts without substituting table contents.
+    #[cfg(test)]
+    pub(crate) fn audit_wdl_calls_for(&mut self, board: &Board) {
+        self.audit_wdl_key = Some((board.hash, board.halfmove));
+        self.audit_wdl_calls.store(0, std::sync::atomic::Ordering::Release);
     }
 
     /// Maximum number of pieces supported.
@@ -126,6 +145,10 @@ impl SyzygyTB {
     /// keyed by (hash, halfmove) so those results don't cross-contaminate.
     /// Callers should treat the ambiguous values as a near-draw signal.
     pub fn probe_wdl(&self, board: &Board) -> Option<i32> {
+        #[cfg(test)]
+        if self.audit_wdl_key == Some((board.hash, board.halfmove)) {
+            self.audit_wdl_calls.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        }
         if crate::bitboard::popcount(board.occupied()) as usize > self.max_pieces {
             return None;
         }

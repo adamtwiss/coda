@@ -697,6 +697,24 @@ fn tt_halfmove_ok(tt_score: i32, halfmove: u16) -> bool {
         || (halfmove as i32) < tp(&TT_CUTOFF_HALFMOVE_MAX)
 }
 
+/// Can this cached bound coexist with the freshly probed WDL constraint?
+/// A lower bound below a win floor (or upper bound above a loss ceiling) is
+/// merely weaker evidence, not a contradiction. Exact scores assert both sides.
+#[inline]
+fn tt_bound_compatible(flag: u8, score: i32, floor: Option<i32>, ceiling: Option<i32>) -> bool {
+    if flag == TT_FLAG_UPPER || flag == TT_FLAG_EXACT {
+        if let Some(floor) = floor {
+            if score < floor { return false; }
+        }
+    }
+    if flag == TT_FLAG_LOWER || flag == TT_FLAG_EXACT {
+        if let Some(ceiling) = ceiling {
+            if score > ceiling { return false; }
+        }
+    }
+    true
+}
+
 /// Post-ponderhit budget credit: PERCENT of elapsed ponder time deducted from
 /// the fresh post-hit think budget.
 ///
@@ -4898,6 +4916,12 @@ fn negamax(
     let alpha_orig = alpha;
     let tt_entry = info.tt.probe(board.hash);
     let tt_hit = tt_entry.hit;
+    // Fresh WDL takes precedence over contradictory cached score evidence.
+    // Keep the hit, move, PV marker, generation and raw eval: none asserts
+    // the cached bound. Use the same verdict for every score consumer below.
+    let tt_bound_usable = tt_hit && ((tb_floor.is_none() && tb_ceiling.is_none())
+        || tt_bound_compatible(tt_entry.flag,
+            score_from_tt(tt_entry.score, ply, board.halfmove), tb_floor, tb_ceiling));
 
     // Prefetch the five correction-history rows corrected_eval will read
     // (~240 lines / a few hundred cycles from here on the common paths).
@@ -4959,7 +4983,7 @@ fn negamax(
     if tt_hit {
         tt_move = tt_entry.best_move;
 
-        if info.excluded_move[ply_u] == NO_MOVE && ply > 0 {
+        if tt_bound_usable && info.excluded_move[ply_u] == NO_MOVE && ply > 0 {
             let tt_depth = tt_entry.depth;
             // 50mr mate/TB downgrade now happens inside score_from_tt
             // (SF value_from_tt placement), so every consumer
@@ -5613,7 +5637,7 @@ fn negamax(
     let probcut_min_depth_10x = tp(&PROBCUT_MIN_DEPTH_10X)
         + (tp(&PROBCUT_ROOT_MIN_DEPTH_10X) * probcut_fade_num) / probcut_fade_span;
     let probcut_min_depth = (probcut_min_depth_10x + 5) / 10;
-    let probcut_tt_noshot = if tt_hit && tt_entry.depth >= depth - tp(&PROBCUT_TT_DEPTH_SLACK) {
+    let probcut_tt_noshot = if tt_bound_usable && tt_entry.depth >= depth - tp(&PROBCUT_TT_DEPTH_SLACK) {
         let adj_score = score_from_tt(tt_entry.score, ply, board.halfmove);
         (tt_entry.flag == TT_FLAG_UPPER || tt_entry.flag == TT_FLAG_EXACT)
             && adj_score < probcut_beta
@@ -5982,7 +6006,7 @@ fn negamax(
             // the SE path reads no static_eval (-INFINITY in check); the
             // correction_value margin input is position-keyed.
             && info.excluded_move[ply_u] == NO_MOVE
-            && tt_hit
+            && tt_bound_usable
             && tt_entry.flag != TT_FLAG_UPPER
             && tt_entry.depth >= depth - tp(&SE_TT_DEPTH_SLACK)
             && FEAT_SINGULAR.load(Ordering::Relaxed)
@@ -6322,7 +6346,7 @@ fn negamax(
                 if is_win(beta) {
                     reduction += tp(&LMR_WINBETA_CENTI);
                 }
-                if tt_hit && tt_entry.flag != TT_FLAG_NONE {
+                if tt_bound_usable && tt_entry.flag != TT_FLAG_NONE {
                     let tt_score_node = score_from_tt(tt_entry.score, ply, board.halfmove);
                     // (b) TT already says this node can't beat alpha.
                     if tt_score_node <= alpha {
@@ -6469,7 +6493,7 @@ fn negamax(
                     if is_win(beta) {
                         reduction += tp(&LMR_WINBETA_CENTI);
                     }
-                    if tt_hit && tt_entry.flag != TT_FLAG_NONE {
+                    if tt_bound_usable && tt_entry.flag != TT_FLAG_NONE {
                         let tt_score_node = score_from_tt(tt_entry.score, ply, board.halfmove);
                         if tt_score_node <= alpha {
                             reduction += tp(&LMR_TTALPHA_CENTI);
@@ -8252,6 +8276,186 @@ mod tests {
                 assert_eq!(negamax(&mut board, &mut info, alpha, beta, 4, 1, false), wdl);
                 assert_eq!(info.tb_hits, 1);
                 assert_eq!(info.nodes, 1);
+            }
+        }
+    }
+
+    #[test]
+    fn tt_bound_compatibility_matrix() {
+        // Scores are node-relative, after score_from_tt. Test both equality
+        // edges and the centipawn / tablebase / mate bands on either side.
+        let floor = TB_WIN - 1;
+        let ceiling = -floor;
+        let flags = [TT_FLAG_EXACT, TT_FLAG_LOWER, TT_FLAG_UPPER];
+        for (score, win_usable, loss_usable) in [
+            (-MATE_SCORE + 1, [false, true, false], [true, true, true]),
+            (-TB_WIN,        [false, true, false], [true, true, true]),
+            (ceiling,        [false, true, false], [true, true, true]),
+            (ceiling + 1,    [false, true, false], [false, false, true]),
+            (-1,             [false, true, false], [false, false, true]),
+            (0,              [false, true, false], [false, false, true]),
+            (1,              [false, true, false], [false, false, true]),
+            (floor - 1,      [false, true, false], [false, false, true]),
+            (floor,          [true, true, true],   [false, false, true]),
+            (TB_WIN,         [true, true, true],   [false, false, true]),
+            (MATE_SCORE - 1, [true, true, true],   [false, false, true]),
+        ] {
+            for (i, flag) in flags.into_iter().enumerate() {
+                assert!(tt_bound_compatible(flag, score, None, None),
+                    "no fresh bound: flag={flag} score={score}");
+                assert_eq!(tt_bound_compatible(flag, score, Some(floor), None), win_usable[i],
+                    "win floor: flag={flag} score={score}");
+                assert_eq!(tt_bound_compatible(flag, score, None, Some(ceiling)), loss_usable[i],
+                    "loss ceiling: flag={flag} score={score}");
+            }
+            // Eval-only entries assert no score bound at all.
+            assert!(tt_bound_compatible(TT_FLAG_NONE, score, None, None));
+            assert!(tt_bound_compatible(TT_FLAG_NONE, score, Some(floor), None));
+            assert!(tt_bound_compatible(TT_FLAG_NONE, score, None, Some(ceiling)));
+        }
+    }
+
+    // Fresh WDL must supersede incompatible bounds from genuine shallower search.
+    // Syzygy stays loaded throughout, including both NNUE warmup searches.
+    // The two warm calls visit the same legal interior position at d1 then
+    // gate-1; the unchanged maximum-piece probe gate opens at gate. Both the
+    // small gate=3 fixture and the production default gate=4 are covered. Three-man
+    // tables cover BOTH targets and their descendants; no search score, eval
+    // or WDL is injected, and no cache-only empty backing masks child probes.
+    #[test]
+    #[ignore = "requires CODA_TEST_NET=net-23C62E38.nnue and CODA_TEST_TB with real three-man-only WDL+DTZ"]
+    fn tb_continuous_tt_near_miss_respects_fresh_bounds() {
+        crate::init();
+        let net = std::env::var("CODA_TEST_NET")
+            .expect("set CODA_TEST_NET to the actual net-23C62E38.nnue; this regression must not silently skip");
+        assert_eq!(std::path::Path::new(&net).file_name().unwrap(), "net-23C62E38.nnue");
+        let tb_dir = std::env::var("CODA_TEST_TB")
+            .expect("set CODA_TEST_TB to a real three-man-only WDL+DTZ table view");
+        for (parent_fen, from, to, wdl) in [
+            ("7k/8/8/8/6R1/8/6K1/8 w - - 0 1", square(6, 3), square(6, 2), -20000i32),
+            ("7k/8/8/8/8/6R1/6K1/8 b - - 0 1", square(7, 7), square(7, 6), 20000i32),
+        ] {
+            // Quiet Rg4-g3 and Kh8-h7 reach ordinary KRK with the rook safe.
+            // Neither move captures or crosses below the loaded piece-count
+            // maximum; thus real child coverage cannot evade the depth gate.
+            // Retaining the actual parent undo also supplies valid repetition
+            // and transition-correction context, rather than inventing ply 1.
+            let mut parent = Board::from_fen(parent_fen);
+            let mv = make_move(from, to, FLAG_NONE);
+            assert!(generate_legal_moves(&parent).as_slice().contains(&mv));
+            let moved_piece = go_piece(parent.piece_at(from)) as u8;
+            let parent_hash = parent.hash;
+            assert!(parent.make_move(mv));
+            let position = parent;
+            assert_eq!(position.halfmove, 1);
+            assert_eq!(popcount(position.occupied()), 3);
+            assert_eq!(position.undo_stack.len(), 1);
+            assert_eq!(position.undo_stack[0].hash, parent_hash);
+            assert!(!position.is_repetition_draw(1));
+            assert_eq!(position.checkers(), 0);
+            if wdl < 0 {
+                let quiet = make_move(square(7, 7), square(7, 6), FLAG_NONE);
+                assert_eq!(generate_legal_moves(&position).as_slice(), &[quiet]);
+                assert_eq!(position.to_fen(), "7k/8/8/8/8/6R1/6K1/8 b - - 1 1");
+            } else {
+                assert_eq!(position.to_fen(), "8/7k/8/8/8/6R1/6K1/8 w - - 1 2");
+            }
+            let anchor = wdl.signum() * (TB_WIN - 1);
+            let (alpha, beta) = if wdl > 0 { (anchor, anchor + 1) } else { (anchor - 1, anchor) };
+            let direction = if wdl > 0 { TT_FLAG_UPPER } else { TT_FLAG_LOWER };
+            for gate in [3, 4] {
+                let mut warm_signature = None;
+                for cleared in [false, true] {
+                    let mut board = position.clone();
+                    let mut info = SearchInfo::new(1);
+                    info.load_nnue(&net).expect("the explicitly selected production net must load");
+                    info.silent = true;
+                    // Reserve room for periodic stop polling; ALL three searches
+                    // combined must finish below 20k, not just each search.
+                    info.max_nodes = 16_384;
+                    info.moved_piece_stack[0] = moved_piece;
+                    info.moved_to_stack[0] = to;
+                    assert_eq!(info.tb_probe_depth, 4, "gate=4 must remain the production default");
+                    info.tb_probe_depth = gate;
+                    let mut real_tb = crate::tb::SyzygyTB::new(&tb_dir)
+                        .expect("real three-man tables must load; this regression must not silently skip");
+                    assert_eq!(real_tb.max_pieces(), 3, "larger loaded coverage bypasses this depth gate");
+                    real_tb.audit_wdl_calls_for(&board);
+                    let tb = std::sync::Arc::new(real_tb);
+                    info.syzygy = Some(tb.clone());
+                    assert_eq!(tb.max_pieces(), popcount(board.occupied()) as usize);
+                    assert_eq!(tb.probe_wdl(&board), Some(wdl), "real WDL available before ANY search");
+                    let probe_calls = tb.audit_wdl_calls.load(Ordering::Acquire);
+                    let exact = negamax(&mut board, &mut info, -INFINITY, INFINITY, 1, 1, false);
+                    assert!(!is_decisive(exact));
+                    assert_eq!(info.tt.probe(board.hash).flag, TT_FLAG_EXACT);
+                    let bound = negamax(&mut board, &mut info, alpha, beta, gate - 1, 1, false);
+                    assert!(!is_decisive(bound));
+                    let incoming = info.tt.probe(board.hash);
+                    assert!(incoming.hit);
+                    assert_eq!(incoming.depth, gate - 1);
+                    assert_eq!(incoming.flag, direction);
+                    assert_ne!(incoming.best_move, NO_MOVE);
+                    assert!(generate_legal_moves(&board).as_slice().contains(&incoming.best_move));
+                    assert!(incoming.tt_pv, "full-window warmup must leave a PV marker");
+                    assert!(incoming.static_eval > -4095, "warmup must cache real raw eval");
+                    assert!(!tt_bound_compatible(incoming.flag,
+                        score_from_tt(incoming.score, 1, board.halfmove),
+                        (wdl > 0).then_some(anchor), (wdl < 0).then_some(anchor)),
+                        "real shallow search must supply the contradictory bound");
+                    assert_eq!(info.tb_hits, 0);
+                    assert_eq!(tb.audit_wdl_calls.load(Ordering::Acquire), probe_calls,
+                        "warmup must never even attempt the target WDL probe");
+                    assert_eq!(info.tb_probe_depth, gate);
+                    assert!(std::sync::Arc::ptr_eq(info.syzygy.as_ref().unwrap(), &tb));
+                    assert_eq!(board.to_fen(), position.to_fen());
+                    assert_eq!(board.hash, position.hash);
+                    assert_eq!(board.undo_stack.len(), 1);
+                    assert!(!info.stop.load(Ordering::Acquire));
+                    let signature = (exact, bound, incoming.depth, incoming.flag, incoming.score,
+                        incoming.best_move, incoming.tt_pv, incoming.static_eval, incoming.generation);
+                    if let Some(previous) = warm_signature { assert_eq!(signature, previous); }
+                    warm_signature = Some(signature);
+                    // The sole treatment difference: no history, NNUE, board, WDL
+                    // cache, probe-depth, generation or configuration reset.
+                    if cleared { info.tt.clear(); }
+                    let generation = info.tt.current_generation();
+                    let before_nodes = info.nodes;
+                    let before_static_hits = info.stats_tt_static_eval_hits;
+                    let score = negamax(&mut board, &mut info, alpha, beta, gate, 1, wdl < 0);
+                    let stored = info.tt.probe(board.hash);
+                    assert!(stored.hit);
+                    let stored_score = score_from_tt(stored.score, 1, board.halfmove);
+                    assert!(info.nodes <= 20_000);
+                    assert!(!info.stop.load(Ordering::Acquire), "regression exceeded its node budget");
+                    assert_eq!(board.hash, position.hash);
+                    assert_eq!(board.to_fen(), position.to_fen());
+                    assert_eq!(board.undo_stack.len(), 1);
+                    assert_eq!(board.undo_stack[0].hash, parent_hash);
+                    assert!(!board.is_repetition_draw(1));
+                    assert_eq!(info.tb_probe_depth, gate);
+                    assert!(std::sync::Arc::ptr_eq(info.syzygy.as_ref().unwrap(), &tb));
+                    assert_eq!(tb.audit_wdl_calls.load(Ordering::Acquire), probe_calls + 1);
+                    assert_eq!(info.tb_hits, 1);
+                    assert_eq!(score, anchor, "retained and cleared TT must both respect fresh WDL");
+                    assert_eq!(stored.flag, direction);
+                    assert_eq!(stored_score, anchor, "the newly stored bound must also respect WDL");
+                    assert!(info.nodes > before_nodes + 1, "reject the early TT return and search moves");
+                    assert_eq!(info.tt.current_generation(), generation);
+                    assert_eq!(stored.generation, generation);
+                    assert_eq!(info.tt_pv_stack[1], !cleared && incoming.tt_pv,
+                        "rejecting a bound must not discard its PV marker");
+                    assert_eq!(stored.tt_pv, !cleared && incoming.tt_pv);
+                    if !cleared {
+                        assert!(info.stats_tt_static_eval_hits > before_static_hits,
+                            "the cached raw eval remains usable");
+                        assert_eq!(stored.static_eval, incoming.static_eval);
+                        if wdl < 0 {
+                            assert_eq!(stored.best_move, incoming.best_move,
+                                "retain the legal TT move in the forced-move fixture");
+                        }
+                    }
+                }
             }
         }
     }
