@@ -1337,6 +1337,10 @@ pub struct SearchInfo {
     reductions: [i32; MAX_PLY + 1],
     /// Excluded move for singular extension verification search (always NoMove when disabled)
     pub excluded_move: [Move; MAX_PLY + 1],
+    /// Null-move fail-highs already seen at each ply under the current
+    /// parent. Zeroed for ply+1 at every node entry, incremented at the
+    /// NMP cutoff sites, read by the NMP static-eval gate at the same ply.
+    pub nmp_prior_fh: [i32; MAX_PLY + 2],
     /// Double extension counter — propagated from parent, capped to prevent search explosion
     double_ext_count: [i32; MAX_PLY + 1],
     /// Per-ply beta-cutoff counter (SF cutoffCnt). Incremented at the fail-high
@@ -1450,6 +1454,7 @@ impl SearchInfo {
             tt_pv_stack: [false; MAX_PLY + 1],
             reductions: [0; MAX_PLY + 1],
             excluded_move: [NO_MOVE; MAX_PLY + 1],
+            nmp_prior_fh: [0; MAX_PLY + 2],
             double_ext_count: [0; MAX_PLY + 1],
             cutoff_count: [0; MAX_PLY + 4],
             moved_piece_stack: [0; MAX_PLY + 1],
@@ -4963,6 +4968,8 @@ fn negamax(
     if info.excluded_move[ply_u] == NO_MOVE {
         info.tt_pv_stack[ply_u] = tt_pv;
     }
+    // Children of this node start with no null-move fail-highs on record.
+    info.nmp_prior_fh[ply_u + 1] = 0;
 
     if tt_hit {
         tt_move = tt_entry.best_move;
@@ -5486,7 +5493,13 @@ fn negamax(
         + (any_threat_count - 2).max(0) * 64;
 
     if depth >= tp10(&NMP_MIN_DEPTH_10X) && !in_check && ply > 0 && stm_non_pawn != 0
-        && beta - alpha == 1 && static_eval >= beta + nmp_threat_margin
+        && beta - alpha == 1
+        // Sibling evidence: each null-move fail-high already seen at this ply
+        // (same parent) is credited one NMP_EVAL_DIV of static eval — the unit
+        // the reduction formula below uses per extra ply of R — so a node whose
+        // siblings all stood a null move can try one with a static slightly
+        // under the margin.
+        && static_eval + info.nmp_prior_fh[ply_u] * tp(&NMP_EVAL_DIV) >= beta + nmp_threat_margin
         && !prev_was_null  // Prevent consecutive null moves
         && ply >= info.nmp_min_ply  // Ply barrier: verification subtree cannot re-trigger NMP (audit B1)
         && beta.abs() < MATE_IN_MAX_PLY  // Skip NMP for mate/TB scores
@@ -5563,11 +5576,13 @@ fn negamax(
                     return 0;
                 }
                 if v_score >= beta {
+                    info.nmp_prior_fh[ply_u] += 1;
                     info.stats.nmp_cutoffs += 1;
                     return nmp_score;
                 }
                 info.stats.nmp_verify_fail += 1;
             } else {
+                info.nmp_prior_fh[ply_u] += 1;
                 info.stats.nmp_cutoffs += 1;
                 return nmp_score;
             }
