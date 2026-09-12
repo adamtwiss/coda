@@ -1317,6 +1317,14 @@ pub struct SearchInfo {
     /// hooks log which pruning gate discards trace_line_mv[ply], to stderr.
     pub trace_hashes: Vec<u64>,
     pub trace_line_mv: Vec<Move>,
+    /// Node-probe forensics (CODA_PROBE_FENS env, research only): zobrist
+    /// hashes of positions whose every visit logs its entry state and exit
+    /// score to stderr. Empty = disabled (one is_empty check per node).
+    pub probe_hashes: Vec<u64>,
+    /// Parent-side context snapshot for the probe, written before each child
+    /// search: the parent's PVS/LMR fail-high count and the child's index.
+    probe_fail_highs: [i32; MAX_PLY + 4],
+    probe_move_count: [i32; MAX_PLY + 4],
     /// Ply barrier for NMP verification: prevents NMP from re-triggering
     /// inside its own verification subtree (all peers: Alexandria,
     /// Stormphrax use nmpMinPly / nmp_min_ply). Default 0 = no barrier.
@@ -1445,6 +1453,9 @@ impl SearchInfo {
             tm_dbg: TmDbg::default(),
             trace_hashes: Vec::new(),
             trace_line_mv: Vec::new(),
+            probe_hashes: Vec::new(),
+            probe_fail_highs: [0; MAX_PLY + 4],
+            probe_move_count: [0; MAX_PLY + 4],
             nmp_min_ply: 0,
             static_evals: [0; MAX_PLY + 1],
             tt_pv_stack: [false; MAX_PLY + 1],
@@ -3436,6 +3447,21 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             }
         }
     }
+    // Node probe (research): CODA_PROBE_FENS = '|'-separated FENs. Every visit
+    // of one of these positions, at any ply and depth, logs to stderr.
+    if info.probe_hashes.is_empty() {
+        if let Ok(fens) = std::env::var("CODA_PROBE_FENS") {
+            for fen in fens.split('|') {
+                if !fen.trim().is_empty() {
+                    let pb = Board::from_fen(fen.trim());
+                    info.probe_hashes.push(pb.hash);
+                }
+            }
+            if !info.probe_hashes.is_empty() {
+                eprintln!("PROBE armed: {} positions", info.probe_hashes.len());
+            }
+        }
+    }
 
     // Age history tables (×0.80) to preserve useful move ordering from prior searches.
     // Killers and counter-moves are cleared (position-specific).
@@ -4641,6 +4667,19 @@ macro_rules! trace_node {
     };
 }
 
+/// Node-probe exit record for the early-return paths (research only).
+#[inline]
+fn probe_exit(info: &SearchInfo, hash: u64, ply: i32, depth: i32, how: &str, score: i32) {
+    if !info.probe_hashes.is_empty() {
+        if let Some(idx) = info.probe_hashes.iter().position(|h| *h == hash) {
+            eprintln!(
+                "PROBE exit idx={} iter={} ply={} depth={} how={} score={} flag=-1 best=0000 nodes={}",
+                idx, info.root_depth, ply, depth, how, score, info.nodes
+            );
+        }
+    }
+}
+
 /// Negamax alpha-beta search.
 /// Main negamax search with all pruning, extensions, and reductions.
 fn negamax(
@@ -5074,6 +5113,7 @@ fn negamax(
                             }
                         }
                     }
+                    probe_exit(info, board.hash, ply, depth, "tt_cutoff", tt_score);
                     return tt_score;
                 }
 
@@ -5339,6 +5379,31 @@ fn negamax(
         }
     }
 
+    // Node probe entry record (research): everything here is known before any
+    // child of this node is searched.
+    if !info.probe_hashes.is_empty() && info.probe_hashes.contains(&board.hash) {
+        let (tt_flag, tt_depth_p, tt_score_p) = if tt_hit {
+            (tt_entry.flag as i32, tt_entry.depth, score_from_tt(tt_entry.score, ply, board.halfmove))
+        } else {
+            (-1, -99, -INFINITY)
+        };
+        let eval_sum_p = if ply_u >= 1 && !in_check && info.static_evals[ply_u - 1] > -(MATE_IN_MAX_PLY) && static_eval > -INFINITY {
+            info.static_evals[ply_u - 1] + static_eval
+        } else {
+            -INFINITY
+        };
+        eprintln!(
+            "PROBE entry idx={} iter={} ply={} depth={} pv={} cut={} ttpv={} incheck={} excl={} raw={} stat={} corr={} improving={} tthit={} ttflag={} ttdepth={} ttscore={} prior_red={} parent_fh={} parent_mc={} cutoffcnt={} evalsum={} alpha={} beta={} nodes={}",
+            info.probe_hashes.iter().position(|h| *h == board.hash).unwrap_or(0),
+            info.root_depth, ply, depth, is_pv as i32, cut_node as i32, tt_pv as i32, in_check as i32,
+            (info.excluded_move[ply_u] != NO_MOVE) as i32,
+            raw_eval, static_eval, if static_eval > -INFINITY && scaled_eval > -INFINITY { static_eval - scaled_eval } else { -INFINITY },
+            improving as i32, tt_hit as i32, tt_flag, tt_depth_p, tt_score_p, prior_reduction,
+            info.probe_fail_highs[ply_u], info.probe_move_count[ply_u], info.cutoff_count[ply_u],
+            eval_sum_p, alpha, beta, info.nodes
+        );
+    }
+
     // Null-move pruning
     let us = board.side_to_move;
     let stm_non_pawn = board.colors[us as usize]
@@ -5475,6 +5540,7 @@ fn negamax(
                         info.stats.rfp_audit_var_fp[var_bucket] += 1;
                     }
                 }
+                probe_exit(info, board.hash, ply, depth, "rfp", static_eval - margin);
                 return static_eval - margin;
             }
         }
@@ -5564,11 +5630,13 @@ fn negamax(
                 }
                 if v_score >= beta {
                     info.stats.nmp_cutoffs += 1;
+                    probe_exit(info, board.hash, ply, depth, "nmp", nmp_score);
                     return nmp_score;
                 }
                 info.stats.nmp_verify_fail += 1;
             } else {
                 info.stats.nmp_cutoffs += 1;
+                probe_exit(info, board.hash, ply, depth, "nmp", nmp_score);
                 return nmp_score;
             }
         } else {
@@ -6530,6 +6598,11 @@ fn negamax(
         // Store reduction for child's hindsight gating
         // Hindsight slot stays non-negative (its readers compare to 0/2/3).
         info.reductions[ply_u] = reduction.max(0);
+        // Node probe: parent context the child reads at entry. Written once per
+        // move, before the reduced search; a re-search of the same move sees
+        // the pre-increment fail-high count.
+        info.probe_fail_highs[ply_u + 1] = num_fail_highs;
+        info.probe_move_count[ply_u + 1] = move_count;
 
         // Track nodes per root move for node-based time management
         let nodes_before = if ply == 0 { info.nodes } else { 0 };
@@ -6991,6 +7064,13 @@ fn negamax(
             // region on revisit. Inherit the parent's tt_pv into the store.
             let tt_pv = tt_pv || (best_score <= alpha_orig && ply_u > 0 && info.tt_pv_stack[ply_u - 1]);
             info.tt.store(board.hash, depth, store_score, flag, best_move, raw_eval, tt_pv);
+        }
+        if !info.probe_hashes.is_empty() && info.probe_hashes.contains(&board.hash) {
+            eprintln!(
+                "PROBE exit idx={} iter={} ply={} depth={} how=search score={} flag={} best={} nodes={}",
+                info.probe_hashes.iter().position(|h| *h == board.hash).unwrap_or(0),
+                info.root_depth, ply, depth, best_score, flag as i32, move_to_uci(best_move), info.nodes
+            );
         }
     }
 
