@@ -3195,6 +3195,11 @@ pub(crate) fn search_helper(board: &mut Board, info: &mut SearchInfo, _limits: &
                     info.tm_asp_fail_low = info.tm_asp_fail_low.saturating_add(1);
                     beta = (3 * alpha + 5 * beta) / 8;
                     alpha = (result - delta).max(-INFINITY);
+                    // A fail-low after a fail-high re-search: the depth cut
+                    // taken for the fail-high probe was a bet that the window
+                    // would resolve high; a fail-low says it didn't, so the
+                    // re-search resumes at the iteration's full depth.
+                    asp_depth = depth;
                 } else if result >= beta {
                     info.tm_asp_fail_high = info.tm_asp_fail_high.saturating_add(1);
                     alpha = (5 * alpha + 3 * beta) / 8;
@@ -3798,6 +3803,11 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                     // Fail low: contract beta aggressively toward alpha, widen alpha
                     beta = (3 * alpha + 5 * beta) / 8;
                     alpha = (result - delta).max(-INFINITY);
+                    // A fail-low after a fail-high re-search: the depth cut
+                    // taken for the fail-high probe was a bet that the window
+                    // would resolve high; a fail-low says it didn't, so the
+                    // re-search resumes at the iteration's full depth.
+                    asp_depth = depth;
                 } else if result >= beta {
                     info.tm_asp_fail_high = info.tm_asp_fail_high.saturating_add(1);
                     info.stats.ts_asp_fail_high += 1;
