@@ -114,7 +114,7 @@ tunables!(
     // effective value, so such a parameter can post a large SPSA percentage
     // while changing nothing at all. Check the bucket before acting on a mover.
     (NMP_BASE_R_10X, 64, 20, 80, 15.0, true),
-    (NMP_DEPTH_DIV_10X, 44, 10, 200, 15.0, true),
+    (NMP_DEPTH_DIV_10X, 33, 10, 200, 15.0, true),
     (NMP_EVAL_DIV, 77, 50, 400, 17.5, true),
     (NMP_EVAL_MAX_10X, 35, 10, 60, 5.0, false),
     // Depth at/above which an NMP cutoff must be re-searched to verify it.
@@ -162,20 +162,20 @@ tunables!(
     // frontier. History adjusts the effective lmr_depth used here, so these
     // interact with the LMR history terms — retune the pair together.
     (FUT_BASE, 70, 0, 200, 9.0, true),
-    (FUT_PER_DEPTH, 102, 40, 250, 10.5, true),
+    (FUT_PER_DEPTH, 93, 40, 250, 10.5, true),
     // Strong-history exemption for quiet futility: a quiet whose main history
     // exceeds this is never futility-pruned. It was the hardcoded literal 12000
     // sitting inside the gate at search.rs while every other term around it was
     // SPSA-tunable -- so SPSA has been optimising a formula with one frozen
     // input. Exposing it costs nothing and is behaviour-identical at 12000.
     (FUT_HIST_EXEMPT, 12485, 2000, 16384, 900.0, true),
-    (FUT_LMR_DEPTH, 14, 6, 24, 2.0, true),
+    (FUT_LMR_DEPTH, 16, 6, 24, 2.0, true),
     // Move-count term: later quiets get a tighter futility margin. Default
     // FUT_PER_DEPTH / 8 — one depth-ply of margin per eight moves; capped at
     // the depth term so the margin never drops below FUT_BASE. Futility is
     // evaluated per move across the quiet tail; LMP still bulk-skips.
     (FUT_MC_PER_MOVE, 12, 0, 40, 2.0, true),
-    (SEE_QUIET_MULT, 22, 5, 80, 3.75, true),
+    (SEE_QUIET_MULT, 18, 5, 80, 3.75, true),
     // Low-increment TM multiplier ceiling. The factor product
     // (stability×fail-low×forced×subtree×score-trend, up to ~13.8×) is only
     // clamped for no_inc; at increments that are SMALL RELATIVE TO THE CLOCK
@@ -280,7 +280,7 @@ tunables!(
     // continuous (`R -= hist / DIV`), not stepped.
     (LMR_HIST_DIV_CAP, 3969, 1000, 20000, 1500.0, true),
     (LMR_C_QUIET, 174, 40, 300, 13.0, true),
-    (LMR_C_CAP, 237, 80, 350, 12.5, true),
+    (LMR_C_CAP, 252, 80, 350, 12.5, true),
     // Two independent degrees of freedom on the LMR curve, both in centi-ply
     // (they need the fractional accumulator to express):
     //
@@ -290,7 +290,7 @@ tunables!(
     //             inflation `r += r*NUM/(256d+285)`, so proportionally MORE
     //             reduction shallow and LESS deep. A flat +1-ply all-node
     //             bump is the wrong shape for this.
-    (LMR_BASE_CENTI, 42, 0, 120, 6.0, true),
+    (LMR_BASE_CENTI, 48, 0, 120, 6.0, true),
     (LMR_ALLNODE_DECAY_NUM, 426, 0, 1600, 80.0, true),
     // Cut-node LMR bump, in centi-ply. Cut nodes reduce by this amount
     // (plus a further ply with no TT move); all-nodes keep +1.
@@ -301,7 +301,7 @@ tunables!(
     // move-count term that the source shape omits, so the constants would
     // otherwise double-count. Ranges run to 0 so SPSA can kill dead terms.
     (LMR_WINBETA_CENTI, 32, 0, 250, 12.0, false),
-    (LMR_TTALPHA_CENTI, 19, 0, 150, 8.0, true),
+    (LMR_TTALPHA_CENTI, 26, 0, 150, 8.0, true),
     (LMR_EXPECT_MULT, 20, 0, 120, 6.0, true),
     // cutoff_count LMR terms. When the child ply has failed high more than
     // twice under this node, reduce late moves more (with extra at non-PV
@@ -357,8 +357,8 @@ tunables!(
     // Root-depth-aware ProbCut: a more conservative margin is wanted at
     // shallow root depths than deep ones, so add an offset below
     // PROBCUT_ROOT_THRESH and fade it out as root depth grows.
-    (PROBCUT_ROOT_THRESH, 16, 8, 28, 1.5, true),
-    (PROBCUT_ROOT_FADE_10X, 26, 10, 120, 10.0, true),
+    (PROBCUT_ROOT_THRESH, 17, 8, 28, 1.5, true),
+    (PROBCUT_ROOT_FADE_10X, 35, 10, 120, 10.0, true),
     (PROBCUT_ROOT_MARGIN, 69, 0, 120, 8.0, false),
     (HINDSIGHT_THRESH, 138, 50, 400, 17.5, true),
     (QS_DELTA_MARGIN, 371, 100, 500, 20.0, true),
@@ -371,7 +371,7 @@ tunables!(
     // There is deliberately no minor-key or major-key correction source:
     // both are strict subsets of non_pawn_key, so such terms are redundant
     // with np_corr and simply consume SPSA budget at weight 0.
-    (CORR_W_CONT, 215, 0, 400, 18.5, true),
+    (CORR_W_CONT, 198, 0, 400, 18.5, true),
     // Transition (zobrist-delta) correction weight (Cinder idea): correction
     // keyed by hash(ply-1) ^ hash(ply) — a hash of the last move IN CONTEXT
     // (from+to+captured+side), richer than cont_corr's [piece][to]. Captures
@@ -436,7 +436,7 @@ tunables!(
     (DEXT_MARGIN_QUIET, 17, 0, 100, 4.0, false),
     (DEXT_MARGIN_CORR, 13, 0, 64, 3.0, true),
     (DEXT_MARGIN_BASE, 37, -50, 150, 6.0, true),
-    (DEXT_CAP, 9, 4, 32, 2.0, true),
+    (DEXT_CAP, 10, 4, 32, 2.0, true),
     // How large a TT score has to be before the 50-move clock is allowed to
     // veto a cutoff on it. See `tt_halfmove_ok`.
     //
@@ -514,7 +514,7 @@ tunables!(
     // Null-move threat-escape bonus in quiet ordering.
     (NULL_THREAT_ESCAPE_BONUS, 8321, 0, 30000, 1000.0, false),
     (NMP_KING_ZONE_MAX_10X, 21, 20, 90, 15.0, true),
-    (PROBCUT_KING_ZONE_MAX_10X, 70, 20, 90, 15.0, true),
+    (PROBCUT_KING_ZONE_MAX_10X, 79, 20, 90, 15.0, true),
     (LMR_THREAT_DIV_10X, 45, 10, 50, 15.0, true),
     (LMR_KING_PRESSURE_DIV_10X, 72, 20, 90, 15.0, true),
     // Reduce later moves more once this node has already raised alpha N times
@@ -578,7 +578,7 @@ tunables!(
     (IIR_MIN_DEPTH_10X, 46, 5, 100, 15.0, true),
     (PROBCUT_MIN_DEPTH_10X, 15, 10, 120, 15.0, false),     // ProbCut activation gate
     (PROBCUT_ROOT_MIN_DEPTH_10X, 24, 0, 80, 8.0, true),
-    (SEE_CAP_DEPTH_10X, 87, 30, 150, 15.0, true),         // SEE capture prune depth cap
+    (SEE_CAP_DEPTH_10X, 97, 30, 150, 15.0, true),         // SEE capture prune depth cap
     // Capture-SEE prune margin, SF-shaped (search.cpp): margin = depth*MULT +
     // capt_hist*HIST/1024, prune if SEE < -margin. MULT is ~1.1 pawn/depth,
     // toward SF's 0.84; HIST ≈ SF's 34/1024 rescaled for Coda's ±16384
@@ -589,7 +589,7 @@ tunables!(
     // can be lowered without over-pruning them. Dropping the base alone,
     // without the history term, cost +17% bench nodes.
     (SEE_CAP_MULT, 99, 40, 250, 12.0, true),
-    (SEE_CAP_HIST, 8, 0, 40, 2.0, true),
+    (SEE_CAP_HIST, 10, 0, 40, 2.0, true),
     (BAD_NOISY_DEPTH_10X, 55, 40, 150, 15.0, true),       // BNFP depth cap
     // NMP activation gate (2 sites). This can sit low because RFP runs FIRST:
     // shallow NMP then only sees nodes static pruning could not already cut,
