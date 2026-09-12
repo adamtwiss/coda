@@ -5,6 +5,9 @@
 use crate::types::*;
 use std::sync::atomic::{AtomicU64, AtomicU32, Ordering};
 
+/// research/score-lock (thread 7): TT store/victim counters, read per iteration by the search dump.
+pub static RS_TT: [std::sync::atomic::AtomicU64; 14] = [const { std::sync::atomic::AtomicU64::new(0) }; 14];
+
 pub const TT_FLAG_NONE: u8 = 0;
 pub const TT_FLAG_EXACT: u8 = 1; // PV-node (exact score)
 pub const TT_FLAG_LOWER: u8 = 2; // Cut-node (fail-high, score >= beta)
@@ -480,6 +483,8 @@ impl TT {
 
     /// Store an entry in the TT. Lock-free via atomic stores.
     pub fn store(&self, hash: u64, depth: i32, score: i32, flag: u8, best_move: Move, static_eval: i32, is_pv: bool) {
+        // research/score-lock (thread 7): store-class and victim-class counters, never merged.
+        RS_TT[match depth { d if d <= -2 => 0, d if d <= 0 => 1, 1..=3 => 2, 4..=7 => 3, _ => 4 }].fetch_add(1, Ordering::Relaxed);
         let idx = self.bucket_index(hash);
         let bucket = &self.buckets[idx];
         let gen = self.generation.load(Ordering::Relaxed);
@@ -516,6 +521,7 @@ impl TT {
         if special < BUCKET_SIZE {
             let slot_data = datas[special];
             if unpack_flag(slot_data) == TT_FLAG_NONE {
+                RS_TT[5].fetch_add(1, Ordering::Relaxed);
                 bucket.data[special].store(new_data, Ordering::Release);
                 bucket.keys[special].store(new_key, Ordering::Release);
                 return;
@@ -526,6 +532,7 @@ impl TT {
             let slot_gen = unpack_generation(slot_data);
             let flag_is_exact = flag == TT_FLAG_EXACT;
             if depth > slot_depth - 4 || gen != slot_gen || flag_is_exact {
+                RS_TT[6].fetch_add(1, Ordering::Relaxed);
                 let effective_move = if best_move == NO_MOVE {
                     unpack_move(slot_data)
                 } else {
@@ -535,8 +542,16 @@ impl TT {
                 let stored_key = key_upper ^ (stored_data as u32);
                 bucket.data[special].store(stored_data, Ordering::Release);
                 bucket.keys[special].store(stored_key, Ordering::Release);
+            } else {
+                RS_TT[7].fetch_add(1, Ordering::Relaxed);
             }
             return;
+        }
+        {
+            let vd = unpack_depth(datas[replace_idx]);
+            // victim class: 8 eval-seed (<= -2), 9 QS (-1..0), 10 d1-3, 11 d4-7, 12 d8+; 13 older generation
+            RS_TT[match vd { d if d <= -2 => 8, d if d <= 0 => 9, 1..=3 => 10, 4..=7 => 11, _ => 12 }].fetch_add(1, Ordering::Relaxed);
+            if unpack_generation(datas[replace_idx]) != gen { RS_TT[13].fetch_add(1, Ordering::Relaxed); }
         }
         bucket.data[replace_idx].store(new_data, Ordering::Release);
         bucket.keys[replace_idx].store(new_key, Ordering::Release);
@@ -574,6 +589,20 @@ impl TT {
     /// Counting any non-empty slot instead would saturate at ~99% after a few
     /// moves of warm-TT play, even when only ~3% of slots hold current-gen
     /// entries.
+    /// research/score-lock (thread 7): occupancy over ALL generations, for
+    /// persistent-table runs where `hashfull` (current generation only) is
+    /// blind to what earlier searches left behind.
+    pub fn hashfull_all(&self) -> u32 {
+        let sample = (self.mask + 1).min(1000);
+        let mut used = 0u32;
+        for i in 0..sample {
+            for j in 0..BUCKET_SIZE {
+                if unpack_flag(self.buckets[i].data[j].load(Ordering::Relaxed)) != TT_FLAG_NONE { used += 1; }
+            }
+        }
+        used * 1000 / (sample as u32 * BUCKET_SIZE as u32)
+    }
+
     pub fn hashfull(&self) -> u32 {
         let sample = (self.mask + 1).min(1000);
         let current_gen = self.generation.load(Ordering::Relaxed);
