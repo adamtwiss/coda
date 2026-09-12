@@ -1095,7 +1095,25 @@ struct TmDbg {
     adjusted_soft: u64,
 }
 
+// Target-local regression witnesses; absent from production builds.
+#[cfg(test)]
+#[derive(Default, Debug)]
+struct TbMulticutWitness {
+    hash: u64,
+    ply: i32,
+    inhibit_se: bool,
+    ceiling: Option<i32>,
+    ceiling_hits: u32,
+    excluded_entries: u32,
+    verification: Option<(i32, i32)>, // singular beta and actual excluded result
+    multicut_attempts: u32,
+    multicut_returns: u32,
+    stores: u32,
+}
+
 pub struct SearchInfo {
+    #[cfg(test)]
+    tb_multicut_witness: Option<TbMulticutWitness>,
     pub nodes: u64,
     /// Interior Syzygy WDL probe hits this search, aggregated across SMP
     /// workers after collection. Cosmetic — surfaced in the UCI `tbhits`
@@ -1387,6 +1405,8 @@ impl SearchInfo {
     /// misleading "TT 1 MB" info string before the shared TT is swapped in).
     pub fn new_with_tt(tt: std::sync::Arc<TT>) -> Self {
         SearchInfo {
+            #[cfg(test)]
+            tb_multicut_witness: None,
             nodes: 0,
             tb_hits: 0,
             global_nodes: std::sync::Arc::new(AtomicU64::new(0)),
@@ -2406,6 +2426,17 @@ fn lmr_reduction(depth: i32, moves: i32) -> i32 {
     let d = (depth as usize).min(63);
     let m = (moves as usize).min(63);
     LMR_TABLE[d][m].load(Ordering::Relaxed)
+}
+
+/// The reduced, excluded search supplies an ordinary fail-soft LOWER, but
+/// decisive results use only its verification threshold (not a full-depth
+/// mate/TB claim). Reject a LOWER contradicting this node's fresh WDL ceiling.
+/// Do not clip: when ceiling < beta, no fail-high is possible and the caller
+/// still needs the ordinary search, especially for an in-window PV result.
+#[inline]
+fn tb_compatible_multicut_score(singular_score: i32, singular_beta: i32, ceiling: Option<i32>) -> Option<i32> {
+    let lower = if is_decisive(singular_score) { singular_beta } else { singular_score };
+    if ceiling.is_some_and(|ceiling| lower > ceiling) { None } else { Some(lower) }
 }
 
 /// Reduce a competitive TT move less when the excluded-move verification
@@ -4802,6 +4833,12 @@ fn negamax(
     // so it raises alpha and floors the result. A definite LOSS is an upper
     // bound: the true value can only be lower (we may be mated sooner), never
     // higher. Search must not return / store outside these.
+    #[cfg(test)]
+    if let Some(witness) = info.tb_multicut_witness.as_mut() {
+        if witness.hash == board.hash && witness.ply == ply && info.excluded_move[ply_u] != NO_MOVE {
+            witness.excluded_entries += 1;
+        }
+    }
     let mut tb_floor: Option<i32> = None;
     let mut tb_ceiling: Option<i32> = None;
     // A centipawn RFP result cannot refute a proven TB loss. Track only nodes
@@ -4878,6 +4915,13 @@ fn negamax(
                         // sits one ply away reported TB_WIN - 2 rather than
                         // TB_WIN - 1.
                         tb_ceiling = Some(tb_score);
+                        #[cfg(test)]
+                        if let Some(witness) = info.tb_multicut_witness.as_mut() {
+                            if witness.hash == board.hash && witness.ply == ply {
+                                witness.ceiling = Some(tb_score);
+                                witness.ceiling_hits += 1;
+                            }
+                        }
                     }
                 }
             }
@@ -5986,6 +6030,13 @@ fn negamax(
             && tt_entry.flag != TT_FLAG_UPPER
             && tt_entry.depth >= depth - tp(&SE_TT_DEPTH_SLACK)
             && FEAT_SINGULAR.load(Ordering::Relaxed)
+            && {
+                #[cfg(test)]
+                { !info.tb_multicut_witness.as_ref().is_some_and(|w|
+                    w.hash == board.hash && w.ply == ply && w.inhibit_se) }
+                #[cfg(not(test))]
+                { true }
+            }
         {
             // 50mr downgrade applies here too (SF: singular ttValue
             // is value_from_tt output). A downgraded mate lands in the TB
@@ -6011,28 +6062,37 @@ fn negamax(
                 info.excluded_move[ply_u] = tt_move;
                 let singular_score = negamax(board, info, singular_beta - 1, singular_beta, singular_depth, ply, false);
                 info.excluded_move[ply_u] = NO_MOVE;
+                #[cfg(test)]
+                if let Some(witness) = info.tb_multicut_witness.as_mut() {
+                    if witness.hash == board.hash && witness.ply == ply {
+                        witness.verification = Some((singular_beta, singular_score));
+                    }
+                }
 
                 if info.stop.load(Ordering::Relaxed) {
                     return 0;
                 }
 
                 if singular_score >= singular_beta && singular_beta >= beta {
-                    // Multi-cut: alternatives are also good enough — prune the whole node.
-                    // Return singular_score (SF pattern) — tighter score
-                    // for downstream TT propagation than singular_beta floor.
-                    // EXCEPT decisive scores: singular_score is fail-soft from a
-                    // reduced (depth-1)/2 search with the TT move EXCLUDED — a
-                    // mate/TB score from it is unproven at this node's depth and
-                    // would be TT-stored at full depth as LOWER. SF gates with
-                    // !is_decisive and falls through; Obsidian/Berserk return
-                    // singularBeta. Suppressing multicut entirely in mate
-                    // shapes tested WORSE here, so keep FIRING and fix only the
-                    // returned value.
-                    info.stats.multicut += 1;
-                    if is_decisive(singular_score) {
-                        return singular_beta;
+                    #[cfg(test)]
+                    if let Some(witness) = info.tb_multicut_witness.as_mut() {
+                        if witness.hash == board.hash && witness.ply == ply {
+                            witness.multicut_attempts += 1;
+                        }
                     }
-                    return singular_score;
+                    // Alternatives justify a cutoff only if the actual proposed
+                    // LOWER is compatible with this node's fresh TB upper bound.
+                    // Otherwise fall through to search the move normally.
+                    if let Some(score) = tb_compatible_multicut_score(singular_score, singular_beta, tb_ceiling) {
+                        info.stats.multicut += 1;
+                        #[cfg(test)]
+                        if let Some(witness) = info.tb_multicut_witness.as_mut() {
+                            if witness.hash == board.hash && witness.ply == ply {
+                                witness.multicut_returns += 1;
+                            }
+                        }
+                        return score;
+                    }
                 }
 
                 if singular_score < singular_beta {
@@ -6983,6 +7043,12 @@ fn negamax(
             // region on revisit. Inherit the parent's tt_pv into the store.
             let tt_pv = tt_pv || (best_score <= alpha_orig && ply_u > 0 && info.tt_pv_stack[ply_u - 1]);
             info.tt.store(board.hash, depth, store_score, flag, best_move, raw_eval, tt_pv);
+            #[cfg(test)]
+            if let Some(witness) = info.tb_multicut_witness.as_mut() {
+                if witness.hash == board.hash && witness.ply == ply {
+                    witness.stores += 1;
+                }
+            }
         }
     }
 
@@ -8276,6 +8342,222 @@ mod tests {
         let _ = negamax(&mut board, &mut info, -1, 0, 7, 1, true);
         assert!(info.nodes > 1, "rejected bound must not return via TT narrowing");
         assert_eq!(board.hash, hash);
+    }
+
+    #[test]
+    fn tb_multicut_lower_compatibility_matrix() {
+        let loss_ceiling = -TB_WIN + 1;
+        // Ordinary results keep their fail-soft score; decisive results keep
+        // only singular_beta. Values come from Coda's score anchors/boundaries.
+        for (singular_score, singular_beta, lower) in [
+            (0, -1, 0),
+            (-1, -2, -1),
+            (TB_WIN, 0, 0),
+            (MATE_SCORE, loss_ceiling, loss_ceiling),
+            (loss_ceiling, loss_ceiling - 1, loss_ceiling - 1),
+            (-MATE_SCORE + 1, -MATE_SCORE, -MATE_SCORE),
+        ] {
+            assert!(singular_score >= singular_beta);
+            assert_eq!(tb_compatible_multicut_score(singular_score, singular_beta, None), Some(lower));
+            for beta in [singular_beta - 1, singular_beta] {
+                for ceiling in [lower - 1, lower, lower + 1] {
+                    let accepted = tb_compatible_multicut_score(singular_score, singular_beta, Some(ceiling));
+                    assert_eq!(accepted, if lower <= ceiling { Some(lower) } else { None });
+                    if let Some(score) = accepted {
+                        assert!(beta <= score && score <= ceiling,
+                            "compatible LOWERs, including equality, must retain the proposed value");
+                    }
+                }
+            }
+        }
+        // Checking singular_beta alone would incorrectly accept this ordinary
+        // fail-soft score, even though beta <= ceiling. It must not be clipped.
+        assert_eq!(tb_compatible_multicut_score(0, loss_ceiling, Some(loss_ceiling)), None);
+    }
+
+    #[test]
+    fn tb_multicut_ceiling_below_beta_cannot_cut() {
+        let ceiling = -TB_WIN + 1;
+        let beta = ceiling + 1;
+        for singular_beta in [beta, 0] {
+            for singular_score in [singular_beta, 0, TB_WIN, MATE_SCORE] {
+                assert!(singular_score >= singular_beta && singular_beta >= beta);
+                // Eligibility implies proposed LOWER >= singular_beta >= beta.
+                // A ceiling below beta rules out BOTH return arms, not just an
+                // excessive magnitude. Returning the ceiling is not a cutoff.
+                assert_eq!(tb_compatible_multicut_score(singular_score, singular_beta, Some(ceiling)), None);
+            }
+        }
+    }
+
+    fn tb_multicut_restored(board: &Board, before: &Board, info: &SearchInfo) {
+        assert_eq!(board.to_fen(), before.to_fen());
+        assert_eq!(board.hash, before.hash);
+        assert_eq!(board.pawn_hash, before.pawn_hash);
+        assert_eq!(board.non_pawn_key, before.non_pawn_key);
+        assert_eq!(board.pieces, before.pieces);
+        assert_eq!(board.colors, before.colors);
+        assert_eq!(board.mailbox, before.mailbox);
+        assert_eq!(board.plies_from_null, before.plies_from_null);
+        assert_eq!(board.undo_stack.len(), before.undo_stack.len());
+        assert_eq!(info.excluded_move[1], NO_MOVE);
+        assert_eq!(info.nnue_acc.as_ref().unwrap().top(), 0);
+        assert_eq!(info.threat_stack.index(), 0);
+        assert!(!info.stop.load(Ordering::Relaxed), "regression exhausted its node budget");
+        assert!(info.nodes < info.max_nodes);
+    }
+
+    // Continuously loaded real four-man Syzygy, with a fixed depth gate and
+    // real NNUE warmups. No TT score/eval/child result or WDL is injected.
+    // Reproduced with net-23C62E38.nnue; assert the path, not its numeric eval.
+    // Each arm (including warmups) is capped at the audit's 20,000-node budget.
+    fn tb_multicut_real_warm_bound(lower: bool, wide: bool) {
+        crate::init();
+        let net = std::env::var("CODA_TEST_NET").expect("requires explicit CODA_TEST_NET");
+        let path = std::env::var("CODA_TEST_TB").expect("requires explicit CODA_TEST_TB");
+        let tb = std::sync::Arc::new(crate::tb::SyzygyTB::new(&path).unwrap());
+        assert_eq!(tb.max_pieces(), 4, "use real through-four-man tables, including smaller dependencies");
+        let position = Board::from_fen("7k/8/8/8/8/8/6K1/nQ6 b - - 0 1");
+        assert!(matches!(tb.probe_wdl(&position), Some(wdl) if wdl < -1));
+        assert_eq!(position.checkers(), 0);
+        // Every legal Black move is quiet and permits a safe queen capture of
+        // the knight. Independently verify the resulting KQK loss in real TB.
+        for &mv in generate_legal_moves(&position).as_slice() {
+            assert_eq!(position.piece_type_at(move_to(mv)), NO_PIECE_TYPE);
+            let mut child = position.clone();
+            assert!(child.make_move(mv));
+            let knight = child.pieces[KNIGHT as usize].trailing_zeros() as u8;
+            let capture = make_move(square(1, 0), knight, FLAG_NONE);
+            assert!(generate_legal_moves(&child).as_slice().contains(&capture));
+            assert!(child.make_move(capture));
+            assert_eq!(popcount(child.occupied()), 3);
+            assert!(matches!(tb.probe_wdl(&child), Some(wdl) if wdl < -1));
+        }
+        let depth = tp10(&SE_DEPTH_10X);
+        assert_eq!(depth, 4, "fixture targets current d4 SE/probe defaults");
+        assert!(depth < tp10(&NMP_MIN_DEPTH_10X));
+        let ceiling = -TB_WIN + 1;
+        let mut warm_signature = None;
+        // Controls change only target SE permission or TT retention. Board,
+        // history, NNUE state, TB/cache, generation and probe gate stay intact.
+        for control in ["inhibit-se", "clear-tt", "retain"] {
+            let mut board = position.clone();
+            let mut info = SearchInfo::new(1);
+            info.load_nnue(&net).unwrap();
+            info.silent = true;
+            info.max_nodes = 20_000;
+            info.root_depth = depth;
+            info.syzygy = Some(tb.clone());
+            info.tb_probe_depth = depth;
+            // Match search()'s delta generator/consumer contract without
+            // changing any process-global modes, including pawn-pair nets.
+            board.generate_threat_deltas = info.nnue_net.as_ref().unwrap().has_threats
+                && !crate::threat_accum::refresh_mode() && crate::threat_accum::eager_generation();
+            board.generate_pawn_pair_deltas = info.nnue_net.as_ref().unwrap().num_pawn_pair_features > 0
+                && !crate::threat_accum::refresh_mode() && crate::threat_accum::eager_generation();
+            let before = board.clone();
+            let initial_eval = info.eval(&board);
+            let exact = negamax(&mut board, &mut info, -INFINITY, INFINITY, 1, 1, false);
+            tb_multicut_restored(&board, &before, &info);
+            let exact_entry = info.tt.probe(board.hash);
+            assert!(exact_entry.hit);
+            assert_eq!(exact_entry.flag, TT_FLAG_EXACT);
+            assert!(!is_decisive(exact));
+            // d2, not d1: the warm EXACT entry would answer d1 directly.
+            let warm = if lower {
+                negamax(&mut board, &mut info, ceiling - 1, ceiling, 2, 1, false)
+            } else { exact };
+            tb_multicut_restored(&board, &before, &info);
+            assert_eq!(info.tb_hits, 0, "warmup must use the depth gate / QS boundary");
+            let entry = info.tt.probe(board.hash);
+            assert!(entry.hit);
+            assert_eq!(entry.flag, if lower { TT_FLAG_LOWER } else { TT_FLAG_EXACT });
+            assert!(!is_decisive(entry.score));
+            assert!(!is_decisive(warm));
+            assert_eq!(entry.depth, if lower { 2 } else { 1 });
+            assert!(entry.depth >= depth - tp(&SE_TT_DEPTH_SLACK));
+            assert!(entry.depth < depth - 1, "exclude TT direct, narrowing and near-miss returns");
+            assert_ne!(entry.best_move, NO_MOVE);
+            assert_eq!(board.piece_type_at(move_to(entry.best_move)), NO_PIECE_TYPE);
+            let signature = (entry.depth, entry.score, entry.flag, entry.best_move,
+                entry.static_eval, entry.tt_pv, exact, warm);
+            if let Some(expected) = warm_signature {
+                assert_eq!(signature, expected, "controls need identical real TT warmups");
+            } else {
+                warm_signature = Some(signature);
+            }
+            // Derive the PV window from the real incoming score and TB truth,
+            // not a hand-picked eval. Ceiling < beta makes fail-high impossible.
+            let beta = if wide {
+                let incoming = score_from_tt(entry.score, 1, board.halfmove);
+                let midpoint = ceiling + (incoming - ceiling) / 2;
+                assert!(ceiling < midpoint && midpoint < incoming - depth);
+                midpoint
+            } else { ceiling };
+            if control == "clear-tt" { info.tt.clear(); }
+            info.tb_multicut_witness = Some(TbMulticutWitness {
+                hash: board.hash, ply: 1, inhibit_se: control == "inhibit-se",
+                ..TbMulticutWitness::default()
+            });
+            let nodes_before = info.nodes;
+            let score = negamax(&mut board, &mut info, ceiling - 1, beta, depth, 1, false);
+            tb_multicut_restored(&board, &before, &info);
+            assert_eq!(info.eval(&board), initial_eval, "incremental eval must restore too");
+            let witness = info.tb_multicut_witness.as_ref().unwrap();
+            eprintln!("TB-MULTICUT lower={lower} wide={wide} control={control} beta={beta} warm={warm} returned={score} nodes={} witnesses={witness:?}",
+                info.nodes - nodes_before);
+            assert_eq!(witness.ceiling, Some(ceiling));
+            assert_eq!(witness.ceiling_hits, 1, "one fresh non-cutting loss probe at target");
+            assert_eq!(witness.multicut_returns, 0);
+            if control == "retain" {
+                assert_eq!(witness.excluded_entries, 1, "must enter real target exclusion search");
+                let (singular_beta, singular_score) = witness.verification.unwrap();
+                if lower {
+                    assert_eq!(witness.multicut_attempts, 1, "must exercise the rejected cutoff");
+                    assert!(singular_score >= singular_beta && singular_beta >= beta);
+                    assert!(!is_decisive(singular_score), "real fixture exercises ordinary return arm");
+                    assert!(singular_score > ceiling && singular_score >= beta);
+                } else {
+                    assert!(singular_score < singular_beta, "EXACT fixture is the negative control");
+                    assert_eq!(witness.multicut_attempts, 0);
+                }
+            } else {
+                assert_eq!(witness.excluded_entries, 0);
+                assert_eq!(witness.verification, None);
+                assert_eq!(witness.multicut_attempts, 0);
+            }
+            assert_eq!(witness.stores, 1, "must continue to ordinary node-end store, not clip and return");
+            let expected_flag = if wide {
+                assert!(score <= ceiling && ceiling < beta, "PV must not fail high");
+                if score <= ceiling - 1 { TT_FLAG_UPPER } else { TT_FLAG_EXACT }
+            } else {
+                assert_eq!(score, ceiling);
+                TT_FLAG_LOWER
+            };
+            let stored = info.tt.probe(board.hash);
+            assert!(stored.hit);
+            assert_eq!(stored.depth, depth);
+            assert_eq!(stored.flag, expected_flag);
+            assert_eq!(score_from_tt(stored.score, 1, board.halfmove), score);
+        }
+    }
+
+    #[test]
+    #[ignore = "requires explicit real CODA_TEST_NET and through-four-man CODA_TEST_TB"]
+    fn tb_multicut_real_exact_preserves_loss_ceiling() {
+        tb_multicut_real_warm_bound(false, false);
+    }
+
+    #[test]
+    #[ignore = "requires explicit real CODA_TEST_NET and through-four-man CODA_TEST_TB"]
+    fn tb_multicut_real_lower_preserves_loss_ceiling() {
+        tb_multicut_real_warm_bound(true, false);
+    }
+
+    #[test]
+    #[ignore = "requires explicit real CODA_TEST_NET and through-four-man CODA_TEST_TB"]
+    fn tb_multicut_real_lower_pv_preserves_loss_direction() {
+        tb_multicut_real_warm_bound(true, true);
     }
 
     #[test]
