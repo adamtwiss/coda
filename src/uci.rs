@@ -1522,13 +1522,17 @@ fn parse_position(tokens: &[&str], board: &mut Board) {
             // desyncing us from the GUI. Stop at the first failure instead.
             if let Some(mv) = parse_uci_move(board, tokens[idx]) {
                 if !board.make_move(mv) {
-                    eprintln!("info string WARNING: make_move failed for UCI move {} (parsed as {}); \
+                    // stdout, not stderr: an `info string` is UCI-legal and reaches
+                    // GUIs and harnesses; on stderr this warning was invisible to a
+                    // harness that captured UCI output and searched the wrong
+                    // position for a whole run (thread 7, 2026-09-12).
+                    println!("info string WARNING: make_move failed for UCI move {} (parsed as {}); \
                         ignoring this and any further moves",
                         tokens[idx], crate::types::move_to_uci(mv));
                     break;
                 }
             } else {
-                eprintln!("info string WARNING: failed to parse UCI move: {}; \
+                println!("info string WARNING: failed to parse UCI move: {}; \
                     ignoring this and any further moves", tokens[idx]);
                 break;
             }
