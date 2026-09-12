@@ -4835,7 +4835,9 @@ fn negamax(
             if pc <= max_pc && (pc < max_pc || depth >= info.tb_probe_depth) {
                 if let Some(wdl) = tb.probe_wdl(board) {
                     info.tb_hits += 1;
-                    if wdl < -1 && tb_band_loss {
+                    // A concrete loss also forbids static pruning in a mate
+                    // window: ordinary eval cannot refute being mated sooner.
+                    if wdl < -1 {
                         tb_loss_rfp_guard = true;
                     }
                     // wdl from ambiguous_wdl_to_score: ±20000 = definite, ±1 = ambiguous, 0 = draw
@@ -5533,6 +5535,10 @@ fn negamax(
             // Return null score directly (no dampening — no top engine uses it)
             // Clamp mate scores to beta to avoid inflated mate distance
             let nmp_score = if is_decisive(null_score) { beta } else { null_score };
+            // The current-node WDL ceiling also constrains ordinary null
+            // results. A non-cutting loss at this zero window has beta <=
+            // ceiling, so capping the reduced-search bound preserves fail-high.
+            let nmp_score = nmp_score.min(tb_ceiling.unwrap_or(INFINITY));
 
             // Verification search at high depths to guard against zugzwang
             if depth >= tp10(&NMP_VERIFY_DEPTH_10X) {
@@ -5727,14 +5733,19 @@ fn negamax(
                 // old `depth - 3` overstated verification by 1 ply whenever
                 // `improving` reduced pc_depth, and stored -1/0 for the
                 // qsearch-only shallow case (SF stores 1 there).
+                // Preserve the current-node loss ceiling on both outputs.
+                // This non-cutting, non-PV loss has beta <= ceiling: clipping
+                // can weaken the raised-window proof, but still fails high at
+                // the caller's beta. Apply it after the usual return dampening.
+                let ceiling = tb_ceiling.unwrap_or(INFINITY);
                 info.tt.store(
-                    board.hash, pc_depth.max(0) + 1, score_to_tt(score, ply),
+                    board.hash, pc_depth.max(0) + 1, score_to_tt(score.min(ceiling), ply),
                     TT_FLAG_LOWER, mv, raw_eval, tt_pv,
                 );
                 if is_decisive(score) {
-                    return score;
+                    return score.min(ceiling);
                 }
-                return score - (candidate_beta - beta);
+                return (score - (candidate_beta - beta)).min(ceiling);
             }
         }
     }
@@ -8254,6 +8265,163 @@ mod tests {
                 assert_eq!(info.nodes, 1);
             }
         }
+    }
+
+    // A legal h6-h7 push leaves Black exactly one move, Kxh7, entering
+    // ordinary rook-versus-king with the rook safe. Thus Black really loses;
+    // the injected WDL is not asserting a made-up outcome. Only raw static
+    // evals are supplied: no child search bound is pre-seeded. At d=4 the
+    // ProbCut verifier is qsearch-only; d=1 reaches the same qsearch through
+    // the normal move loop and exercises its final TB ceiling instead.
+    fn tb_return_audit_forced_capture(depth: i32) -> (SearchInfo, Board, i32, Move) {
+        crate::init();
+        let mut board = Board::from_fen("7k/8/7P/8/8/6R1/6K1/8 w - - 0 1");
+        let push = make_move(square(7, 5), square(7, 6), FLAG_NONE);
+        assert!(generate_legal_moves(&board).as_slice().contains(&push));
+        assert!(board.make_move(push));
+        let capture = make_move(square(7, 7), square(7, 6), FLAG_NONE);
+        assert_eq!(generate_legal_moves(&board).as_slice(), &[capture]);
+        assert_eq!(board.checkers(), 0);
+        let mut info = tb_bound_test_info(&board, -20000, NO_MOVE);
+        info.tb_probe_depth = 1; // both depths must take the current-node probe
+        let hash = board.hash;
+        assert!(board.make_move(capture));
+        assert_eq!(board.to_fen(), "8/7k/8/8/8/6R1/6K1/8 w - - 0 2");
+        assert_eq!(board.checkers(), 0);
+        // Same eval-only sentinel as negamax's production writeback. Its
+        // depth cannot cut QS, and the decisive sentinel cannot refine eval.
+        info.tt.store(board.hash, -2, -INFINITY, TT_FLAG_UPPER, NO_MOVE, 0, false);
+        board.unmake_move();
+        let ply = 1;
+        let ceiling = -TB_WIN + ply;
+        let score = negamax(&mut board, &mut info, ceiling - 1, ceiling, depth, ply, false);
+        assert_eq!(board.hash, hash);
+        assert_eq!(info.tb_hits, 1);
+        assert!(!info.stop.load(Ordering::Relaxed));
+        assert_eq!(info.stats.rfp_cutoffs, 0, "the existing TB-loss RFP guard must hold");
+        assert_eq!(info.stats.nmp_attempts, 0, "Black has no non-pawn piece");
+        (info, board, score, capture)
+    }
+
+    #[test]
+    fn tb_return_audit_loss_normal_loop_control() {
+        let (info, board, score, capture) = tb_return_audit_forced_capture(1);
+        assert_eq!(info.stats.probcut_cutoffs, 0);
+        assert_eq!(score, -TB_WIN + 1);
+        let entry = info.tt.probe(board.hash);
+        assert!(entry.hit);
+        assert_eq!(entry.flag, TT_FLAG_LOWER);
+        assert_eq!(entry.best_move, capture);
+        assert_eq!(score_from_tt(entry.score, 1, board.halfmove), score);
+    }
+
+    #[test]
+    fn tb_return_audit_probcut_preserves_probed_loss_ceiling() {
+        let (info, board, score, capture) = tb_return_audit_forced_capture(4);
+        assert_eq!(info.stats.probcut_cutoffs, 1, "must still exercise ProbCut");
+        let entry = info.tt.probe(board.hash);
+        assert_eq!(entry.flag, TT_FLAG_LOWER);
+        assert!(entry.hit);
+        assert_eq!(entry.best_move, capture);
+        assert!(score >= -TB_WIN + 1, "this is the fail-high/lower-bound direction");
+        let stored = score_from_tt(entry.score, 1, board.halfmove);
+        // A LOWER bound below a WDL-loss ceiling is compatible with it.
+        // Here both the returned and stored lower bounds must be <= ceiling;
+        // a centipawn LOWER bound above it contradicts the successful probe.
+        assert!(score <= -TB_WIN + 1
+            && (entry.flag != TT_FLAG_LOWER && entry.flag != TT_FLAG_EXACT
+                || stored <= -TB_WIN + 1),
+            "probed loss ceiling={}, returned LOWER={}, TT flag={} score={}, ProbCut cutoffs={}",
+            -TB_WIN + 1, score, entry.flag, stored, info.stats.probcut_cutoffs);
+    }
+
+    #[test]
+    fn tb_return_audit_rfp_preserves_loss_ceiling_in_mate_window() {
+        crate::init();
+        // Same forced Kxh7 -> safe KRK loss as the ProbCut fixture, but now
+        // the caller asks about being mated sooner than the WDL anchor.
+        let mut board = Board::from_fen("7k/7P/8/8/8/6R1/6K1/8 b - - 0 1");
+        let capture = make_move(square(7, 7), square(7, 6), FLAG_NONE);
+        assert_eq!(generate_legal_moves(&board).as_slice(), &[capture]);
+        assert_eq!(board.checkers(), 0);
+        let mut info = tb_bound_test_info(&board, -20000, NO_MOVE);
+        // Once RFP is declined, finish through the real move loop and QS,
+        // using only the child's raw eval rather than an injected bound.
+        info.tb_probe_depth = 1;
+        assert!(board.make_move(capture));
+        info.tt.store(board.hash, -2, -INFINITY, TT_FLAG_UPPER, NO_MOVE, 0, false);
+        board.unmake_move();
+        let ply = 1;
+        let beta = -(TB_WIN + MATE_SCORE) / 2;
+        assert!(is_mate_score(beta));
+        let score = negamax(&mut board, &mut info, beta - 1, beta, 1, ply, false);
+        assert_eq!(info.tb_hits, 1);
+        assert!(!info.stop.load(Ordering::Relaxed));
+        // Failing high below/equal to the ceiling is allowed: it can disprove
+        // this earlier mate without disproving the WDL loss. A centipawn
+        // fail-high above the ceiling instead contradicts the current probe.
+        assert!(score < beta || score <= -TB_WIN + ply,
+            "probed loss ceiling={}, beta={}, returned LOWER={}, RFP cutoffs={}",
+            -TB_WIN + ply, beta, score, info.stats.rfp_cutoffs);
+    }
+
+    fn tb_return_audit_net_info(net: &str) -> SearchInfo {
+        let mut info = SearchInfo::new(1);
+        info.load_nnue(net).unwrap();
+        info.silent = true;
+        info.max_nodes = 20_000; // bounded unit probe, not a strength/performance run
+        info
+    }
+
+    #[test]
+    fn tb_return_audit_nmp_preserves_probed_loss_ceiling() {
+        crate::init();
+        let Some(net) = test_net_path() else {
+            eprintln!("TB return audit needs CODA_TEST_NET for the real-net NMP probe");
+            return;
+        };
+        // Every Black move permits a safe capture of the knight: Nb3 Qxb3,
+        // Nc2 Qxc2, or a king move Qxa1. Each reaches elementary won KQK.
+        let position = Board::from_fen("7k/8/8/8/8/8/6K1/nQ6 b - - 0 1");
+        for &mv in generate_legal_moves(&position).as_slice() {
+            let mut child = position.clone();
+            assert!(child.make_move(mv));
+            let knight = child.pieces[KNIGHT as usize].trailing_zeros() as u8;
+            let capture = make_move(square(1, 0), knight, FLAG_NONE);
+            assert!(generate_legal_moves(&child).as_slice().contains(&capture));
+            assert!(child.make_move(capture));
+            assert_eq!(popcount(child.occupied()), 3);
+        }
+        let ceiling = -TB_WIN + 1;
+        let mut failures = Vec::new();
+        for depth in [tp10(&NMP_MIN_DEPTH_10X), tp10(&NMP_VERIFY_DEPTH_10X)] {
+            for blocked in [true, false] {
+                let mut board = position.clone();
+                let mut info = tb_return_audit_net_info(&net);
+                info.syzygy = Some(std::sync::Arc::new(
+                    crate::tb::SyzygyTB::with_test_wdl(&board, -20000),
+                ));
+                if blocked { info.nmp_min_ply = MAX_PLY as i32; }
+                let score = negamax(&mut board, &mut info, ceiling - 1, ceiling, depth, 1, true);
+                assert!(!info.stop.load(Ordering::Relaxed), "NMP probe exceeded its node budget");
+                assert_eq!(board.hash, position.hash);
+                assert!(info.tb_hits >= 1);
+                if blocked {
+                    assert_eq!(info.stats.nmp_attempts, 0);
+                    assert_eq!(score, ceiling, "same-depth NMP-barrier control");
+                } else {
+                    assert!(info.stats.nmp_cutoffs > 0, "must exercise the intended NMP return");
+                    assert!(score >= ceiling, "an accepted null cutoff must still reach beta");
+                    if depth >= tp10(&NMP_VERIFY_DEPTH_10X) {
+                        assert!(info.stats.nmp_verify > 0, "must exercise real verification");
+                    }
+                    if score > ceiling {
+                        failures.push((depth, score, info.stats.nmp_verify, info.nodes));
+                    }
+                }
+            }
+        }
+        assert!(failures.is_empty(), "probed loss ceiling={ceiling}; NMP (depth, LOWER, verifies, nodes)={failures:?}");
     }
 
     #[test]
