@@ -4954,7 +4954,15 @@ fn negamax(
     // Sticky PV flag: once a position is searched as PV, it stays PV in the TT.
     // Used to reduce LMR for moves that lead to historically important positions.
     let tt_pv = is_pv || (tt_hit && tt_entry.tt_pv);
-    info.tt_pv_stack[ply_u] = tt_pv;
+    // Do not let a same-ply exclusion search (singular verification) overwrite
+    // the outer node's PV marker: it re-enters this ply non-PV with no TT hit,
+    // would write `false` here, and the outer node's real children then inherit
+    // a false PV context for their fail-low stores (Zeus, tb-state audit
+    // 2026-09-12). The marker belongs to the outer node; the excluded search
+    // reads it and leaves it alone.
+    if info.excluded_move[ply_u] == NO_MOVE {
+        info.tt_pv_stack[ply_u] = tt_pv;
+    }
 
     if tt_hit {
         tt_move = tt_entry.best_move;
