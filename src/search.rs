@@ -7321,6 +7321,7 @@ fn quiescence_with_depth(
         let mut best_score = -INFINITY;
         let mut best_move = NO_MOVE;
         let mut move_count = 0i32;
+        let qs_max_caps_ev = tp(&QS_MAX_CAPTURES);
 
         loop {
             let mv = evasion_picker.next(board);
@@ -7335,6 +7336,15 @@ fn quiescence_with_depth(
             let ev_is_cap = board.piece_type_at(move_to(mv)) != NO_PIECE_TYPE
                 || move_flags(mv) == FLAG_EN_PASSANT;
             if !ev_is_cap && !is_promotion(mv) && !is_loss(best_score) {
+                continue;
+            }
+
+            // Move budget on the in-check side: the capture-loop cap
+            // (QS_MAX_CAPTURES) stops at the check boundary, so a check
+            // inside QS still searches every capture evasion. Apply the
+            // same budget here under the same guards (only once not losing,
+            // promotions exempt) so both halves of QS are bounded alike.
+            if move_count >= qs_max_caps_ev && !is_loss(best_score) && !is_promotion(mv) {
                 continue;
             }
 
