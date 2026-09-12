@@ -5367,6 +5367,12 @@ fn negamax(
             && ply > 0
             && depth <= tp10(&RAZOR_DEPTH_10X)
             && alpha.abs() < 2000
+            // A decided root (large, non-mate score, see root_decided) is
+            // where the tree is converting an advantage or hunting a mate;
+            // a hopeless-looking static at a shallow node there is the
+            // sacrifice line razoring would throw away. Same quantity the
+            // singular-extension root gate already keys on.
+            && !info.root_decided
             && info.excluded_move[ply_u] == NO_MOVE
             && static_eval + tp(&RAZOR_MULT) * depth <= alpha
         {
