@@ -480,6 +480,19 @@ impl TT {
 
     /// Store an entry in the TT. Lock-free via atomic stores.
     pub fn store(&self, hash: u64, depth: i32, score: i32, flag: u8, best_move: Move, static_eval: i32, is_pv: bool) {
+        self.store_impl(hash, depth, score, flag, best_move, static_eval, is_pv, false);
+    }
+
+    /// Quiescence-node store: may take an empty slot, its own key's slot, or a
+    /// slot from an OLDER generation, but never evicts a live current-generation
+    /// entry. Under no pressure this is identical to `store`; when the table is
+    /// full, quiescence results (~30% of all stores, measured to be worth 1–3%
+    /// of nodes) stop displacing entries the current search still needs.
+    pub fn store_qs(&self, hash: u64, depth: i32, score: i32, flag: u8, best_move: Move, static_eval: i32, is_pv: bool) {
+        self.store_impl(hash, depth, score, flag, best_move, static_eval, is_pv, true);
+    }
+
+    fn store_impl(&self, hash: u64, depth: i32, score: i32, flag: u8, best_move: Move, static_eval: i32, is_pv: bool, no_evict: bool) {
         let idx = self.bucket_index(hash);
         let bucket = &self.buckets[idx];
         let gen = self.generation.load(Ordering::Relaxed);
@@ -537,6 +550,9 @@ impl TT {
                 bucket.keys[special].store(stored_key, Ordering::Release);
             }
             return;
+        }
+        if no_evict && unpack_generation(datas[replace_idx]) == gen {
+            return; // would evict a live current-generation entry: skip the store
         }
         bucket.data[replace_idx].store(new_data, Ordering::Release);
         bucket.keys[replace_idx].store(new_key, Ordering::Release);
