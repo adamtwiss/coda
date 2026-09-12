@@ -1010,6 +1010,7 @@ pub struct PruneStats {
     pub rs_dsgap: [u64; 5],
     pub rs_ds_tt0: u64,
     pub rs_ds_req: [u64; 4],
+    pub rs_hit_class: [u64; 5],
     pub tt_probes: u64,
     pub tt_hits: u64,
     pub tt_cross_gen_hits: u64,
@@ -3157,6 +3158,7 @@ pub(crate) fn search_helper(board: &mut Board, info: &mut SearchInfo, _limits: &
     // History was just seeded from main in create_helper_info — do
     // NOT clear it here. Reset only per-search scratch state.
     info.stats = PruneStats::default();
+    info.rs_prev_stats = PruneStats::default();
     info.static_evals = [0; MAX_PLY + 1];
     info.reductions = [0; MAX_PLY + 1];
     info.excluded_move = [NO_MOVE; MAX_PLY + 1];
@@ -3497,6 +3499,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     // starts from a warm eval calibration.
     info.history.age(4, 5);
     info.stats = PruneStats::default();
+    info.rs_prev_stats = PruneStats::default();
     // Age pawn history (×0.80, matching main/capture history aging)
     for entry in info.pawn_hist.iter_mut() {
         for piece in entry.iter_mut() {
@@ -4079,6 +4082,9 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             // research/score-lock: per-iteration termination-class deltas (CODA_ITER_STATS=1).
             static ITER_STATS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
             if *ITER_STATS.get_or_init(|| std::env::var("CODA_ITER_STATS").map(|v| v == "1").unwrap_or(false)) {
+                let root_raw = info.eval(board);
+                let root_corr = corrected_eval(info, board, root_raw, 0);
+                println!("info string rootstatic depth={} raw={} corrected={}", depth, root_raw, root_corr);
                 let s = &info.stats; let p = &info.rs_prev_stats;
                 println!("info string iterstats depth={} seldepth={} nodes={} qnodes={} ttcut_lower={} ttcut_upper={} ttcut_exact={} rfp={} nmp={} razor={} lmp={} futility={} see={} draw_rep={} draw_r50={} draw_insuf={} cuckoo={} qs_draw={} qs_standpat={} beta_cuts={} first_move_cuts={}",
                     depth, info.sel_depth, global,
@@ -4094,6 +4100,25 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                     s.rs_ds[0]-p.rs_ds[0], s.rs_ds[1]-p.rs_ds[1], s.rs_ds[2]-p.rs_ds[2], s.rs_ds[3]-p.rs_ds[3], s.rs_ds[4]-p.rs_ds[4], s.rs_ds[5]-p.rs_ds[5], s.rs_ds_zero_zw - p.rs_ds_zero_zw, s.rs_ds_exact1 - p.rs_ds_exact1, s.rs_nm_considered - p.rs_nm_considered, s.rs_nm_zero - p.rs_nm_zero, s.tt_near_miss - p.tt_near_miss,
                     s.rs_dsgap[0]-p.rs_dsgap[0], s.rs_dsgap[1]-p.rs_dsgap[1], s.rs_dsgap[2]-p.rs_dsgap[2], s.rs_dsgap[3]-p.rs_dsgap[3], s.rs_dsgap[4]-p.rs_dsgap[4], s.rs_ds_tt0 - p.rs_ds_tt0,
                     s.rs_ds_req[0]-p.rs_ds_req[0], s.rs_ds_req[1]-p.rs_ds_req[1], s.rs_ds_req[2]-p.rs_ds_req[2], s.rs_ds_req[3]-p.rs_ds_req[3]);
+                {
+                    static PREV: [std::sync::atomic::AtomicU64; 14] = [const { std::sync::atomic::AtomicU64::new(0) }; 14];
+                    static PREV_EV: [std::sync::atomic::AtomicU64; 3] = [const { std::sync::atomic::AtomicU64::new(0) }; 3];
+                    let cur: Vec<u64> = crate::tt::RS_TT.iter().map(|a| a.load(Ordering::Relaxed)).collect();
+                    let prev: Vec<u64> = PREV.iter().map(|a| a.load(Ordering::Relaxed)).collect();
+                    let d: Vec<u64> = cur.iter().zip(prev.iter()).map(|(c, p)| c - p).collect();
+                    let (evals, ttse, skips) = match info.nnue_acc.as_ref() {
+                        Some(acc) => (acc.stats_full_rebuilds + acc.stats_incremental_updates, info.stats_tt_static_eval_hits, acc.stats_cached_skips),
+                        None => (0, 0, 0),
+                    };
+                    let pe: Vec<u64> = PREV_EV.iter().map(|a| a.load(Ordering::Relaxed)).collect();
+                    let hc = &info.stats.rs_hit_class; let ph = &info.rs_prev_stats.rs_hit_class;
+                    println!("info string ttstats depth={} hashfull={} hashfull_all={} st_seed={} st_qs={} st_d13={} st_d47={} st_d8p={} fill_empty={} same_update={} same_refused={} ev_seed={} ev_qs={} ev_d13={} ev_d47={} ev_d8p={} ev_oldgen={} hit_seed={} hit_qs={} hit_d13={} hit_d47={} hit_d8p={} evals={} tt_static_hits={} cached_skips={}",
+                        depth, info.tt.hashfull(), info.tt.hashfull_all(), d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7], d[8], d[9], d[10], d[11], d[12], d[13],
+                        hc[0]-ph[0], hc[1]-ph[1], hc[2]-ph[2], hc[3]-ph[3], hc[4]-ph[4],
+                        { let c = evals as u64; if c >= pe[0] { c - pe[0] } else { c } }, { let c = ttse as u64; if c >= pe[1] { c - pe[1] } else { c } }, { let c = skips as u64; if c >= pe[2] { c - pe[2] } else { c } });
+                    PREV_EV[0].store(evals as u64, Ordering::Relaxed); PREV_EV[1].store(ttse as u64, Ordering::Relaxed); PREV_EV[2].store(skips as u64, Ordering::Relaxed);
+                    for (a, c) in PREV.iter().zip(cur.iter()) { a.store(*c, Ordering::Relaxed); }
+                }
                 info.rs_prev_stats = info.stats.clone();
             }
         }
@@ -5041,6 +5066,7 @@ fn negamax(
 
     if tt_hit {
         tt_move = tt_entry.best_move;
+        info.stats.rs_hit_class[match tt_entry.depth { d if d <= -2 => 0, d if d <= 0 => 1, 1..=3 => 2, 4..=7 => 3, _ => 4 }] += 1;
 
         if info.excluded_move[ply_u] == NO_MOVE && ply > 0 {
             let tt_depth = tt_entry.depth;
