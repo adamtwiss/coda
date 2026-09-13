@@ -563,7 +563,7 @@ impl MovePicker {
             // the midpoint between trunk and the neutral 1.5x probe (#3379).
             // Main-search capture ordering remains unchanged.
             let hist_score = if self.no_see_partition {
-                capt_hist * 5 / 4
+                capt_hist * crate::search::tp(&crate::search::QS_CAPT_HIST_W_100X) / 100
             } else {
                 capt_hist
             };

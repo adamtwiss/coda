@@ -365,7 +365,13 @@ tunables!(
     // Cap on captures actually SEARCHED in qsearch (delta/SEE-pruned moves
     // are not charged against it). Counting pruned moves here would let SPSA
     // detune the cap to near-off, which is what an earlier counting bug did.
-    (QS_MAX_CAPTURES, 3, 2, 32, 2.0, false),
+    (QS_MAX_CAPTURES, 3, 2, 8, 1.0, false),
+    // QS SEE prune threshold (was a fixed static outside the macro; entered
+    // for the thread-9 QS cluster tune, default unchanged).
+    (QS_SEE_THRESHOLD, -26, -120, 0, 8.0, false),
+    // Capture-history weight in flat QS ordering, in hundredths: 125 = the
+    // 5/4 that was a literal in movepicker (default reproduces main exactly).
+    (QS_CAPT_HIST_W_100X, 125, 50, 250, 20.0, false),
     (CORR_W_PAWN, 111, 100, 600, 25.0, true),
     (CORR_W_NP, 140, 0, 400, 17.5, true),
     // There is deliberately no minor-key or major-key correction source:
@@ -665,7 +671,6 @@ pub static MVV_CAP_MULT: AtomicI32 = AtomicI32::new(28);
 // demoted from this list and later put back after a focused single-parameter
 // tune found real Elo in it. A knob dismissed as noise under a broad sweep can
 // still pay under a targeted one.
-pub static QS_SEE_THRESHOLD: AtomicI32 = AtomicI32::new(-26);
 pub static CAP_HIST_BASE: AtomicI32 = AtomicI32::new(42);
 pub static LMR_COMPLEXITY_DIV: AtomicI32 = AtomicI32::new(152);
 pub static TT_CUTOFF_HALFMOVE_MAX: AtomicI32 = AtomicI32::new(89);
@@ -826,7 +831,7 @@ pub fn should_instant_reply(
 
 /// Get a tunable parameter value (inline for hot paths)
 #[inline(always)]
-fn tp(param: &AtomicI32) -> i32 {
+pub(crate) fn tp(param: &AtomicI32) -> i32 {
     param.load(Ordering::Relaxed)
 }
 
