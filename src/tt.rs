@@ -6,7 +6,25 @@ use crate::types::*;
 use std::sync::atomic::{AtomicU64, AtomicU32, Ordering};
 
 /// research/score-lock (thread 7): TT store/victim counters, read per iteration by the search dump.
-pub static RS_TT: [std::sync::atomic::AtomicU64; 14] = [const { std::sync::atomic::AtomicU64::new(0) }; 14];
+pub static RS_TT: [std::sync::atomic::AtomicU64; 20] = [const { std::sync::atomic::AtomicU64::new(0) }; 20];
+// research/score-lock (thread 9): per-search "touched" bitmap — set on every probe hit, cleared
+// in new_search(); lets store() tell whether a same-key entry it replaces was read this search.
+pub static RS_TOUCH: [std::sync::atomic::AtomicU64; 1 << 18] = [const { std::sync::atomic::AtomicU64::new(0) }; 1 << 18];
+#[inline] fn rs_touch_idx(hash: u64) -> (usize, u64) { let b = (hash >> 40) as usize & ((1 << 24) - 1); (b >> 6, 1u64 << (b & 63)) }
+#[inline] pub fn rs_touch(hash: u64) { let (w, m) = rs_touch_idx(hash); RS_TOUCH[w].fetch_or(m, std::sync::atomic::Ordering::Relaxed); }
+#[inline] pub fn rs_touched(hash: u64) -> bool { let (w, m) = rs_touch_idx(hash); RS_TOUCH[w].load(std::sync::atomic::Ordering::Relaxed) & m != 0 }
+pub fn rs_touch_clear() { for w in RS_TOUCH.iter() { w.store(0, std::sync::atomic::Ordering::Relaxed); } }
+// thread 9: record same-key cross-generation downgrades (old depth/score/flag) so later probes of the
+// same position can be scored as "would the old entry have cut here". Bitmap pre-filter + map.
+pub static RS_DG: [std::sync::atomic::AtomicU64; 1 << 18] = [const { std::sync::atomic::AtomicU64::new(0) }; 1 << 18];
+pub static RS_DG_MAP: std::sync::Mutex<Option<std::collections::HashMap<u64, (i32, i32, u8)>>> = std::sync::Mutex::new(None);
+#[inline] pub fn rs_dg_maybe(hash: u64) -> bool { let (w, m) = rs_touch_idx(hash); RS_DG[w].load(std::sync::atomic::Ordering::Relaxed) & m != 0 }
+pub fn rs_dg_record(hash: u64, depth: i32, score: i32, flag: u8) {
+    let (w, m) = rs_touch_idx(hash); RS_DG[w].fetch_or(m, std::sync::atomic::Ordering::Relaxed);
+    let mut g = RS_DG_MAP.lock().unwrap(); g.get_or_insert_with(Default::default).entry(hash).or_insert((depth, score, flag));
+}
+pub fn rs_dg_lookup(hash: u64) -> Option<(i32, i32, u8)> { RS_DG_MAP.lock().unwrap().as_ref().and_then(|m| m.get(&hash).copied()) }
+pub fn rs_dg_clear() { for w in RS_DG.iter() { w.store(0, std::sync::atomic::Ordering::Relaxed); } if let Some(m) = RS_DG_MAP.lock().unwrap().as_mut() { m.clear(); } }
 
 pub const TT_FLAG_NONE: u8 = 0;
 pub const TT_FLAG_EXACT: u8 = 1; // PV-node (exact score)
@@ -421,6 +439,8 @@ impl TT {
     /// Increment generation (called at each new search).
     pub fn new_search(&self) {
         self.generation.fetch_add(1, Ordering::Relaxed);
+        rs_touch_clear();
+        rs_dg_clear();
     }
 
     /// Get the bucket index for a hash (power-of-2 masking).
@@ -462,6 +482,7 @@ impl TT {
             return TTEntry::miss();
         }
         let data = datas[hit];
+        rs_touch(hash);
         TTEntry {
             best_move: unpack_move(data),
             flag: unpack_flag(data),
@@ -533,6 +554,17 @@ impl TT {
             let flag_is_exact = flag == TT_FLAG_EXACT;
             if depth > slot_depth - 4 || gen != slot_gen || flag_is_exact {
                 RS_TT[6].fetch_add(1, Ordering::Relaxed);
+                // thread 9: cross-generation same-key replacement that the same-gen depth gate would have refused
+                if gen != slot_gen { RS_TT[18].fetch_add(1, Ordering::Relaxed); }
+                if gen != slot_gen && depth < slot_depth - 4 && !flag_is_exact {
+                    RS_TT[14].fetch_add(1, Ordering::Relaxed);
+                    let t = rs_touched(hash);
+                    if depth <= 0 { RS_TT[15].fetch_add(1, Ordering::Relaxed); }
+                    if t { RS_TT[16].fetch_add(1, Ordering::Relaxed); }
+                    if slot_depth >= 8 { RS_TT[17].fetch_add(1, Ordering::Relaxed); }
+                    if depth <= 0 && t { RS_TT[19].fetch_add(1, Ordering::Relaxed); }
+                    rs_dg_record(hash, slot_depth, unpack_score(slot_data), unpack_flag(slot_data));
+                }
                 let effective_move = if best_move == NO_MOVE {
                     unpack_move(slot_data)
                 } else {

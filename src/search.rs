@@ -1065,6 +1065,7 @@ pub struct PruneStats {
     pub rs_ds_tt0: u64,
     pub rs_ds_req: [u64; 4],
     pub rs_hit_class: [u64; 5],
+    pub rs_qs: [u64; 32],
     pub tt_probes: u64,
     pub tt_hits: u64,
     pub tt_cross_gen_hits: u64,
@@ -4120,7 +4121,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                     s.rs_dsgap[0]-p.rs_dsgap[0], s.rs_dsgap[1]-p.rs_dsgap[1], s.rs_dsgap[2]-p.rs_dsgap[2], s.rs_dsgap[3]-p.rs_dsgap[3], s.rs_dsgap[4]-p.rs_dsgap[4], s.rs_ds_tt0 - p.rs_ds_tt0,
                     s.rs_ds_req[0]-p.rs_ds_req[0], s.rs_ds_req[1]-p.rs_ds_req[1], s.rs_ds_req[2]-p.rs_ds_req[2], s.rs_ds_req[3]-p.rs_ds_req[3]);
                 {
-                    static PREV: [std::sync::atomic::AtomicU64; 14] = [const { std::sync::atomic::AtomicU64::new(0) }; 14];
+                    static PREV: [std::sync::atomic::AtomicU64; 20] = [const { std::sync::atomic::AtomicU64::new(0) }; 20];
                     static PREV_EV: [std::sync::atomic::AtomicU64; 3] = [const { std::sync::atomic::AtomicU64::new(0) }; 3];
                     let cur: Vec<u64> = crate::tt::RS_TT.iter().map(|a| a.load(Ordering::Relaxed)).collect();
                     let prev: Vec<u64> = PREV.iter().map(|a| a.load(Ordering::Relaxed)).collect();
@@ -4131,10 +4132,10 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                     };
                     let pe: Vec<u64> = PREV_EV.iter().map(|a| a.load(Ordering::Relaxed)).collect();
                     let hc = &info.stats.rs_hit_class; let ph = &info.rs_prev_stats.rs_hit_class;
-                    println!("info string ttstats depth={} hashfull={} hashfull_all={} st_seed={} st_qs={} st_d13={} st_d47={} st_d8p={} fill_empty={} same_update={} same_refused={} ev_seed={} ev_qs={} ev_d13={} ev_d47={} ev_d8p={} ev_oldgen={} hit_seed={} hit_qs={} hit_d13={} hit_d47={} hit_d8p={} evals={} tt_static_hits={} cached_skips={}",
+                    println!("info string ttstats depth={} hashfull={} hashfull_all={} st_seed={} st_qs={} st_d13={} st_d47={} st_d8p={} fill_empty={} same_update={} same_refused={} ev_seed={} ev_qs={} ev_d13={} ev_d47={} ev_d8p={} ev_oldgen={} hit_seed={} hit_qs={} hit_d13={} hit_d47={} hit_d8p={} evals={} tt_static_hits={} cached_skips={} dg_all={} dg_qs={} dg_touched={} dg_deep={} xg_replace={} dg_qs_touched={} q_incheck={} q_tthit={} q_cut_qs={} q_cut_main={} q_ref_qs={} q_ref_main={} q_ref_seed={} q_cap_skips={} q_cap_nodes={} q_delta={} q_see={} q_caps={} q_ev_qskips={} q_ev_quiets={} q_underpromo={} q_promo={} q_depthcap={} q_unsound_upper={} q_upper_st={} q_sp_fh={} q_st_sp={} q_st_ev={} q_st_loop={} q_main_ttm_qs={} q_main_ttm={} q_iir_supp_qs={} q_iir_elig={} q_iir_applied={} q_lost_cut={} q_dg_revisit={} q_lost_cut_d4={} tt_cutoffs={}",
                         depth, info.tt.hashfull(), info.tt.hashfull_all(), d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7], d[8], d[9], d[10], d[11], d[12], d[13],
                         hc[0]-ph[0], hc[1]-ph[1], hc[2]-ph[2], hc[3]-ph[3], hc[4]-ph[4],
-                        { let c = evals as u64; if c >= pe[0] { c - pe[0] } else { c } }, { let c = ttse as u64; if c >= pe[1] { c - pe[1] } else { c } }, { let c = skips as u64; if c >= pe[2] { c - pe[2] } else { c } });
+                        { let c = evals as u64; if c >= pe[0] { c - pe[0] } else { c } }, { let c = ttse as u64; if c >= pe[1] { c - pe[1] } else { c } }, { let c = skips as u64; if c >= pe[2] { c - pe[2] } else { c } }, d[14], d[15], d[16], d[17], d[18], d[19], info.stats.rs_qs[0] - info.rs_prev_stats.rs_qs[0], info.stats.rs_qs[1] - info.rs_prev_stats.rs_qs[1], info.stats.rs_qs[2] - info.rs_prev_stats.rs_qs[2], info.stats.rs_qs[3] - info.rs_prev_stats.rs_qs[3], info.stats.rs_qs[4] - info.rs_prev_stats.rs_qs[4], info.stats.rs_qs[5] - info.rs_prev_stats.rs_qs[5], info.stats.rs_qs[6] - info.rs_prev_stats.rs_qs[6], info.stats.rs_qs[7] - info.rs_prev_stats.rs_qs[7], info.stats.rs_qs[8] - info.rs_prev_stats.rs_qs[8], info.stats.rs_qs[9] - info.rs_prev_stats.rs_qs[9], info.stats.rs_qs[10] - info.rs_prev_stats.rs_qs[10], info.stats.rs_qs[11] - info.rs_prev_stats.rs_qs[11], info.stats.rs_qs[12] - info.rs_prev_stats.rs_qs[12], info.stats.rs_qs[13] - info.rs_prev_stats.rs_qs[13], info.stats.rs_qs[14] - info.rs_prev_stats.rs_qs[14], info.stats.rs_qs[15] - info.rs_prev_stats.rs_qs[15], info.stats.rs_qs[16] - info.rs_prev_stats.rs_qs[16], info.stats.rs_qs[17] - info.rs_prev_stats.rs_qs[17], info.stats.rs_qs[18] - info.rs_prev_stats.rs_qs[18], info.stats.rs_qs[19] - info.rs_prev_stats.rs_qs[19], info.stats.rs_qs[20] - info.rs_prev_stats.rs_qs[20], info.stats.rs_qs[21] - info.rs_prev_stats.rs_qs[21], info.stats.rs_qs[22] - info.rs_prev_stats.rs_qs[22], info.stats.rs_qs[23] - info.rs_prev_stats.rs_qs[23], info.stats.rs_qs[24] - info.rs_prev_stats.rs_qs[24], info.stats.rs_qs[25] - info.rs_prev_stats.rs_qs[25], info.stats.rs_qs[26] - info.rs_prev_stats.rs_qs[26], info.stats.rs_qs[27] - info.rs_prev_stats.rs_qs[27], info.stats.rs_qs[28] - info.rs_prev_stats.rs_qs[28], info.stats.rs_qs[29] - info.rs_prev_stats.rs_qs[29], info.stats.rs_qs[30] - info.rs_prev_stats.rs_qs[30], info.stats.tt_cutoffs - info.rs_prev_stats.tt_cutoffs);
                     PREV_EV[0].store(evals as u64, Ordering::Relaxed); PREV_EV[1].store(ttse as u64, Ordering::Relaxed); PREV_EV[2].store(skips as u64, Ordering::Relaxed);
                     for (a, c) in PREV.iter().zip(cur.iter()) { a.store(*c, Ordering::Relaxed); }
                 }
@@ -5085,6 +5086,27 @@ fn negamax(
 
     if tt_hit {
         tt_move = tt_entry.best_move;
+        if tt_move != NO_MOVE { info.stats.rs_qs[24] += 1; if tt_entry.depth <= 0 { info.stats.rs_qs[23] += 1; } }
+        if crate::tt::rs_dg_maybe(board.hash) {
+            if let Some((od, os, of)) = crate::tt::rs_dg_lookup(board.hash) {
+                if tt_entry.depth < od {
+                    info.stats.rs_qs[29] += 1; // revisit of a downgraded position with a shallower entry than the one lost
+                    let osc = score_from_tt(os, ply, board.halfmove);
+                    let fits = od > depth - (osc <= beta) as i32;
+                    let bound_ok = if osc >= beta { of == TT_FLAG_LOWER || of == TT_FLAG_EXACT } else { of == TT_FLAG_UPPER || of == TT_FLAG_EXACT };
+                    let node_ok = cut_node || osc < beta; // the real cutoff's node-type guard
+                    // does the entry currently in the table already satisfy the rule here? then nothing was lost
+                    let cur_ok = tt_hit && {
+                        let cs = score_from_tt(tt_entry.score, ply, board.halfmove);
+                        tt_entry.depth > depth - (cs <= beta) as i32
+                            && (if cs >= beta { tt_entry.flag == TT_FLAG_LOWER || tt_entry.flag == TT_FLAG_EXACT } else { tt_entry.flag == TT_FLAG_UPPER || tt_entry.flag == TT_FLAG_EXACT })
+                            && (cut_node || cs < beta)
+                    };
+                    if fits && bound_ok && node_ok && beta - alpha == 1 && !cur_ok { info.stats.rs_qs[28] += 1; } // lost cutoff: the old entry would cut, the current one does not
+                    if fits && bound_ok && node_ok && beta - alpha == 1 && !cur_ok && depth >= 4 { info.stats.rs_qs[30] += 1; }
+                }
+            }
+        }
         info.stats.rs_hit_class[match tt_entry.depth { d if d <= -2 => 0, d if d <= 0 => 1, 1..=3 => 2, 4..=7 => 3, _ => 4 }] += 1;
 
         if info.excluded_move[ply_u] == NO_MOVE && ply > 0 {
@@ -5738,7 +5760,12 @@ fn negamax(
     // IIR: moved after NMP so null search uses full depth, not IIR-reduced depth.
     // All 6 reference engines run NMP at full depth; IIR only applies to the
     // moves loop. Running IIR first silently reduces null depth by 1 at cut nodes.
+    if depth >= tp10(&IIR_MIN_DEPTH_10X) && !in_check && (is_pv || cut_node) {
+        info.stats.rs_qs[26] += 1;
+        if tt_move != NO_MOVE && tt_hit && tt_entry.depth <= 0 { info.stats.rs_qs[25] += 1; }
+    }
     if depth >= tp10(&IIR_MIN_DEPTH_10X) && tt_move == NO_MOVE && !in_check && (is_pv || cut_node) && FEAT_IIR.load(Ordering::Relaxed) {
+        info.stats.rs_qs[27] += 1;
         depth -= 1;
     }
 
@@ -7355,6 +7382,7 @@ fn quiescence_with_depth(
 
     // Limit quiescence depth to prevent stack overflow
     if qs_depth >= 32 {
+        info.stats.rs_qs[16] += 1;
         return apply_halfmove_scale(info.eval(board), board.halfmove);
     }
 
@@ -7394,6 +7422,7 @@ fn quiescence_with_depth(
     let tt_move = if tt_entry.hit { tt_entry.best_move } else { NO_MOVE };
 
     let tt_hit = tt_entry.hit;
+    if tt_hit { info.stats.rs_qs[1] += 1; }
     let tt_cur_gen = info.tt.current_generation();
     info.stats.tt_probes += 1;
     if tt_hit {
@@ -7415,13 +7444,13 @@ fn quiescence_with_depth(
         let qs_is_pv = beta - alpha > 1;
         match tt_entry.flag {
             TT_FLAG_EXACT => {
-                if !qs_is_pv && halfmove_ok { return tt_score; }
+                if !qs_is_pv && halfmove_ok { info.stats.rs_qs[if tt_entry.depth <= 0 { 2 } else { 3 }] += 1; return tt_score; }
             }
             TT_FLAG_LOWER => {
-                if !qs_is_pv && halfmove_ok && tt_score >= beta { return tt_score; }
+                if !qs_is_pv && halfmove_ok && tt_score >= beta { info.stats.rs_qs[if tt_entry.depth <= 0 { 2 } else { 3 }] += 1; return tt_score; }
             }
             TT_FLAG_UPPER => {
-                if !qs_is_pv && halfmove_ok && tt_score <= alpha { return tt_score; }
+                if !qs_is_pv && halfmove_ok && tt_score <= alpha { info.stats.rs_qs[if tt_entry.depth <= 0 { 2 } else { 3 }] += 1; return tt_score; }
             }
             _ => {}
         }
@@ -7435,6 +7464,7 @@ fn quiescence_with_depth(
     // When in check, generate all evasion moves using main MovePicker
     // Full history scoring for quiet evasions
     if qs_in_check {
+        info.stats.rs_qs[0] += 1;
         let qs_prev_move = if !board.undo_stack.is_empty() {
             board.undo_stack[board.undo_stack.len() - 1].mv
         } else {
@@ -7470,6 +7500,7 @@ fn quiescence_with_depth(
         let mut best_score = -INFINITY;
         let mut best_move = NO_MOVE;
         let mut move_count = 0i32;
+        let mut qs_ev_skipped = false;
 
         loop {
             let mv = evasion_picker.next(board);
@@ -7483,7 +7514,9 @@ fn quiescence_with_depth(
             // checkmate detection (move_count == 0) is unaffected.
             let ev_is_cap = board.piece_type_at(move_to(mv)) != NO_PIECE_TYPE
                 || move_flags(mv) == FLAG_EN_PASSANT;
+            if !ev_is_cap && !is_promotion(mv) { info.stats.rs_qs[13] += 1; }
             if !ev_is_cap && !is_promotion(mv) && !is_loss(best_score) {
+                info.stats.rs_qs[12] += 1; qs_ev_skipped = true;
                 continue;
             }
 
@@ -7557,6 +7590,7 @@ fn quiescence_with_depth(
             TT_FLAG_UPPER
         };
         if FEAT_TT_STORE.load(Ordering::Relaxed) && !info.stop.load(Ordering::Relaxed) {
+            info.stats.rs_qs[21] += 1; if flag == TT_FLAG_UPPER { info.stats.rs_qs[18] += 1; if qs_ev_skipped { info.stats.rs_qs[17] += 1; } }
             info.tt.store(board.hash, -1, store_score, flag, best_move, -INFINITY, false);
         }
         return best_score;
@@ -7611,12 +7645,14 @@ fn quiescence_with_depth(
                 || (tt_entry.flag == TT_FLAG_UPPER && tt_score < best_score)
                 || tt_entry.flag == TT_FLAG_EXACT)
             {
+                info.stats.rs_qs[if tt_entry.depth <= -2 { 6 } else if tt_entry.depth <= 0 { 4 } else { 5 }] += 1;
                 best_score = tt_score;
             }
     }
 
     if best_score >= beta { info.stats.rs_qs_standpat_cut += 1; }
     if best_score >= beta {
+        info.stats.rs_qs[19] += 1;
         // Cache eval + LOWER bound on the stand-pat fail-high. This is the
         // most common QS exit; returning here without a TT store leaves the
         // raw eval uncached (revisits re-run NNUE) and no bound for a cheap
@@ -7630,6 +7666,7 @@ fn quiescence_with_depth(
             && FEAT_TT_STORE.load(Ordering::Relaxed)
             && !info.stop.load(Ordering::Relaxed)
         {
+            info.stats.rs_qs[20] += 1;
             info.tt.store(board.hash, -1, score_to_tt(best_score, ply),
                 TT_FLAG_LOWER, NO_MOVE, raw_stand_pat, false);
         }
@@ -7664,6 +7701,7 @@ fn quiescence_with_depth(
     let mut best_move = NO_MOVE;
     let mut qs_move_count = 0i32;
     let qs_max_caps = tp(&QS_MAX_CAPTURES);
+    let mut qs_capped = false;
 
     loop {
         let mv = picker.next(board);
@@ -7678,6 +7716,7 @@ fn quiescence_with_depth(
         if !board.is_legal(mv, qs_pinned, qs_checkers) {
             continue;
         }
+        info.stats.rs_qs[11] += 1;
 
         // Move-count budget: count only SEARCHED moves. Incrementing before
         // delta/SEE pruning lets pruned moves consume budget, and SPSA then
@@ -7690,6 +7729,7 @@ fn quiescence_with_depth(
             && !is_loss(best_score)
             && !is_promotion(mv)
         {
+            info.stats.rs_qs[7] += 1; if !qs_capped { info.stats.rs_qs[8] += 1; } qs_capped = true;
             continue;
         }
 
@@ -7708,6 +7748,7 @@ fn quiescence_with_depth(
                     // capture could achieve; raise best_score to it so the returned
                     // UPPER bound reflects it (all 5 value-prune references do this).
                     // delta_val <= alpha, so best_score stays <= alpha — no cutoff.
+                    info.stats.rs_qs[9] += 1;
                     best_score = best_score.max(delta_val);
                     continue;
                 }
@@ -7718,6 +7759,7 @@ fn quiescence_with_depth(
         // Negative threshold allows slightly losing captures (e.g. BxN)
         // Obsidian uses -32
         if !see_ge(board, mv, tp(&QS_SEE_THRESHOLD)) {
+            info.stats.rs_qs[10] += 1;
             continue;
         }
 
@@ -7746,6 +7788,7 @@ fn quiescence_with_depth(
             continue;
         }
         qs_move_count += 1;
+        if is_promotion(mv) { info.stats.rs_qs[15] += 1; if crate::types::promotion_piece_type(mv) != QUEEN { info.stats.rs_qs[14] += 1; } }
         if info.threat_stack.active {
             info.threat_stack.absorb_deltas(board);
         }
@@ -7784,6 +7827,7 @@ fn quiescence_with_depth(
         // Store the halfmove-INDEPENDENT value so later probes at a
         // different halfmove get a correct scale — see the doc comment
         // in `SearchInfo::eval`.
+        info.stats.rs_qs[22] += 1; if flag == TT_FLAG_UPPER { info.stats.rs_qs[18] += 1; if qs_capped { info.stats.rs_qs[17] += 1; } }
         info.tt.store(board.hash, -1, store_score, flag, best_move, raw_stand_pat, false);
     }
 
