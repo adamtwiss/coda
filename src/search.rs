@@ -2201,6 +2201,9 @@ fn correction_value(info: &SearchInfo, board: &Board, ply: usize) -> i32 {
     let white_np_corr = info.np_corr[stm][WHITE as usize][white_np_idx] as i64;
     let black_np_idx = (board.non_pawn_key[BLACK as usize] as usize) & (CORR_HIST_SIZE - 1);
     let black_np_corr = info.np_corr[stm][BLACK as usize][black_np_idx] as i64;
+    if black_np_idx == 8170 {
+        crate::pair_trace::cell(format_args!("event=corr_read stm={} color=black idx={} value={} hash={} npkey={} ply={}", stm, black_np_idx, black_np_corr, board.hash, board.non_pawn_key[BLACK as usize], ply));
+    }
     let cont_corr = cont_corr_value(info, ply);
     let trans_corr = if !board.undo_stack.is_empty() {
         let last = &board.undo_stack[board.undo_stack.len() - 1];
@@ -2252,7 +2255,17 @@ fn update_corr_entry(entry: &mut i32, scaled_err: i32, cap_div_10x: i32) {
 /// itself, which manufactures phantom evals in fortress positions. The sole
 /// caller passes `static_eval` for this reason; do not "correct" it to pass
 /// `raw_eval`.
-fn update_correction_history(info: &mut SearchInfo, board: &Board, search_score: i32, corrected_baseline: i32, depth: i32, ply: usize) {
+fn update_correction_history(info: &mut SearchInfo, board: &Board, search_score: i32, corrected_baseline: i32, depth: i32, ply: usize, is_pv: bool) {
+    if std::env::var("PAIR_SKIP_CORR_HASH").ok().is_some_and(|h| h.parse::<u64>().unwrap() == board.hash) {
+        crate::pair_trace::cell(format_args!("event=corr_update_suppressed hash={} depth={} ply={}", board.hash, depth, ply));
+        return;
+    }
+    // Diagnostic-only policy probe: omit low-depth residuals, which are the
+    // noisy updates implicated in scout→PV state changes. Production has no
+    // environment setting, so this is inactive unless explicitly requested.
+    if let Ok(min_depth) = std::env::var("PAIR_CORR_MIN_DEPTH") {
+        if depth < min_depth.parse::<i32>().expect("PAIR_CORR_MIN_DEPTH integer") { return; }
+    }
     // Consensus shape: feed the FULL error scaled by depth, clamping only the
     // resulting bonus (at the gravity cap, in update_corr_entry). Pre-clamping
     // the error instead — e.g. to ±3cp — turns corrhist into a sign-only
@@ -2273,7 +2286,11 @@ fn update_correction_history(info: &mut SearchInfo, board: &Board, search_score:
     let white_np_idx = (board.non_pawn_key[WHITE as usize] as usize) & (CORR_HIST_SIZE - 1);
     update_corr_entry(&mut info.np_corr[stm][WHITE as usize][white_np_idx], scaled_err, cap_div);
     let black_np_idx = (board.non_pawn_key[BLACK as usize] as usize) & (CORR_HIST_SIZE - 1);
+    let before_black_np = info.np_corr[stm][BLACK as usize][black_np_idx];
     update_corr_entry(&mut info.np_corr[stm][BLACK as usize][black_np_idx], scaled_err, cap_div);
+    if black_np_idx == 8170 {
+        crate::pair_trace::cell(format_args!("event=corr_update stm={} color=black idx={} before={} after={} score={} baseline={} depth={} err={} scaled={} hash={} npkey={} ply={}", stm, black_np_idx, before_black_np, info.np_corr[stm][BLACK as usize][black_np_idx], search_score, corrected_baseline, depth, err, scaled_err, board.hash, board.non_pawn_key[BLACK as usize], ply));
+    }
 
     // Continuation correction — paired 2-ply/4-ply (H1). Index by the LAST move
     // (ply-1); update the ply-2 and ply-4 subtables. Reads moved_piece_stack
@@ -7072,10 +7089,14 @@ fn negamax_impl(
         && !(best_score >= beta && best_score <= static_eval); // direction-consistent
     let corrhist_upper_ok = best_score <= alpha_orig  // fail-low: upper bound
         && best_score < static_eval;                   // corrected eval was over-optimistic
+    let skip_shallow_upper = std::env::var("PAIR_SKIP_SHALLOW_UPPER").is_ok()
+        && depth < 3 && corrhist_upper_ok;
+    let skip_scout_upper = std::env::var("PAIR_SKIP_SCOUT_UPPER").is_ok()
+        && !is_pv && corrhist_upper_ok;
     if !in_check
         && !best_move_noisy
         && info.excluded_move[ply_u] == NO_MOVE
-        && (corrhist_lower_ok || corrhist_upper_ok)
+        && (corrhist_lower_ok || (corrhist_upper_ok && !skip_shallow_upper && !skip_scout_upper))
         // is_decisive covers the mate OR TB range
         && !is_decisive(best_score)
         && scaled_eval > -(MATE_IN_MAX_PLY)
@@ -7088,7 +7109,7 @@ fn negamax_impl(
         // fortress positions; the residual converges to the true correction
         // and self-stabilises. Both are in scaled space, so the err term
         // isolates positional miscalibration rather than halfmove decay.
-        update_correction_history(info, board, best_score, static_eval, depth, ply_u);
+        update_correction_history(info, board, best_score, static_eval, depth, ply_u, is_pv);
     }
 
     // Fail-high score blending: dampen inflated cutoff scores at non-PV nodes.

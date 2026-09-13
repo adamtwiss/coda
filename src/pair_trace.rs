@@ -29,6 +29,8 @@ pub fn enter(n:u64,hash:u64,ply:i32,depth:i32,alpha:i32,beta:i32,cut:bool,prior:
 pub fn exit(active:bool,n:u64,value:i32,stopped:bool){if active {DATA.with(|d|{let mut d=d.borrow_mut();let(id,ply,start)=d.stack.pop().unwrap();let(stage,root)=d.stage.unwrap();
     if ply<=root+2 {eprintln!("DTRACE stage={} id={} event=exit score={} cost={} stopped={}",stage,id,value,n-start,stopped);}});}}
 pub fn log(ply:i32,args:fmt::Arguments){DATA.with(|d|{let d=d.borrow();if let Some((stage,root))=d.stage {if ply<=root+2 {eprintln!("DTRACE stage={} id={} {}",stage,d.stack.last().map_or(0,|x|x.0),args);}}});}
+/// Unbounded lifecycle log for a specifically selected correction cell.
+pub fn cell(args:fmt::Arguments){DATA.with(|d|{let d=d.borrow();if let Some((stage,_))=d.stage {eprintln!("CTRACE stage={} id={} {}",stage,d.stack.last().map_or(0,|x|x.0),args);}});}
 pub fn block(gate:&str)->bool {
     static RULE:OnceLock<Option<(String,String,u64)>>=OnceLock::new();
     let rule=RULE.get_or_init(||std::env::var("PAIR_BLOCK").ok().map(|s|{let p:Vec<_>=s.split(':').collect();assert_eq!(p.len(),3);(p[0].into(),p[1].into(),p[2].parse().unwrap())}));
