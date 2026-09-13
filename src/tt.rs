@@ -3,7 +3,24 @@
 //! Parallel arrays, 32-bit XOR key verification, power-of-2 indexing.
 
 use crate::types::*;
-use std::sync::atomic::{AtomicU64, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicU32, AtomicU8, Ordering};
+
+// ---- SMP economics instrumentation (research branch, NEVER MERGE) ----
+// Each search thread registers a writer id (1 = main, 2.. = helpers) in a
+// thread-local; every store records it in a side array parallel to the slots,
+// and the store path classifies what it displaced. Counters are thread-local
+// and drained by the search at the end of each `go`.
+thread_local! {
+    static SMP_TID: std::cell::Cell<u8> = const { std::cell::Cell::new(0) };
+    static SMP_ST: std::cell::Cell<[u64; 4]> = const { std::cell::Cell::new([0; 4]) };
+}
+/// Register this thread's writer id (1 = main, thread_id + 1 for helpers).
+pub fn smp_set_tid(t: u8) { SMP_TID.with(|c| c.set(t)); }
+fn smp_bump(i: usize) { SMP_ST.with(|c| { let mut v = c.get(); v[i] += 1; c.set(v); }); }
+/// Drain this thread's store counters: (stores, same-key overwrite of another
+/// thread's current-gen entry, same-key store refused against another thread's
+/// deeper current-gen entry, eviction of another thread's current-gen entry).
+pub fn smp_take_store_counters() -> [u64; 4] { SMP_ST.with(|c| { let v = c.get(); c.set([0; 4]); v }) }
 
 pub const TT_FLAG_NONE: u8 = 0;
 pub const TT_FLAG_EXACT: u8 = 1; // PV-node (exact score)
@@ -303,6 +320,9 @@ pub struct TT {
     buckets: Vec<TTBucket>,
     mask: usize,  // num_buckets - 1 (power of 2)
     generation: std::sync::atomic::AtomicU8,
+    /// Research: writer thread id per slot (0 = never written), parallel to
+    /// the bucket slots (index = bucket * BUCKET_SIZE + slot).
+    writer: Vec<AtomicU8>,
 }
 
 // TT is safe to share: all fields use atomics or are immutable after construction.
@@ -319,6 +339,8 @@ pub struct TTEntry {
     pub tt_pv: bool,
     pub hit: bool,
     pub generation: u8,
+    /// Research: writer thread id of the hit slot (0 = unknown).
+    pub writer: u8,
 }
 
 impl TTEntry {
@@ -332,6 +354,7 @@ impl TTEntry {
             tt_pv: false,
             hit: false,
             generation: 0,
+            writer: 0,
         }
     }
 }
@@ -401,10 +424,12 @@ impl TT {
             }
         };
 
+        let writer = (0..size * BUCKET_SIZE).map(|_| AtomicU8::new(0)).collect();
         TT {
             buckets,
             mask: size - 1,
             generation: std::sync::atomic::AtomicU8::new(0),
+            writer,
         }
     }
 
@@ -412,6 +437,9 @@ impl TT {
     pub fn clear(&self) {
         for bucket in self.buckets.iter() {
             bucket.clear();
+        }
+        for w in self.writer.iter() {
+            w.store(0, Ordering::Relaxed);
         }
     }
 
@@ -468,6 +496,7 @@ impl TT {
             tt_pv: unpack_tt_pv(data),
             hit: true,
             generation: unpack_generation(data),
+            writer: self.writer[idx * BUCKET_SIZE + hit].load(Ordering::Relaxed),
         }
     }
 
@@ -513,11 +542,16 @@ impl TT {
             replace_score = if better { slot_score } else { replace_score };
             replace_idx = if better { i } else { replace_idx };
         }
+        // Research counters: who wrote the slot we are about to touch.
+        let my_tid = SMP_TID.with(|c| c.get());
+        smp_bump(0);
         if special < BUCKET_SIZE {
             let slot_data = datas[special];
+            let wslot = &self.writer[idx * BUCKET_SIZE + special];
             if unpack_flag(slot_data) == TT_FLAG_NONE {
                 bucket.data[special].store(new_data, Ordering::Release);
                 bucket.keys[special].store(new_key, Ordering::Release);
+                wslot.store(my_tid, Ordering::Relaxed);
                 return;
             }
             // Same key: replace unless the stored entry is much deeper, from
@@ -525,6 +559,8 @@ impl TT {
             let slot_depth = unpack_depth(slot_data);
             let slot_gen = unpack_generation(slot_data);
             let flag_is_exact = flag == TT_FLAG_EXACT;
+            let prev_w = wslot.load(Ordering::Relaxed);
+            let other_cur = slot_gen == gen && prev_w != 0 && prev_w != my_tid;
             if depth > slot_depth - 4 || gen != slot_gen || flag_is_exact {
                 let effective_move = if best_move == NO_MOVE {
                     unpack_move(slot_data)
@@ -535,8 +571,21 @@ impl TT {
                 let stored_key = key_upper ^ (stored_data as u32);
                 bucket.data[special].store(stored_data, Ordering::Release);
                 bucket.keys[special].store(stored_key, Ordering::Release);
+                wslot.store(my_tid, Ordering::Relaxed);
+                if other_cur { smp_bump(1); }
+            } else if other_cur {
+                smp_bump(2);
             }
             return;
+        }
+        {
+            let victim = datas[replace_idx];
+            let wslot = &self.writer[idx * BUCKET_SIZE + replace_idx];
+            let prev_w = wslot.load(Ordering::Relaxed);
+            if unpack_flag(victim) != TT_FLAG_NONE && unpack_generation(victim) == gen && prev_w != 0 && prev_w != my_tid {
+                smp_bump(3);
+            }
+            wslot.store(my_tid, Ordering::Relaxed);
         }
         bucket.data[replace_idx].store(new_data, Ordering::Release);
         bucket.keys[replace_idx].store(new_key, Ordering::Release);

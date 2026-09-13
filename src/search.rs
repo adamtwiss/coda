@@ -1035,6 +1035,13 @@ impl SearchLimits {
 /// Pruning counters for diagnostics.
 #[derive(Default)]
 pub struct PruneStats {
+    /// Research (SMP economics): current-generation main-search TT hits, of
+    /// which written by another thread, of which at depth >= ours
+    /// (duplicated subtree), and current-gen hits at depth >= ours by anyone.
+    pub smp_hits_cur_gen: u64,
+    pub smp_hits_other: u64,
+    pub smp_dup_other: u64,
+    pub smp_dup_any: u64,
     pub tt_probes: u64,
     pub tt_hits: u64,
     pub tt_cross_gen_hits: u64,
@@ -1371,6 +1378,10 @@ pub struct SearchInfo {
     /// hooks log which pruning gate discards trace_line_mv[ply], to stderr.
     pub trace_hashes: Vec<u64>,
     pub trace_line_mv: Vec<Move>,
+    /// Research (SMP economics): this thread's id (0 = main) and the node
+    /// count at its last completed root iteration.
+    pub smp_tid: u8,
+    pub smp_nodes_last_iter: u64,
     /// Ply barrier for NMP verification: prevents NMP from re-triggering
     /// inside its own verification subtree (all peers: Alexandria,
     /// Stormphrax use nmpMinPly / nmp_min_ply). Default 0 = no barrier.
@@ -1492,6 +1503,8 @@ impl SearchInfo {
             tm_dbg: TmDbg::default(),
             trace_hashes: Vec::new(),
             trace_line_mv: Vec::new(),
+            smp_tid: 0,
+            smp_nodes_last_iter: 0,
             nmp_min_ply: 0,
             static_evals: [0; MAX_PLY + 1],
             tt_pv_stack: [false; MAX_PLY + 1],
@@ -1652,7 +1665,7 @@ impl SearchInfo {
             // and so helper threads see the limit too. Without this, `go nodes`
             // returned 0 up the tree while nodes completed their TT/history
             // stores at full claimed depth (persisting across the game).
-            self.stop.store(true, Ordering::Relaxed);
+            { self.stop.store(true, Ordering::Relaxed); smp_mark_stop(); }
             return true;
         }
         // Check time every 4096 nodes
@@ -1662,7 +1675,7 @@ impl SearchInfo {
             // ponder exception. Makes flagging impossible regardless of what the
             // soft/hard budget, ponder accounting, or iteration overflow do.
             if self.abs_deadline > 0 && elapsed >= self.abs_deadline {
-                self.stop.store(true, Ordering::Relaxed);
+                { self.stop.store(true, Ordering::Relaxed); smp_mark_stop(); }
                 return true;
             }
             // For ponderhit: allow a grace period beyond the deadline so the
@@ -1684,7 +1697,7 @@ impl SearchInfo {
                 // hard observed non-zero above ⇒ this value is coherent).
                 let ph_abs = self.ponderhit_abs.load(Ordering::Relaxed);
                 if ph_abs > 0 && elapsed >= ph_abs {
-                    self.stop.store(true, Ordering::Relaxed);
+                    { self.stop.store(true, Ordering::Relaxed); smp_mark_stop(); }
                     return true;
                 }
                 // P2(a) — mid-iteration SOFT enforcement, 2×-band only. The
@@ -1708,7 +1721,7 @@ impl SearchInfo {
                     let slice = self.ponderhit_floor.load(Ordering::Relaxed)
                         .max(MIN_POST_PONDERHIT_MS);
                     if elapsed >= ph_soft.saturating_add(slice) {
-                        self.stop.store(true, Ordering::Relaxed);
+                        { self.stop.store(true, Ordering::Relaxed); smp_mark_stop(); }
                         return true;
                     }
                 }
@@ -1723,7 +1736,7 @@ impl SearchInfo {
                 self.time_limit
             };
             if effective_limit > 0 && elapsed >= effective_limit {
-                self.stop.store(true, Ordering::Relaxed);
+                { self.stop.store(true, Ordering::Relaxed); smp_mark_stop(); }
                 return true;
             }
         }
@@ -2702,6 +2715,11 @@ pub(crate) fn helper_run(
         min_think_ms: 0, abs_clock: 0,
     };
     let mv = search_helper(board, info, &placeholder, thread_id);
+    if smp_stats_on() {
+        let stop_ns = SMP_STOP_NS.load(Ordering::Relaxed);
+        let lag = if stop_ns > 0 { smp_now_ns() as i64 - stop_ns as i64 } else { -1 };
+        smp_report(info, thread_id, lag);
+    }
     let ponder = if info.pv_len[0] >= 2 { info.pv_table[0][1] } else { NO_MOVE };
     (
         info.nodes,
@@ -2990,6 +3008,7 @@ pub fn search_smp(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimit
     // bump; the single-thread path bumps here too, for consistency.
     info.tt.new_search();
     info.num_threads = threads; // gates the cross-thread instability TM factor
+    SMP_STOP_NS.store(0, Ordering::Relaxed);
 
     if threads <= 1 {
         info.global_nodes.store(0, Ordering::Relaxed);
@@ -3026,6 +3045,10 @@ pub fn search_smp(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimit
 
     // Signal all helpers to stop
     info.stop.store(true, Ordering::Relaxed);
+    if smp_stats_on() {
+        smp_mark_stop();
+        smp_report(info, 0, 0);
+    }
 
     // Collect per-thread candidates.
     // Helpers now also return their 2nd PV move (ponder) so a winning helper
@@ -3084,6 +3107,15 @@ pub fn search_smp(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimit
     // pv_table[0][0] == returned bestmove and can emit the ponder. Main's own PV
     // is already in info and richer, so leave it when main wins.
     let winner_mv = cands[best].mv;
+    if smp_stats_on() {
+        let main_c = cands.iter().find(|c| c.is_main);
+        eprintln!(
+            "SMPVOTE winner_is_main={} winner_depth={} winner_score={} winner_move={} main_depth={} main_move={} main_score={} ncands={}",
+            cands[best].is_main as i32, cands[best].depth, cands[best].score, move_to_uci(winner_mv),
+            main_c.map(|c| c.depth).unwrap_or(0), main_c.map(|c| move_to_uci(c.mv)).unwrap_or_default(),
+            main_c.map(|c| c.score).unwrap_or(0), cands.len()
+        );
+    }
     if !cands[best].is_main {
         info.pv_table[0][0] = winner_mv;
         info.last_score = cands[best].score;
@@ -3125,6 +3157,10 @@ pub(crate) fn search_helper(board: &mut Board, info: &mut SearchInfo, _limits: &
     // History was just seeded from main in create_helper_info — do
     // NOT clear it here. Reset only per-search scratch state.
     info.stats = PruneStats::default();
+    info.smp_tid = thread_id as u8;
+    info.smp_nodes_last_iter = 0;
+    crate::tt::smp_set_tid(thread_id as u8 + 1);
+    let _ = crate::tt::smp_take_store_counters();
     info.static_evals = [0; MAX_PLY + 1];
     info.reductions = [0; MAX_PLY + 1];
     info.excluded_move = [NO_MOVE; MAX_PLY + 1];
@@ -3247,9 +3283,42 @@ pub(crate) fn search_helper(board: &mut Board, info: &mut SearchInfo, _limits: &
             && !is_decisive(score)
             && score.abs() >= tp(&SE_ROOT_DECIDED_CP);
         info.completed_depth = depth;
+        if smp_stats_on() {
+            eprintln!("SMPITER tid={} depth={} t_us={} nodes={} score={}", thread_id, depth, info.start_time.elapsed().as_micros(), info.nodes, score);
+            info.smp_nodes_last_iter = info.nodes;
+        }
     }
 
     best_move
+}
+
+// ---- SMP economics instrumentation (research branch, NEVER MERGE) ----
+static SMP_STATS_ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+fn smp_stats_on() -> bool {
+    *SMP_STATS_ON.get_or_init(|| std::env::var("CODA_SMP_STATS").map(|v| !v.is_empty()).unwrap_or(false))
+}
+static SMP_EPOCH: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+/// Nanoseconds since a process-wide epoch; 0 is reserved for "not set".
+fn smp_now_ns() -> u64 {
+    SMP_EPOCH.get_or_init(Instant::now).elapsed().as_nanos() as u64 + 1
+}
+/// When the shared stop flag was first set this `go` (node/time limit in
+/// should_stop, or search_smp after main's search); helpers measure their exit
+/// lag from it. Reset to 0 at the start of every search_smp.
+static SMP_STOP_NS: AtomicU64 = AtomicU64::new(0);
+fn smp_mark_stop() {
+    if smp_stats_on() {
+        let _ = SMP_STOP_NS.compare_exchange(0, smp_now_ns(), Ordering::Relaxed, Ordering::Relaxed);
+    }
+}
+fn smp_report(info: &SearchInfo, tid: usize, lag_ns: i64) {
+    let st = crate::tt::smp_take_store_counters();
+    eprintln!(
+        "SMPSTAT tid={} nodes={} depth={} hits_cur={} hits_other={} dup_other={} dup_any={} stores={} st_same_other={} st_refused_other={} st_evict_other={} waste_nodes={} lag_us={} t_us={}",
+        tid, info.nodes, info.completed_depth, info.stats.smp_hits_cur_gen, info.stats.smp_hits_other,
+        info.stats.smp_dup_other, info.stats.smp_dup_any, st[0], st[1], st[2], st[3],
+        info.nodes.saturating_sub(info.smp_nodes_last_iter), lag_ns / 1000, info.start_time.elapsed().as_micros()
+    );
 }
 
 /// How many plies of PV the reporting path should try to show.
@@ -3413,6 +3482,10 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     }
 
     info.start_time = Instant::now();
+    info.smp_tid = 0;
+    info.smp_nodes_last_iter = 0;
+    crate::tt::smp_set_tid(1);
+    let _ = crate::tt::smp_take_store_counters();
     // Note: stop flag AND ponderhit_time are cleared by the UCI thread before
     // spawning the search thread, not here. Clearing here races with ponderhit:
     // if ponderhit arrives in the ~ms between `go ponder` and this line, UCI
@@ -3942,6 +4015,10 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
         if (depth as usize) < MAX_PLY {
             info.depth_nodes[depth as usize] = info.nodes;
             info.completed_depth = depth;
+        }
+        if smp_stats_on() {
+            eprintln!("SMPITER tid=0 depth={} t_us={} nodes={} score={}", depth, info.start_time.elapsed().as_micros(), info.nodes, score);
+            info.smp_nodes_last_iter = info.nodes;
         }
 
         // UCI info output
@@ -4967,6 +5044,15 @@ fn negamax(
         info.stats.tt_hits += 1;
         if tt_cross_gen {
             info.stats.tt_cross_gen_hits += 1;
+        } else {
+            // Research (SMP economics): who searched this position this move.
+            info.stats.smp_hits_cur_gen += 1;
+            let deep_enough = tt_entry.depth >= depth;
+            if deep_enough { info.stats.smp_dup_any += 1; }
+            if tt_entry.writer != 0 && tt_entry.writer != info.smp_tid + 1 {
+                info.stats.smp_hits_other += 1;
+                if deep_enough { info.stats.smp_dup_other += 1; }
+            }
         }
     }
 
