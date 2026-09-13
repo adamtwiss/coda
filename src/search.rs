@@ -437,6 +437,20 @@ tunables!(
     (DEXT_MARGIN_CORR, 13, 0, 64, 3.0, true),
     (DEXT_MARGIN_BASE, 37, -50, 150, 6.0, true),
     (DEXT_CAP, 9, 4, 32, 2.0, true),
+    // How far BELOW the halfmove-scaled raw eval the corrected static must sit
+    // before we search the TT move a ply deeper. See `corr_ext` at the use site.
+    //
+    // UNITS: Coda's INTERNAL score scale — the same units `correction_value`
+    // returns and the same ones `DEXT_MARGIN_CORR` already consumes above.
+    // Not a display-cp figure; the display factor is per-net.
+    //
+    // The default is the point measured to separate, not a guess: on the loss
+    // population it holds at 42% of our-move nodes against a 3.8% (opening) /
+    // 10.0% (middlegame) rate over 51M ordinary non-PV interior visits at depth
+    // >= 8. 80 is rarer (2.6% / 7.6%) and covers less of the population; the two
+    // are indistinguishable on 12 loss nodes, which is why both are being
+    // tested rather than chosen. Non-core: one focused knob, not a sweep slot.
+    (CORR_EXT_MARGIN, 60, 20, 200, 8.0, false),
     // How large a TT score has to be before the 50-move clock is allowed to
     // veto a cutoff on it. See `tt_halfmove_ok`.
     //
@@ -6158,12 +6172,61 @@ fn negamax(
         // Check if move gives check (opponent is now in check after make_move)
         let gives_check = board.in_check();
 
-        let extension = 0;
-        // `extension` is 0: there is no promotion-imminent (7th-rank pawn
-        // push) extension here, and none of the 18 stronger engines surveyed
-        // has one either. Coda carried one twice and it measured as noise both
-        // times — removing it was worth Elo, as was removing the analogous
-        // recapture extension.
+        // Correction-signal extension, our-move form.
+        //
+        // `static_eval - scaled_eval` IS `correction_value` at this node (see
+        // `corrected_eval`), already computed above, so this costs a
+        // subtraction rather than five table lookups.
+        //
+        // When correction history has pulled our static DOWN by a wide margin,
+        // the raw eval is telling us the position is better than the history of
+        // this pawn/material/continuation context says it turns out to be. On
+        // the loss population those are the nodes where our chosen defence is
+        // the one a stronger engine refutes deeper, so the TT move — the
+        // defence we are about to rely on — gets one more ply.
+        //
+        // SIGN, not magnitude. The pooled |correction| form fires on 23-32% of
+        // non-PV interior visits at depth >= 8 and is a global search change;
+        // the negative side alone fires on 3.8% (opening) to 10.0%
+        // (middlegame), because negative correction is 3-5x rarer than
+        // positive. This family has failed three times as a broad continuous
+        // term, so the narrow side is the only version worth testing.
+        //
+        // Scope: the TT move only (one extension per node, not per move);
+        // non-PV; depth >= 8, matching the population the rate was measured
+        // over. `singular_extension >= 0` so this never cancels a negative
+        // extension, which is a reduction device answering a different
+        // question, and `< 2` so the total for this move cannot exceed a
+        // double extension.
+        //
+        // Interaction with DEXT_MARGIN_CORR, stated because the two touch the
+        // same quantity: that term scales with |correction| and feeds the
+        // DOUBLE-extension threshold, so it is magnitude-based and acts on a
+        // node already found singular. This is sign-based and acts where the
+        // singular machinery has not already extended twice. They coexist; this
+        // branch does not change that term.
+        // `!info.root_decided` explicitly: the root-decidedness gate below
+        // suppresses positive singular extensions once the root score is
+        // decisive, and that gate earned its place (#3510). A new extension
+        // device must respect it rather than quietly route around it — without
+        // this line, an SE suppressed to 0 would leave the way clear for this
+        // one to extend the same move anyway.
+        let extension = if !is_pv
+            && !info.root_decided
+            && depth >= 8
+            && mv == tt_move
+            && (0..2).contains(&singular_extension)
+            && static_eval - scaled_eval <= -tp(&CORR_EXT_MARGIN)
+        {
+            1
+        } else {
+            0
+        };
+        // There is otherwise no promotion-imminent (7th-rank pawn push)
+        // extension here, and none of the 18 stronger engines surveyed has one
+        // either. Coda carried one twice and it measured as noise both times —
+        // removing it was worth Elo, as was removing the analogous recapture
+        // extension.
 
         // FEAT_EXTENSIONS ablation (NO_EXTENSIONS=1). The flag used to gate the
         // recapture and 7th-rank promotion extensions; both were removed
