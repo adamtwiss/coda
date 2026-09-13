@@ -7066,7 +7066,11 @@ fn negamax(
     if !in_check
         && !best_move_noisy
         && info.excluded_move[ply_u] == NO_MOVE
-        && (corrhist_lower_ok || corrhist_upper_ok)
+        // A non-PV node only has a zero-window bound. Do not train correction
+        // history from its fail-low as if it were an exact score: scout
+        // feedback can otherwise alter the later PV verification state.
+        // Keep lower-bound updates and full-window PV fail-lows unchanged.
+        && (corrhist_lower_ok || (corrhist_upper_ok && is_pv))
         // is_decisive covers the mate OR TB range
         && !is_decisive(best_score)
         && scaled_eval > -(MATE_IN_MAX_PLY)
