@@ -524,8 +524,9 @@ impl TT {
             // the same generation, and the new one is not exact.
             let slot_depth = unpack_depth(slot_data);
             let slot_gen = unpack_generation(slot_data);
+            let slot_age = gen.wrapping_sub(slot_gen) as i32;
             let flag_is_exact = flag == TT_FLAG_EXACT;
-            if depth > slot_depth - 4 || gen != slot_gen || flag_is_exact {
+            if depth > slot_depth - 4 || slot_age > 1 || flag_is_exact {
                 let effective_move = if best_move == NO_MOVE {
                     unpack_move(slot_data)
                 } else {
