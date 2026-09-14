@@ -368,21 +368,21 @@ tunables!(
     (QS_MAX_CAPTURES, 3, 2, 8, 1.0, false),
     // QS SEE prune threshold (was a fixed static outside the macro; entered
     // for the thread-9 QS cluster tune, default unchanged).
-    (QS_SEE_THRESHOLD, -26, -120, 0, 8.0, false),
+    (QS_SEE_THRESHOLD, -27, -120, 0, 8.0, false),
     // Capture-history weight in flat QS ordering, in hundredths: 125 = the
     // 5/4 that was a literal in movepicker (default reproduces main exactly).
-    (QS_CAPT_HIST_W_100X, 125, 50, 250, 20.0, false),
-    (CORR_W_PAWN, 111, 100, 600, 25.0, true),
-    (CORR_W_NP, 140, 0, 400, 17.5, true),
+    (QS_CAPT_HIST_W_100X, 117, 50, 250, 20.0, false),
+    (CORR_W_PAWN, 116, 100, 600, 25.0, true),
+    (CORR_W_NP, 137, 0, 400, 17.5, true),
     // There is deliberately no minor-key or major-key correction source:
     // both are strict subsets of non_pawn_key, so such terms are redundant
     // with np_corr and simply consume SPSA budget at weight 0.
-    (CORR_W_CONT, 215, 0, 400, 18.5, true),
+    (CORR_W_CONT, 220, 0, 400, 18.5, true),
     // Transition (zobrist-delta) correction weight (Cinder idea): correction
     // keyed by hash(ply-1) ^ hash(ply) — a hash of the last move IN CONTEXT
     // (from+to+captured+side), richer than cont_corr's [piece][to]. Captures
     // "this structural CHANGE tends to be mis-evaluated."
-    (CORR_W_TRANS, 104, 0, 400, 18.5, true),
+    (CORR_W_TRANS, 94, 0, 400, 18.5, true),
     (FH_BLEND_DEPTH_10X, 21, 0, 80, 15.0, false),
     // TT_DAMP_TT_WEIGHT: weight of tt_score in TT-LOWER non-PV cutoff score
     // dampening. Formula: (W*tt_score + beta) / (W+1).
@@ -397,8 +397,8 @@ tunables!(
     // saturates early and d=5 and d=10 earn the same bonus; the offset buys
     // depth discrimination. Capture history uses the same shape.
     (HIST_BONUS_OFFSET, 18, 0, 400, 25.0, false),
-    (CAP_HIST_MULT, 333, 50, 400, 17.5, true),
-    (CAP_HIST_MAX, 2032, 500, 3000, 125.0, true),
+    (CAP_HIST_MULT, 342, 50, 400, 17.5, true),
+    (CAP_HIST_MAX, 2053, 500, 3000, 125.0, true),
     // Malus constants are SEPARATE from the bonus constants rather than
     // hardwired to -bonus, so SPSA can tune the two slopes independently.
     // Whether malus should be steeper or shallower than bonus is
@@ -406,9 +406,9 @@ tunables!(
     (HIST_MALUS_MULT, 551, 50, 900, 40.0, true),
     (HIST_MALUS_OFFSET, 30, 0, 400, 25.0, false),
     (HIST_MALUS_MAX, 1168, 500, 4000, 175.0, true),
-    (CAP_HIST_MALUS_MULT, 268, 50, 900, 40.0, true),
-    (CAP_HIST_MALUS_BASE, 42, 0, 400, 25.0, false),
-    (CAP_HIST_MALUS_MAX, 2352, 500, 4000, 175.0, true),
+    (CAP_HIST_MALUS_MULT, 275, 50, 900, 40.0, true),
+    (CAP_HIST_MALUS_BASE, 44, 0, 400, 25.0, false),
+    (CAP_HIST_MALUS_MAX, 2386, 500, 4000, 175.0, true),
     // numFailHighs multiplicative history scaling (Starzix pattern):
     //   bonus = raw + raw * min(num_fail_highs, NFH_CAP) / NFH_DIV
     // so 0..NFH_CAP cascades produce 1.0x .. (1 + NFH_CAP/NFH_DIV)x bonus.
@@ -585,7 +585,7 @@ tunables!(
     //
     // Minimum depth for internal iterative reduction. Floor runs low so SPSA
     // can explore "fire at any depth >= 1" rather than being clamped out of it.
-    (IIR_MIN_DEPTH_10X, 46, 5, 100, 15.0, true),
+    (IIR_MIN_DEPTH_10X, 41, 5, 100, 15.0, true),
     (PROBCUT_MIN_DEPTH_10X, 15, 10, 120, 15.0, false),     // ProbCut activation gate
     (PROBCUT_ROOT_MIN_DEPTH_10X, 24, 0, 80, 8.0, true),
     (SEE_CAP_DEPTH_10X, 87, 30, 150, 15.0, true),         // SEE capture prune depth cap
@@ -651,7 +651,7 @@ tunables!(
     // scale needs this moved with it. Non-core, but it carries loose-knob
     // gradient noise — exclude it from full sweeps if it destabilises
     // neighbours.
-    (SEE_MATERIAL_SCALE, 211, 30, 300, 13.5, false),
+    (SEE_MATERIAL_SCALE, 202, 30, 300, 13.5, false),
     // Endgame eval-scaling base: eval *= (MAT_SCALE_BASE + non_pawn_material) / 32768.
     // Lower base = more aggressive damp of the net's output in low-material
     // endgames — the lever against the net over-rating simplified positions.
