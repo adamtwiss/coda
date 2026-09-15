@@ -199,9 +199,9 @@ tunables!(
     // wants deliberate, TC-matched, cross-engine and ponder-validated tuning,
     // not incidental perturbation by a broad STC sweep where a noisy movement
     // regresses real games. Still UCI-loadable for deliberate TM tunes.
-    (TM_INC_COVER_REF, 20, 5, 60, 4.0, false),
-    (TM_MULT_CEIL_MIN_10X, 15, 10, 40, 2.0, false),
-    (TM_MULT_CEIL_MAX_10X, 130, 40, 140, 8.0, false),
+    (TM_INC_COVER_REF, 21, 5, 60, 4.0, false),
+    (TM_MULT_CEIL_MIN_10X, 16, 10, 40, 2.0, false),
+    (TM_MULT_CEIL_MAX_10X, 133, 40, 140, 8.0, false),
     // Cross-thread best-move-instability TM factor (concept from SF).
     // factor = BASE/1000 + MULT/1000 * (Σ per-thread bmc)/n_threads, applied
     // to the soft budget only at Threads>1. Defaults are SF's 1.088 / 2.315
@@ -215,8 +215,8 @@ tunables!(
     // contaminating the raw test. At 1.0 the factor is neutral when the pool
     // agrees and only scales UP on genuine cross-thread churn — the retune can
     // lift BASE if beneficial. MULT starts at SF's 2.315.
-    (TM_BMC_INSTAB_BASE, 1000, 900, 1500, 25.0, false),
-    (TM_BMC_INSTAB_MULT, 2315, 500, 4000, 100.0, false),
+    (TM_BMC_INSTAB_BASE, 996, 900, 1500, 25.0, false),
+    (TM_BMC_INSTAB_MULT, 2322, 500, 4000, 100.0, false),
     // Subtree factor = (BASE/100 - best_move_node_fraction) * 1.4, floor 0.55
     // (the floor cannot bind at the 1.62 default — frac would need to exceed
     // 1.23).
@@ -227,7 +227,7 @@ tunables!(
     // own search" is a poor confidence proxy against a stronger engine, so the
     // upward bias is deliberate insurance — and self-play cannot see the cost.
     // Cross-engine RR only.
-    (TM_SUBTREE_BASE_100, 162, 100, 180, 4.0, false),
+    (TM_SUBTREE_BASE_100, 161, 100, 180, 4.0, false),
     // Low-inc absolute single-move ceiling — the companion to the inc_cover
     // multiplier cap above.
     // inc_cover caps the factor MULTIPLIER, so adjusted_soft stays
@@ -245,7 +245,7 @@ tunables!(
     // rich TCs (600+10) essentially untouched (the 46%/60% windows still
     // bind), while capping 600+1 at 40s (was 276s) and 60+0.1 at 13s.
     (TM_INC_HARD_MULT, 30, 0, 120, 4.0, false),
-    (TM_INC_HARD_FLOOR_MS, 10000, 0, 60000, 1000.0, false),
+    (TM_INC_HARD_FLOOR_MS, 10288, 0, 60000, 1000.0, false),
     // No-inc adaptive mtg divisor: base assumed moves-to-go, and the growth
     // rate once a game outlives that assumption — see compute_tm_budgets for
     // the full derivation.
@@ -257,22 +257,22 @@ tunables!(
     // in the TM_* block above. Note TM constants are bench-invariant (bench is
     // fixed-depth and never consults the budgets), so a TM tune cannot move the
     // bench — do not read an unchanged bench as "the tune did nothing".
-    (TM_MAX_BANK_1000, 599, 400, 750, 15.0, false),   // max_time = clock * N/1000
-    (TM_HARD_WINDOW_PCT, 47, 25, 65, 2.5, false),     // hard_time = clock * N/100
-    (TM_OPT_WINDOW_PCT, 73, 45, 95, 3.0, false),      // opt = computed * N/100
-    (TM_INC_FRAC_PCT, 93, 40, 100, 4.0, false),       // computed += inc * N/100
-    (TM_DEFAULT_MTG, 24, 14, 40, 1.5, false),         // sudden-death moves-to-go
-    (TM_STAB_0_100, 175, 100, 260, 8.0, false),       // stability table [0] * 1/100
+    (TM_MAX_BANK_1000, 597, 400, 750, 15.0, false),   // max_time = clock * N/1000
+    (TM_HARD_WINDOW_PCT, 48, 25, 65, 2.5, false),     // hard_time = clock * N/100
+    (TM_OPT_WINDOW_PCT, 74, 45, 95, 3.0, false),      // opt = computed * N/100
+    (TM_INC_FRAC_PCT, 94, 40, 100, 4.0, false),       // computed += inc * N/100
+    (TM_DEFAULT_MTG, 23, 14, 40, 1.5, false),         // sudden-death moves-to-go
+    (TM_STAB_0_100, 179, 100, 260, 8.0, false),       // stability table [0] * 1/100
     (TM_STAB_1_100, 122, 80, 180, 5.0, false),        // stability table [1]
     (TM_STAB_2_100, 90, 60, 130, 3.0, false),         // stability table [2]
-    (TM_STAB_3_100, 80, 50, 120, 3.0, false),         // stability table [3]
-    (TM_STAB_4_100, 74, 40, 110, 3.0, false),         // stability table [4+]
+    (TM_STAB_3_100, 81, 50, 120, 3.0, false),         // stability table [3]
+    (TM_STAB_4_100, 75, 40, 110, 3.0, false),         // stability table [4+]
     (TM_FAIL_LOW_BONUS_1000, 350, 100, 700, 20.0, false), // 1 + N/1000 * fail_lows
-    (TM_FORCED_STRONG_1000, 381, 150, 700, 20.0, false),  // strong-forced * N/1000
-    (TM_FORCED_WEAK_1000, 631, 300, 950, 25.0, false),    // weak-forced * N/1000
-    (TM_SUBTREE_MULT_100, 140, 90, 200, 4.0, false),      // (base-frac) * N/100
-    (TM_FORCED_MARGIN_WEAK, 170, 80, 320, 8.0, false),    // weak-forced cp margin
-    (TM_FORCED_MARGIN_STRONG, 400, 200, 620, 12.0, false),// strong-forced cp margin
+    (TM_FORCED_STRONG_1000, 383, 150, 700, 20.0, false),  // strong-forced * N/1000
+    (TM_FORCED_WEAK_1000, 634, 300, 950, 25.0, false),    // weak-forced * N/1000
+    (TM_SUBTREE_MULT_100, 139, 90, 200, 4.0, false),      // (base-frac) * N/100
+    (TM_FORCED_MARGIN_WEAK, 171, 80, 320, 8.0, false),    // weak-forced cp margin
+    (TM_FORCED_MARGIN_STRONG, 399, 200, 620, 12.0, false),// strong-forced cp margin
     (LMR_HIST_DIV, 23266, 2000, 100000, 4900.0, true),
     // Capture-LMR history divisor. Separate from the quiet divisor above:
     // capture history is single-source, so it needs a smaller divisor than
