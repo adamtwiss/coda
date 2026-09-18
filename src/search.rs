@@ -324,6 +324,15 @@ tunables!(
     // as LMP_ROOT_KNEE: 14 at 100ms/move, 17 at 1s, 22 at 4s), so the uplift
     // is zero at LTC and main is unchanged there. COEF = 4 = the STC walk's
     // preferred +13 (in tenths of a ply) over the measured 3-ply gap.
+    // Prior strength at which a move shape stops buying singular verification.
+    // The counter moves +SE_OUTCOME_BONUS on a singular result and -1 otherwise,
+    // clamped, so -SE_SKIP_PRIOR means the shape has failed the test
+    // substantially more often than it has passed and the verification search is
+    // buying a negative we already hold. A FAIR tally: a 12:1 bonus was tried
+    // first and the counter simply saturated positive, so the gate never fired
+    // and bench was byte-identical — the dead-knob signature, not a null.
+    (SE_SKIP_PRIOR, 32, 8, 512, 12.0, false),
+    (SE_OUTCOME_BONUS, 1, 1, 8, 1.0, false),
     (SE_ROOT_KNEE, 17, 10, 24, 1.5, true),
     (SE_ROOT_COEF, 4, 0, 15, 1.5, true),
     (ASP_DELTA, 11, 5, 30, 1.5, false),
@@ -1393,6 +1402,14 @@ pub struct SearchInfo {
     /// decided and the search is deep enough for that score to be trusted.
     /// Read at interior nodes to suppress positive singular extensions.
     pub root_decided: bool,
+    /// Singular-extension OUTCOME history: [moved piece 1-12][to square].
+    /// Singular verification costs a full reduced-depth re-search on EVERY TT
+    /// move above the depth gate, and most of them turn out not to be singular
+    /// — we pay for the answer every time and then discard it. This remembers
+    /// the answer by move shape, so a class that has repeatedly failed to be
+    /// singular can skip the search rather than re-buy the same negative.
+    /// Nothing else in the tree learns from a verification outcome.
+    pub se_outcome: Box<[[i16; 64]; 13]>,
     /// TMDebug-only stop-time snapshot of the dynamic-TM factors (see TmDbg).
     tm_dbg: TmDbg,
     /// Line-trace forensics (CODA_TRACE_LINE env): zobrist hashes of the
@@ -1521,6 +1538,7 @@ impl SearchInfo {
             completed_depth: 0,
             root_depth: 0,
             root_decided: false,
+            se_outcome: alloc_zeroed_box(),
             tm_dbg: TmDbg::default(),
             trace_hashes: Vec::new(),
             trace_line_mv: Vec::new(),
@@ -6056,9 +6074,14 @@ fn negamax(
         // node-end TT store are all gated on excluded_move during the
         // verification search.
         let mut singular_extension = 0i32;
+        let se_shape = {
+            let p = board.piece_at(move_from(mv));
+            if p != NO_PIECE { (go_piece(p) as usize, move_to(mv) as usize) } else { (0usize, 0usize) }
+        };
         if mv == tt_move
             && tt_move != NO_MOVE
             && ply > 0
+            && info.se_outcome[se_shape.0][se_shape.1] > -tp(&SE_SKIP_PRIOR) as i16
             // Shallow searches start singular verification later — see SE_ROOT_KNEE.
             && depth >= tp10(&SE_DEPTH_10X)
                 + (tp(&SE_ROOT_KNEE) - info.root_depth).max(0) * tp(&SE_ROOT_COEF) / 10
@@ -6123,6 +6146,12 @@ fn negamax(
                     return singular_score;
                 }
 
+                {
+                    // Remember the verdict for this move shape.
+                    let e = &mut info.se_outcome[se_shape.0][se_shape.1];
+                    let d = if singular_score < singular_beta { tp(&SE_OUTCOME_BONUS) as i16 } else { -1 };
+                    *e = (*e + d).clamp(-1024, 1024);
+                }
                 if singular_score < singular_beta {
                     // TT move is singular — no competitive alternatives.
                     //
