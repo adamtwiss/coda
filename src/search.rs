@@ -4405,16 +4405,34 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
         // one, so once either is proved there is no better move left to find
         // and the remaining think time is pure waste. Placed AFTER this
         // iteration's `info` line so the GUI still receives the score and PV.
-        // Only under time management: an `infinite`/analysis search must keep
-        // reporting, and fixed-node or fixed-depth runs have their own
-        // contract. `score` is a completed iteration's settled value here.
+        // Only when a clock is actually in force: an `infinite`/analysis search
+        // must keep reporting, and fixed-node or fixed-depth runs have their
+        // own contract. `score` is a completed iteration's settled value here.
+        //
+        // The gate asks "is a clock binding this search NOW", not "was this
+        // search started as infinite". Those are not the same question on the
+        // ponder path, which is the path this break exists for: `go ponder`
+        // sets `limits.infinite` and never clears it, and the post-ponderhit
+        // arming above publishes soft/hard/floor/baseline but deliberately not
+        // `time_limit` (the ponder deadlines live in the atomics so the UCI
+        // thread can publish them into a running search). A gate phrased around
+        // the `infinite` flag is therefore unreachable for the whole lifetime
+        // of a pondered move.
+        //
+        // `ponderhit_time` is the deadline trio's publish flag, so it is both
+        // the earliest and the only universal "our clock has started" signal —
+        // in particular the `go ponder movetime` hit publishes nothing else.
+        // Load it with Acquire like every other reader of that flag. Genuine
+        // analysis (`go infinite` with no hit) has both terms zero and stays
+        // protected.
         //
         // The failure this removes is losing a won game on the clock while the
         // engine re-proves a mate it already holds — a deployment problem our
         // SPRT harness cannot see, because adjudication ends those games first.
-        if !limits.infinite && info.time_limit > 0
-            && score.abs() >= MATE_IN_MAX_PLY
+        if score.abs() >= MATE_IN_MAX_PLY
             && MATE_SCORE - score.abs() <= 2
+            && (info.time_limit > 0
+                || info.ponderhit_time.load(std::sync::atomic::Ordering::Acquire) > 0)
         {
             break;
         }
@@ -9097,6 +9115,113 @@ mod tests {
              that has survived only one iteration",
             published_depth, published_stab, info.tm_best_stable.max(0)
         );
+    }
+
+    /// Bound for the two mate-in-one break probes below. Any value comfortably
+    /// past the depth at which a mate in one is proved works; it only exists so
+    /// the negative control terminates.
+    const MATE_PROBE_MAX_DEPTH: i32 = 12;
+
+    /// Shared driver for the mate-in-one early-break tests.
+    ///
+    /// Both probes run the PONDER shape — `go ponder` sets `limits.infinite`
+    /// and nothing ever clears it, before or after the hit — and differ only in
+    /// whether a ponderhit has been published. `ponderhit_ms` is the hard
+    /// deadline to publish (0 = no hit at all, i.e. plain analysis). It is
+    /// stored with Release exactly as the UCI ponderhit handler stores it,
+    /// since it is the deadline trio's publish flag.
+    ///
+    /// Returns the deepest completed iteration, which is the observable: the
+    /// break leaves the loop at the mate-proving iteration, so `completed_depth`
+    /// distinguishes "fired" from "did not fire" without reference to any
+    /// wall clock.
+    fn mate_in_one_break_probe(net_path: &str, ponderhit_ms: u64) -> (i32, i32) {
+        use crate::board::Board;
+        let mut info = SearchInfo::new(16);
+        info.silent = true;
+        info.load_nnue(net_path).expect("net load");
+        // White to move; Ra1-a8 is mate in one. The black king's only flight
+        // squares are covered by its own pawns and by the rank the rook seizes.
+        let mut board = Board::from_fen("6k1/5ppp/8/8/8/8/5PPP/R5K1 w - - 0 1");
+        // A deadline far past anything this probe can take keeps the loop's own
+        // ponderhit deadline checks inert, so the ONLY thing that can end the
+        // search before MATE_PROBE_MAX_DEPTH is the break under test. Publishing
+        // only `hard` (soft/floor stay 0) is the `go ponder movetime` hit shape,
+        // which additionally keeps `soft_limit` at 0 — that in turn keeps the
+        // older stability-gated mate early-emit out of the picture, so a firing
+        // break can only be this one.
+        info.ponderhit_time.store(ponderhit_ms, std::sync::atomic::Ordering::Release);
+        let limits = SearchLimits {
+            depth: MATE_PROBE_MAX_DEPTH,
+            infinite: true,
+            ..SearchLimits::new()
+        };
+        let _ = search(&mut board, &mut info, &limits);
+        (info.completed_depth, info.last_score)
+    }
+
+    /// POSITIVE: the mate-in-one early break must FIRE after a ponderhit.
+    ///
+    /// The ponder path is the one this break exists for — the observed failure
+    /// was the engine spending its whole post-hit budget re-proving a mate in
+    /// one it already held. On that path `limits.infinite` stays true and
+    /// `info.time_limit` stays zero for the search's whole lifetime, so a gate
+    /// phrased around either of them is unreachable precisely where it is
+    /// needed. Assert the loop RETURNS at the mate-proving iteration.
+    ///
+    /// Note for anyone tempted to check this with bench instead: bench builds
+    /// `infinite: true` with no ponderhit, so it cannot observe this break in
+    /// either direction. An unchanged bench says nothing here.
+    #[test]
+    fn mate_in_one_break_fires_after_ponderhit() {
+        crate::init();
+        let net_path = match super::test_net_path() {
+            Some(p) => p,
+            None => {
+                eprintln!("Skipping mate-in-one ponderhit break test: no NNUE net found");
+                return;
+            }
+        };
+        // 10 minutes in the search's own start_time frame: unreachable here.
+        let (depth, score) = mate_in_one_break_probe(&net_path, 600_000);
+        assert!(
+            score.abs() >= MATE_IN_MAX_PLY && MATE_SCORE - score.abs() <= 2,
+            "probe position must settle on a mate in one, got score {}", score);
+        assert!(
+            depth < MATE_PROBE_MAX_DEPTH,
+            "mate-in-one break did not fire after a ponderhit: ran to depth {} \
+             (the loop bound) instead of stopping at the mate-proving iteration. \
+             The post-ponderhit arming never sets info.time_limit and `go ponder` \
+             leaves limits.infinite set, so the gate must key off a published \
+             ponderhit deadline as well.",
+            depth);
+    }
+
+    /// NEGATIVE CONTROL: no clock, no ponderhit — the break must NOT fire.
+    ///
+    /// Same position, same loop bound, same `infinite` shape; the only
+    /// difference is that no ponderhit deadline was published. Genuine analysis
+    /// must keep deepening and reporting past a proved mate, so the search has
+    /// to complete every iteration it was asked for.
+    #[test]
+    fn mate_in_one_break_does_not_fire_without_a_clock() {
+        crate::init();
+        let net_path = match super::test_net_path() {
+            Some(p) => p,
+            None => {
+                eprintln!("Skipping mate-in-one analysis control: no NNUE net found");
+                return;
+            }
+        };
+        let (depth, score) = mate_in_one_break_probe(&net_path, 0);
+        assert!(
+            score.abs() >= MATE_IN_MAX_PLY && MATE_SCORE - score.abs() <= 2,
+            "probe position must settle on a mate in one, got score {}", score);
+        assert_eq!(
+            depth, MATE_PROBE_MAX_DEPTH,
+            "mate-in-one break fired under analysis (no time_limit, no ponderhit): \
+             stopped at depth {} instead of completing all {} iterations",
+            depth, MATE_PROBE_MAX_DEPTH);
     }
 
     /// Correction-history update primitive (`update_corr_entry`) must:
