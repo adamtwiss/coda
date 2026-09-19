@@ -1403,11 +1403,31 @@ pub struct SearchInfo {
     /// enable dynamic TM post-ponderhit (so stable positions don't burn the
     /// full hard deadline at deep iterations).
     pub ponderhit_soft: std::sync::Arc<AtomicU64>,
-    /// Ponderhit: minimum think time post-ponderhit (relative duration in
-    /// ms — typically ≈ increment-overhead). Floors the dynamically-scaled
-    /// soft so we still spend some time after a ponderhit even when the
-    /// position is rock-solid (prevents instant-emit).
+    /// Ponderhit: the length of the post-hit think SLICE (relative duration
+    /// in ms) — the whole budget the move gets once the hit lands, i.e.
+    /// intended soft minus the credited ponder, floored at
+    /// `MIN_POST_PONDERHIT_MS` and capped at hard. Read by `should_stop` as
+    /// the width of the mid-iteration soft band, and by the fail-low
+    /// extension for the same purpose.
+    ///
+    /// This is NOT the anti-stockpile floor — that is `ponderhit_stockpile`.
+    /// The two were one field, and because the soft deadline is
+    /// `elapsed + slice`, the arming block's `soft_floor = slice` made
+    /// soft_floor and soft_limit structurally equal for every ponder length;
+    /// a settled position (factor product below 1.0) then broke the ID loop
+    /// early and slept out the remainder, spending the same clock on strictly
+    /// less search.
     pub ponderhit_floor: std::sync::Arc<AtomicU64>,
+    /// Ponderhit: the ANTI-STOCKPILE floor (relative duration in ms) for the
+    /// post-hit search — `compute_tm_budgets`' small `soft_floor`, which the
+    /// ponderhit handler previously computed and discarded. Deliberately tiny
+    /// so the end-of-search stockpile sleep is a no-op unless the ID loop
+    /// finished almost instantly (the case the sleep exists for: instant
+    /// emits growing the clock instead of spending it).
+    ///
+    /// Published with the rest of the deadline group (Relaxed store before
+    /// the hard `ponderhit_time` Release store; readers Acquire hard first).
+    pub ponderhit_stockpile: std::sync::Arc<AtomicU64>,
     /// FL-EXT v2: the INTENDED FULL soft budget (duration ms, from-go-ponder
     /// frame) this move would get on a plain `go`. Stored by the ponderhit
     /// handler with the deadline group; read by the fail-low extension to
@@ -1608,6 +1628,7 @@ impl SearchInfo {
             ponderhit_time: std::sync::Arc::new(AtomicU64::new(0)),
             ponderhit_soft: std::sync::Arc::new(AtomicU64::new(0)),
             ponderhit_floor: std::sync::Arc::new(AtomicU64::new(0)),
+            ponderhit_stockpile: std::sync::Arc::new(AtomicU64::new(0)),
             ponderhit_isoft: std::sync::Arc::new(AtomicU64::new(0)),
             ph_fl_active: std::sync::Arc::new(AtomicBool::new(false)),
             tm_baseline: 0,
@@ -2693,6 +2714,7 @@ pub(crate) fn create_helper_info(main: &SearchInfo) -> SearchInfo {
     helper.ponderhit_time = main.ponderhit_time.clone();
     helper.ponderhit_soft = main.ponderhit_soft.clone();
     helper.ponderhit_floor = main.ponderhit_floor.clone();
+    helper.ponderhit_stockpile = main.ponderhit_stockpile.clone();
     helper.ponderhit_isoft = main.ponderhit_isoft.clone();
     helper.ph_fl_active = main.ph_fl_active.clone();
     // Share the in-flight post-ponderhit forfeit guard too (same rationale as
@@ -2765,6 +2787,7 @@ fn refresh_helper_common(helper: &mut SearchInfo, main: &SearchInfo) {
     helper.ponderhit_time = main.ponderhit_time.clone();
     helper.ponderhit_soft = main.ponderhit_soft.clone();
     helper.ponderhit_floor = main.ponderhit_floor.clone();
+    helper.ponderhit_stockpile = main.ponderhit_stockpile.clone();
     helper.ponderhit_isoft = main.ponderhit_isoft.clone();
     helper.ph_fl_active = main.ph_fl_active.clone();
     helper.ponderhit_abs = main.ponderhit_abs.clone(); // in-flight forfeit guard
@@ -3735,9 +3758,39 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     // soft_limit setter also sets it) — it is one refactor away from being a
     // stale clamp.
     info.tm_max_time = 0;
+    // The clock-classification pair was previously left OUT of this reset and
+    // written only by the `our_time > 0` branch below, so on any other branch
+    // it described a search that had already finished. Reset with the rest of
+    // the group; the branches that need it set it.
+    info.tm_our_inc = 0;
+    info.tm_time_left = 0;
 
     if limits.infinite {
-        // Already zero above.
+        // No budget is in force: soft/hard/floor stay zero from the reset
+        // above, and every dynamic-TM consumer is gated on `soft_limit > 0`.
+        //
+        // But RECORD the clock classification when the GUI supplied a clock.
+        // `go ponder` carries the real wtime/btime/winc/binc — uci.rs only
+        // forces `infinite` on the copy it hands the search — and our clock
+        // does not tick while we ponder, so these are exactly the inputs the
+        // post-ponderhit arming block will later budget from. Leaving them at
+        // the reset defaults left `tm_no_inc` false at a genuinely
+        // no-increment TC, which sent the post-hit multiplier ceiling down the
+        // inc-cover branch with an increment of zero — a branch that exists to
+        // discriminate SMALL increments and was never sized for the absence of
+        // one. Classifying here fixes that without touching any budget.
+        //
+        // Inert for plain `go infinite` analysis (nothing ever sets
+        // soft_limit there) and for the bench, which supplies no clock at all.
+        if our_time > 0 {
+            info.tm_our_inc = our_inc;
+            info.tm_time_left = our_time.saturating_sub(info.move_overhead).max(1);
+            // Same predicate as the `our_time > 0` branch below — one
+            // definition of "no increment", evaluated from the clocks the GUI
+            // actually supplied rather than from whatever the previous search
+            // left behind.
+            info.tm_no_inc = our_inc == 0 && limits.movestogo == 0;
+        }
     } else if limits.movetime > 0 {
         info.time_limit = limits.movetime;
         // Respect caller-supplied minimum think time (ponderhit fresh-search uses
@@ -3890,7 +3943,15 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                 let soft_remaining = ph_soft.saturating_sub(now).max(1);
                 let hard_remaining = if ph > now { ph - now } else { soft_remaining };
                 let hard_remaining = hard_remaining.max(soft_remaining);
-                let floor = info.ponderhit_floor.load(std::sync::atomic::Ordering::Relaxed)
+                // Anti-stockpile floor — NOT the post-hit slice. The slice
+                // (`ponderhit_floor`) is what `should_stop` bands against and
+                // is by construction the whole remaining budget, so using it
+                // here pinned soft_floor to soft_limit: every ID-loop break
+                // below 1.0× soft landed in the stockpile sleep instead of a
+                // deeper iteration. `ponderhit_stockpile` is
+                // `compute_tm_budgets`' own small floor, capped at the
+                // remaining budget so it can never exceed it.
+                let floor = info.ponderhit_stockpile.load(std::sync::atomic::Ordering::Relaxed)
                     .min(soft_remaining);
                 info.tm_baseline = now;
                 info.soft_limit = soft_remaining;
@@ -4415,6 +4476,17 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
         // 10+0.1, where `inc == overhead == 100ms` makes soft_floor 0 by
         // coincidence — that disabled the forced-move detector at STC for
         // about -3 Elo.
+        //
+        // Post-ponderhit reachability: `soft_floor` used to be armed to the
+        // whole post-hit slice, which made `floor_dominates` unconditionally
+        // true and kept the detector off the ponder path entirely — an
+        // accidental guard, not a designed one. Now that soft_floor is the
+        // small anti-stockpile value, the detector IS reachable after a
+        // ponderhit, and `tm_no_inc` is the gate that has to hold. That is why
+        // the infinite branch of start_search classifies the clock: on the
+        // ponder path `tm_no_inc` was forced false, so a no-increment TC would
+        // otherwise have run the detector for the first time on exactly the
+        // configuration the no-inc gate was added for.
         let floor_dominates = info.soft_floor * 3 >= info.soft_limit;
         let no_inc = info.tm_no_inc;
         if info.tm_forced_state == ForcedState::None
@@ -9248,6 +9320,184 @@ mod tests {
         PONDERHIT_CREDIT_PCT.store(saved, Ordering::Relaxed);
         // Fresh-binary default is the sentinel.
         assert_eq!(saved, -1, "shipping default must be the -1 sentinel");
+    }
+
+    /// A quiet, clearly-not-forced middlegame with many legal moves and no
+    /// mate in sight — the ponder-arming tests need the ordinary ID-loop
+    /// path, not the single-legal-move shortcut (which zeroes the budget) or
+    /// the mate early-emit (which zeroes the floor).
+    const PONDER_ARMING_FEN: &str =
+        "r1bqk2r/pppp1ppp/2n2n2/2b1p3/2B1P3/3P1N2/PPP2PPP/RNBQK2R w KQkq - 0 1";
+
+    /// DEFECT B regression — the post-ponderhit path must classify the clock
+    /// from the clocks the GUI actually supplied.
+    ///
+    /// `go ponder` carries the real wtime/btime/winc/binc; uci.rs only forces
+    /// `infinite` on the copy it hands the search. The infinite branch used to
+    /// write none of the classification trio, so at a genuinely no-increment
+    /// TC `tm_no_inc` stayed false for the whole post-ponderhit search. That
+    /// sent the post-hit multiplier ceiling down the inc-cover branch with an
+    /// increment of zero — the discriminator for SMALL increments applied to
+    /// the absence of one — and it disarmed the no-inc skip on the
+    /// forced-move detector, which is the gate the interlock relies on now
+    /// that the arming floor no longer suppresses that detector by accident.
+    ///
+    /// No NNUE net is required (PeSTO fallback), so this test cannot skip.
+    #[test]
+    fn ponder_search_classifies_the_supplied_clock() {
+        use crate::board::Board;
+        crate::init();
+
+        let net_path = match super::test_net_path() {
+            Some(p) => p,
+            None => { eprintln!("Skipping ponder no-inc classification test: no NNUE net found"); return; }
+        };
+        let run = |wtime: u64, winc: u64, movestogo: u32| -> SearchInfo {
+            let mut info = SearchInfo::new(16);
+            info.silent = true;
+            info.load_nnue(&net_path).expect("net load must succeed");
+            // Dirty the trio the way a previous real `go` at an increment TC
+            // would leave it — the defect was invisible without this, because
+            // "never written" and "written false" look identical on a fresh
+            // SearchInfo.
+            info.tm_no_inc = false;
+            info.tm_our_inc = 12_345;
+            info.tm_time_left = 67_890;
+            let limits = SearchLimits {
+                depth: 4,
+                fixed_depth: true,
+                infinite: true, // uci.rs forces this for `go ponder`
+                wtime,
+                btime: wtime,
+                winc,
+                binc: winc,
+                movestogo,
+                ..SearchLimits::new()
+            };
+            let mut board = Board::from_fen(PONDER_ARMING_FEN);
+            let _ = search(&mut board, &mut info, &limits);
+            info
+        };
+
+        // 180+0 sudden death: the configuration the forced-move detector's
+        // no-inc skip exists for.
+        let no_inc = run(180_000, 0, 0);
+        assert!(no_inc.tm_no_inc,
+            "`go ponder` at a no-increment TC must classify as no-inc; \
+             tm_no_inc=false here leaves the post-hit multiplier on the \
+             inc-cover branch and disarms the forced-move detector's no-inc skip");
+        assert_eq!(no_inc.tm_our_inc, 0,
+            "stale increment from a previous search must not survive `go ponder`");
+        assert_eq!(no_inc.tm_time_left,
+                   180_000u64.saturating_sub(no_inc.move_overhead).max(1),
+            "time_left must come from the supplied clock, not the previous search");
+
+        // 60+1: an increment TC must NOT be classified no-inc.
+        let with_inc = run(60_000, 1_000, 0);
+        assert!(!with_inc.tm_no_inc, "an increment TC must not classify as no-inc");
+        assert_eq!(with_inc.tm_our_inc, 1_000);
+
+        // movestogo pacing is its own regime — the `our_time > 0` branch
+        // excludes it from no-inc, and this branch must agree.
+        let mtg = run(60_000, 0, 40);
+        assert!(!mtg.tm_no_inc,
+            "movestogo must not classify as no-inc — the two branches share the predicate");
+
+        // `go infinite` analysis supplies no clock: nothing to classify, and
+        // nothing may be invented.
+        let analysis = run(0, 0, 0);
+        assert!(!analysis.tm_no_inc);
+        assert_eq!(analysis.tm_our_inc, 0);
+        assert_eq!(analysis.tm_time_left, 0);
+    }
+
+    /// DEFECT A regression — on the armed post-ponderhit path `soft_floor`
+    /// must be the small anti-stockpile floor, NOT the whole post-hit slice.
+    ///
+    /// The ponderhit handler publishes the soft deadline as
+    /// `elapsed + slice`, so arming `soft_floor` from the same field made
+    /// `soft_floor == soft_limit` for every ponder length. Any ID-loop break
+    /// below 1.0x soft (a settled position: the stability factor is below 1
+    /// from two stable iterations on) then landed in the end-of-search
+    /// stockpile sleep instead of another iteration — identical clock spent,
+    /// strictly less search.
+    ///
+    /// No NNUE net is required (PeSTO fallback), so this test cannot skip.
+    #[test]
+    fn ponderhit_arming_floor_is_the_stockpile_floor_not_the_slice() {
+        use crate::board::Board;
+        crate::init();
+
+        // Reconstruct the handler's own arithmetic. 60+1 keeps this test off
+        // the no-inc leg, so a failure here is unambiguously the floor.
+        let our_time = 60_000u64;
+        let our_inc = 1_000u64;
+        let overhead = 100u64;
+        let (soft, hard, _max, stockpile) =
+            compute_tm_budgets(our_time, our_inc, 0, overhead, 20, true);
+        // A short ponder, charged in full: the slice is nearly the whole soft.
+        let elapsed = 200u64;
+        let slice = soft.saturating_sub(elapsed)
+            .max(MIN_POST_PONDERHIT_MS)
+            .min(hard.max(10));
+        assert!(slice > stockpile * 3,
+            "test premise: the post-hit slice ({}ms) must dominate the \
+             anti-stockpile floor ({}ms), else the defect is unobservable",
+            slice, stockpile);
+
+        let net_path = match super::test_net_path() {
+            Some(p) => p,
+            None => { eprintln!("Skipping ponderhit arming-floor test: no NNUE net found"); return; }
+        };
+        let mut info = SearchInfo::new(16);
+        info.silent = true;
+        info.load_nnue(&net_path).expect("net load must succeed");
+        info.move_overhead = overhead;
+        // Publish the deadline group exactly as the UCI thread does: every
+        // Relaxed store first, the hard deadline (the publish flag) Release
+        // last.
+        info.ponderhit_floor.store(slice, Ordering::Relaxed);
+        info.ponderhit_stockpile.store(stockpile, Ordering::Relaxed);
+        info.ponderhit_soft.store(elapsed + slice, Ordering::Relaxed);
+        info.ponderhit_isoft.store(soft, Ordering::Relaxed);
+        info.ponderhit_abs.store(elapsed + our_time, Ordering::Relaxed);
+        info.ponderhit_time.store(elapsed + hard, Ordering::Release);
+
+        let limits = SearchLimits {
+            depth: 6,
+            fixed_depth: true,
+            infinite: true, // uci.rs forces this for `go ponder`
+            wtime: our_time,
+            btime: our_time,
+            winc: our_inc,
+            binc: our_inc,
+            ..SearchLimits::new()
+        };
+        let mut board = Board::from_fen(PONDER_ARMING_FEN);
+        let _ = search(&mut board, &mut info, &limits);
+
+        assert!(info.soft_limit > 0,
+            "test premise: the post-ponderhit arming block must have run");
+        // The load-bearing relation. `floor_dominates` is
+        // `soft_floor * 3 >= soft_limit`; publishing the slice as the floor
+        // made it unconditionally true post-ponderhit, because the soft
+        // deadline IS elapsed + slice. (This test's `elapsed` is simulated, so
+        // the two land a few ms apart rather than exactly equal — the
+        // domination test is the faithful one, and `assert_ne!` below pins the
+        // literal identity the live path produces.)
+        assert!(info.soft_floor * 3 < info.soft_limit,
+            "soft_floor must not dominate the post-hit budget — that is the \
+             two-meanings defect (floor {}ms, limit {}ms)",
+            info.soft_floor, info.soft_limit);
+        assert_ne!(info.soft_floor, info.soft_limit,
+            "soft_floor must not BE the post-hit budget (floor {}ms, limit {}ms)",
+            info.soft_floor, info.soft_limit);
+        assert_eq!(info.soft_floor, stockpile,
+            "the armed floor must be compute_tm_budgets' anti-stockpile floor \
+             ({}ms), got {}ms", stockpile, info.soft_floor);
+        // The post-hit slice meaning must be preserved for should_stop.
+        assert_eq!(info.ponderhit_floor.load(Ordering::Relaxed), slice,
+            "ponderhit_floor must keep carrying the post-hit slice length");
     }
 
     /// Regression guard for the PV-print legality check. The pv_table can carry
