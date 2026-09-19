@@ -542,6 +542,22 @@ tunables!(
     // Fixed-point /10.
     (CORR_BONUS_CAP_DIV_10X, 38, 10, 160, 15.0, false),
     (CORR_HIST_GRAIN_T, 13, 1, 32, 1.55, false),
+    // Material damping for correction history. The block below deliberately
+    // had none, on the argument that the residual update baseline makes
+    // corrhist converge to a ~0 correction in low-signal positions, so a
+    // fortress guard would be redundant. Measured 2026-09-19 on 40 positions
+    // an external reference scores as dead draws: with corrhist ON our mean
+    // |error| is 17.8cp, with it OFF 8.4cp — it is FARTHER from the truth in
+    // 19 of the 40 and closer in 3. So the convergence argument does not hold
+    // empirically and the correction wants damping where the signal is weak.
+    //
+    // Shape: scale the blended correction by FLOOR/1024 at zero non-pawn
+    // material, ramping to full at RAMP. Both constants are in Coda's own
+    // material units (the same N=422/B=422/R=642/Q=1015 scale `eval()` uses
+    // for MAT_SCALE_BASE): RAMP defaults to one rook plus one minor per side,
+    // (642+422)*2 = 2128, and FLOOR to 1024/2 = half correction.
+    (CORR_MAT_RAMP, 2128, 0, 8000, 200.0, true),
+    (CORR_MAT_FLOOR, 512, 0, 1024, 60.0, true),
     // Correction-history output scaling — the output is scaled rather than the
     // input pre-clamped:
     //   bonus = err * (depth+1).min(W) / CORR_ERR_DIV
@@ -2313,7 +2329,24 @@ fn correction_value(info: &SearchInfo, board: &Board, ply: usize) -> i32 {
     } else { 0 };
     let total_corr = (pawn_corr * tp(&CORR_W_PAWN) as i64 + white_np_corr * tp(&CORR_W_NP) as i64 + black_np_corr * tp(&CORR_W_NP) as i64
         + cont_corr * tp(&CORR_W_CONT) as i64 + trans_corr * tp(&CORR_W_TRANS) as i64) / tp(&CORR_HIST_DIV) as i64;
-    (total_corr as i32) / tp(&CORR_HIST_GRAIN_T)
+    let corr = (total_corr as i32) / tp(&CORR_HIST_GRAIN_T);
+    // Damp where the position carries little non-pawn material (see the
+    // CORR_MAT_* tunables). Neutral setting short-circuits so the default
+    // costs nothing when the damp is disabled.
+    let floor = tp(&CORR_MAT_FLOOR);
+    if floor >= 1024 || corr == 0 {
+        return corr;
+    }
+    let ramp = tp(&CORR_MAT_RAMP);
+    if ramp <= 0 {
+        return corr;
+    }
+    let material = popcount(board.pieces[KNIGHT as usize]) as i32 * 422
+        + popcount(board.pieces[BISHOP as usize]) as i32 * 422
+        + popcount(board.pieces[ROOK as usize]) as i32 * 642
+        + popcount(board.pieces[QUEEN as usize]) as i32 * 1015;
+    let scale = floor + (1024 - floor) * material.min(ramp) / ramp;
+    corr * scale / 1024
 }
 
 /// Apply correction history to raw static eval.
