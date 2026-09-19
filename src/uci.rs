@@ -713,8 +713,11 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>) {
                 // only reads. Double-ponderhit guard: a ponderhit arriving
                 // before the new ponder search stores a real depth reads 0
                 // here → instant reply structurally blocked.
-                ponder_depth_flag.store(0, Ordering::Relaxed);
+                // Stability first, depth last (Release) — the same publish
+                // order the search thread uses, so depth stays the flag that
+                // validates the pair.
                 ponder_stab_flag.store(0, Ordering::Relaxed);
+                ponder_depth_flag.store(0, Ordering::Release);
                 root_fail_low_flag.store(false, Ordering::Relaxed);
                 // Clear the abandon-ponder suppress flag — this new search
                 // owns its bestmove emit. Set right before spawn so any value
@@ -1130,13 +1133,27 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>) {
                             crate::search::ponder_enabled());
 
                         // Instant-reply gate inputs (P1): the ponder search's
-                        // completed root depth and root fail-low state.
-                        // Relaxed loads — independent gate values, stale-
-                        // conservative by construction (see search.rs docs).
+                        // completed root depth, its best-move stability, and
+                        // root fail-low state.
+                        //
+                        // Depth and stability are a PAIR (the gate uses depth
+                        // for its floor and stability to index INSTANT_STAB_PCT),
+                        // published by the search thread as stability (Relaxed)
+                        // then depth (Release). So load depth FIRST with
+                        // Acquire and stability only after: the Acquire pairs
+                        // with that Release, so any depth we act on carries the
+                        // stability stored beside it. Reading them the other way
+                        // round can pair a fresh depth with a stale stability on
+                        // aarch64 — and the stale direction that matters is the
+                        // unsafe one, letting a just-destabilised root instant-
+                        // emit against the settled threshold.
+                        //
+                        // fail-low stays Relaxed: an independent bool gate with
+                        // no data dependency on the pair (see search.rs docs).
                         let ponder_depth =
-                            ponder_depth_flag.load(Ordering::Relaxed) as i32;
-                        let failing_low = root_fail_low_flag.load(Ordering::Relaxed);
+                            ponder_depth_flag.load(Ordering::Acquire) as i32;
                         let ponder_stab = ponder_stab_flag.load(Ordering::Relaxed);
+                        let failing_low = root_fail_low_flag.load(Ordering::Relaxed);
 
                         // Very low time (< 2s with no inc): instant stop.
                         if hard <= overhead && our_inc == 0 && our_time < 2000 {

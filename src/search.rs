@@ -1379,6 +1379,8 @@ pub struct SearchInfo {
     pub root_fail_low: std::sync::Arc<AtomicBool>,
     /// Completed search depth (shared atomic). Updated by search thread after
     /// each completed iteration. Read by UCI thread on ponderhit to scale budget.
+    /// Also the publish flag for the (depth, stability) pair: stored LAST with
+    /// Release, after `ponder_stability`, and loaded FIRST with Acquire.
     pub ponder_depth: std::sync::Arc<AtomicU64>,
     /// FL-EXT: count of fail-low deadline extensions granted in THIS post-hit
     /// search (main thread only writes; capped at PH_FL_MAX_EXTENSIONS).
@@ -1390,6 +1392,9 @@ pub struct SearchInfo {
     /// scales its elapsed-vs-soft threshold by the SAME stability table the
     /// dynamic TM uses (SF arms stopOnPonderhit against its instability-
     /// inflated optimum — an unstable-but-deep ponder must NOT instant-emit).
+    /// Published from the SAME iteration as `ponder_depth` and before it
+    /// (Relaxed store, Release store on depth) — the two are consumed as a
+    /// pair and a stability lagging its depth by one iteration is unsafe.
     pub ponder_stability: std::sync::Arc<AtomicU64>,
     pub sel_depth: i32,
     pub last_score: i32,
@@ -3533,8 +3538,11 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     // a ponderhit racing this line reads 0/false, which conservatively
     // blocks the instant reply. Stale values from the PREVIOUS search must
     // never satisfy the gate (double-ponderhit guard).
-    info.ponder_depth.store(0, std::sync::atomic::Ordering::Relaxed);
+    // Same store order as the per-iteration publish below: stability first,
+    // depth (the consumer's Acquire flag) last, so the invalidating depth == 0
+    // can never be observed alongside a stability from a previous search.
     info.ponder_stability.store(0, std::sync::atomic::Ordering::Relaxed);
+    info.ponder_depth.store(0, std::sync::atomic::Ordering::Release);
     info.root_fail_low.store(false, std::sync::atomic::Ordering::Relaxed);
     if !info.silent {
         info.ph_fl_active.store(false, std::sync::atomic::Ordering::Relaxed);
@@ -3976,8 +3984,74 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
         info.root_decided = depth >= tp(&SE_ROOT_DECIDED_DEPTH)
             && !is_decisive(score)
             && score.abs() >= tp(&SE_ROOT_DECIDED_CP);
-        info.ponder_depth.store(depth as u64, std::sync::atomic::Ordering::Relaxed);
+
+        // Track best-move stability and score trend on every iteration so
+        // that ponder iterations accumulate TM state — when ponderhit fires
+        // mid-deep-search, dynamic TM (below) can immediately see "best move
+        // has been stable for N iterations" and scale down accordingly. With
+        // tracking gated behind `soft_limit > 0`, ponderhit started cold
+        // (tm_best_stable = 0, stability_factor = 1.71) and the dynamic
+        // adjustment couldn't bite.
+        //
+        // This runs HERE, before the ponder pair is published below, because
+        // the instant-reply gate consumes (depth, stability) as a pair: it
+        // must see this iteration's stability, not the previous one's. Its
+        // inputs (`best_move`, `prev_score`) are both settled above and are
+        // not touched again anywhere in the rest of the loop body, and
+        // nothing between here and its old position reads the TM state it
+        // writes, so the move is behaviour-preserving — including the
+        // MultiPV>1 secondary-line searches, whose negamax calls never read
+        // tm_* state.
+        let score_drop = if depth >= 4 {
+            if info.tm_has_data {
+                if best_move == info.tm_prev_best {
+                    info.tm_best_stable += 1;
+                } else {
+                    info.tm_best_stable = 0;
+                    // Cumulative count of root best-move changes since
+                    // search start. Drives an upward multiplier on tactically
+                    // unstable positions (Stockfish's best-move-instability
+                    // multiplier pattern).
+                    info.tm_best_move_changes = info.tm_best_move_changes.saturating_add(1);
+                    // Publish main's change into its own slot (thread 0) of the
+                    // cross-thread bmc array (concept from SF). Read+reset in the TM block.
+                    info.thread_bmc[0].fetch_add(1, Ordering::Release);
+                }
+            }
+            let drop = if info.tm_has_data && !is_mate_score(prev_score) && !is_mate_score(info.tm_prev_score) {
+                info.tm_prev_score - prev_score
+            } else {
+                0
+            };
+            info.tm_prev_best = best_move;
+            info.tm_prev_score = prev_score;
+            info.tm_has_data = true;
+            drop
+        } else {
+            0
+        };
+
+        // Publish the instant-reply gate's (depth, stability) pair for this
+        // iteration. They are consumed TOGETHER by should_instant_reply —
+        // depth feeds the minimum-depth floor, stability indexes
+        // INSTANT_STAB_PCT — so a mismatched pair is not merely stale, it is
+        // unsafe in one direction: a root best-move CHANGE resets stability to
+        // 0, and pairing that iteration's depth with the pre-reset stability
+        // would score a ponderhit against the settled threshold and let a
+        // one-iteration-old move instant-emit, which is exactly what the gate
+        // exists to veto.
+        //
+        // Ordering follows the protocol the ponderhit deadline trio already
+        // uses in this file: the dependent field first (Relaxed), then the
+        // flag the consumer keys off LAST with Release. Depth is the flag —
+        // the gate rejects depth < MIN_PONDER_DEPTH_FOR_INSTANT, so a reader
+        // that has not yet observed a real depth never uses the stability
+        // beside it. The UCI thread loads depth with Acquire and reads
+        // stability only after; that pairs with this Release. Relaxed on both
+        // would leave the window unbounded on aarch64, where the store order
+        // is not otherwise guaranteed.
         info.ponder_stability.store(info.tm_best_stable.max(0) as u64, std::sync::atomic::Ordering::Relaxed);
+        info.ponder_depth.store(depth as u64, std::sync::atomic::Ordering::Release);
 
         // Snapshot the completed iteration's pv_table[0] so a future
         // mid-iteration interrupt can restore consistency between best_move
@@ -4167,41 +4241,8 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             info.pv_len[0] = saved_len;
         }
 
-        // Track best-move stability and score trend on every iteration so
-        // that ponder iterations accumulate TM state — when ponderhit fires
-        // mid-deep-search, dynamic TM (below) can immediately see "best move
-        // has been stable for N iterations" and scale down accordingly. With
-        // tracking gated behind `soft_limit > 0`, ponderhit started cold
-        // (tm_best_stable = 0, stability_factor = 1.71) and the dynamic
-        // adjustment couldn't bite.
-        let score_drop = if depth >= 4 {
-            if info.tm_has_data {
-                if best_move == info.tm_prev_best {
-                    info.tm_best_stable += 1;
-                } else {
-                    info.tm_best_stable = 0;
-                    // Cumulative count of root best-move changes since
-                    // search start. Drives an upward multiplier on tactically
-                    // unstable positions (Stockfish's best-move-instability
-                    // multiplier pattern).
-                    info.tm_best_move_changes = info.tm_best_move_changes.saturating_add(1);
-                    // Publish main's change into its own slot (thread 0) of the
-                    // cross-thread bmc array (concept from SF). Read+reset in the TM block.
-                    info.thread_bmc[0].fetch_add(1, Ordering::Release);
-                }
-            }
-            let drop = if info.tm_has_data && !is_mate_score(prev_score) && !is_mate_score(info.tm_prev_score) {
-                info.tm_prev_score - prev_score
-            } else {
-                0
-            };
-            info.tm_prev_best = best_move;
-            info.tm_prev_score = prev_score;
-            info.tm_has_data = true;
-            drop
-        } else {
-            0
-        };
+        // (Best-move stability and score trend are tracked earlier in this
+        // loop body, before the ponder pair is published — see there.)
 
         // Forced-move detection. Once-per-search verification
         // that the chosen best move is meaningfully better than all alternatives.
@@ -8696,6 +8737,75 @@ mod tests {
                 i, crate::types::move_to_uci(mv)
             );
         }
+    }
+
+    /// The ponderhit instant-reply gate consumes `ponder_depth` and
+    /// `ponder_stability` as a PAIR: depth feeds the minimum-depth floor and
+    /// stability indexes `INSTANT_STAB_PCT`. Both must therefore describe the
+    /// SAME completed iteration.
+    ///
+    /// They used not to: the pair was published before the iteration's
+    /// best-move stability was recomputed, so the stability shipped alongside
+    /// depth D was the one settled at D-1. The dangerous half is the root
+    /// best-move CHANGE: the counter resets to 0 only after the high pre-reset
+    /// value has already been published, so a ponderhit arriving right then was
+    /// scored against the settled 0.75x threshold instead of the unstable
+    /// 1.71x one, and could instant-emit a move that had survived exactly one
+    /// iteration.
+    #[test]
+    fn test_ponder_pair_published_from_same_iteration() {
+        use crate::board::Board;
+
+        crate::init();
+        let net_path = match super::test_net_path() {
+            Some(p) => p,
+            None => { eprintln!("Skipping ponder-pair test: no NNUE net found"); return; }
+        };
+        let mut info = SearchInfo::new(16);
+        info.silent = true;
+        if let Err(e) = info.load_nnue(&net_path) {
+            eprintln!("Skipping ponder-pair test: net load failed: {}", e);
+            return;
+        }
+
+        // Italian/Two Knights tabiya: the root best move genuinely changes
+        // across iterations here, which is the only case the lag can be
+        // observed in (a root that never changes keeps the counter monotone).
+        let mut board = Board::from_fen(
+            "r1bqkb1r/pppp1ppp/2n2n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4");
+
+        let limits = SearchLimits {
+            depth: 10, // >= MIN_PONDER_DEPTH_FOR_INSTANT, so the gate is live
+            fixed_depth: true,
+            movetime: 0,
+            wtime: 0, btime: 0, winc: 0, binc: 0,
+            movestogo: 0, nodes: 0, infinite: false,
+            movetime_floor: 0,
+            min_think_ms: 0,
+            abs_clock: 0,
+        };
+
+        search(&mut board, &mut info, &limits);
+
+        let published_depth = info.ponder_depth.load(Ordering::Acquire) as i32;
+        let published_stab = info.ponder_stability.load(Ordering::Relaxed) as i32;
+
+        assert_eq!(
+            published_depth, info.completed_depth,
+            "ponder_depth = {} but the last completed iteration was depth {} — \
+             the instant-reply gate would apply its minimum-depth floor to a \
+             depth the search never finished",
+            published_depth, info.completed_depth
+        );
+        assert_eq!(
+            published_stab, info.tm_best_stable.max(0),
+            "ponder_depth = {} was published with stability {}, but the \
+             stability settled at that depth is {} — the pair is consumed \
+             together, so a ponderhit here would index INSTANT_STAB_PCT with a \
+             previous iteration's stability and could instant-emit a root move \
+             that has survived only one iteration",
+            published_depth, published_stab, info.tm_best_stable.max(0)
+        );
     }
 
     /// Correction-history update primitive (`update_corr_entry`) must:
