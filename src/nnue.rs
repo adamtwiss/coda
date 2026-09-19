@@ -8733,21 +8733,15 @@ mod tests {
 
         crate::init();
 
-        let net_path = if std::path::Path::new("net.nnue").exists() {
-            "net.nnue".to_string()
-        } else {
-            let entries = std::fs::read_dir(".").ok();
-            match entries.and_then(|e| {
-                e.filter_map(|f| f.ok())
-                    .find(|f| {
-                        let name = f.file_name().to_string_lossy().to_string();
-                        name.starts_with("net-v") && name.ends_with(".nnue")
-                    })
-                    .map(|f| f.path().to_string_lossy().to_string())
-            }) {
-                Some(p) => p,
-                None => { eprintln!("Skipping Finny test: no .nnue file"); return; }
-            }
+        // Resolve the net the way every other net-using test does: CODA_TEST_NET
+        // first, then the net named by net.txt. This used to glob the working
+        // directory for `net.nnue` or `net-v*.nnue`; the `net-v*` pattern
+        // predates the hash-based net naming (net-{HASH}.nnue), so no current
+        // production net matched it and the test skipped on a clean checkout
+        // while still reporting ok.
+        let net_path = match crate::search::test_net_path() {
+            Some(p) => p,
+            None => { eprintln!("Skipping Finny test: no NNUE net found"); return; }
         };
 
         let net = match NNUENet::load(&net_path) {

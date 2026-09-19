@@ -1074,49 +1074,132 @@ impl SearchLimits {
     }
 }
 
-/// Pruning counters for diagnostics.
-#[derive(Default)]
-pub struct PruneStats {
-    pub tt_probes: u64,
-    pub tt_hits: u64,
-    pub tt_cross_gen_hits: u64,
-    pub tt_cross_gen_cutoffs: u64,
-    pub tt_cutoffs: u64,
-    pub tt_near_miss: u64,
-    pub nmp_attempts: u64,
-    pub nmp_cutoffs: u64,
-    pub nmp_verify: u64,
-    pub nmp_verify_fail: u64,
-    pub rfp_cutoffs: u64,
-    pub razor_cutoffs: u64,
-    pub lmp_prunes: u64,
-    pub futility_prunes: u64,
-    pub see_prunes: u64,
-    pub probcut_cutoffs: u64,
-    pub lmr_searches: u64,
-    pub singular_ext: u64,
-    pub double_ext: u64,
-    pub negative_ext: u64,
-    pub multicut: u64,
-    pub qnodes: u64,
-    pub beta_cutoffs: u64,
-    pub first_move_cutoffs: u64,
+/// Element-wise accumulation for one `PruneStats` field, so the merge below
+/// can be generated instead of hand-listed. Implemented for the scalar counter
+/// and, recursively, for arrays of counters, which covers every field shape the
+/// struct uses ([u64; N] and [[u64; N]; M]).
+trait StatField {
+    fn stat_add(&mut self, other: &Self);
+    /// Set every counter in the field to `v` (test support for the
+    /// every-field-merged guard).
+    #[cfg(test)]
+    fn stat_fill(&mut self, v: u64);
+    /// Sum of the field's counters, and how many there are.
+    #[cfg(test)]
+    fn stat_sum(&self) -> u64;
+    #[cfg(test)]
+    fn stat_cells(&self) -> usize;
+}
+
+impl StatField for u64 {
+    #[inline]
+    fn stat_add(&mut self, other: &Self) { *self += *other; }
+    #[cfg(test)]
+    fn stat_fill(&mut self, v: u64) { *self = v; }
+    #[cfg(test)]
+    fn stat_sum(&self) -> u64 { *self }
+    #[cfg(test)]
+    fn stat_cells(&self) -> usize { 1 }
+}
+
+impl<T: StatField, const N: usize> StatField for [T; N] {
+    #[inline]
+    fn stat_add(&mut self, other: &Self) {
+        for i in 0..N { self[i].stat_add(&other[i]); }
+    }
+    #[cfg(test)]
+    fn stat_fill(&mut self, v: u64) { for c in self.iter_mut() { c.stat_fill(v); } }
+    #[cfg(test)]
+    fn stat_sum(&self) -> u64 { self.iter().map(|c| c.stat_sum()).sum() }
+    #[cfg(test)]
+    fn stat_cells(&self) -> usize { self.iter().map(|c| c.stat_cells()).sum() }
+}
+
+/// Declares `PruneStats` and generates its merge from the same field list.
+///
+/// The bench aggregates 48 per-position `PruneStats` into one total, and that
+/// used to be a hand-written list of `total += info.stats.field` lines. A field
+/// missing from the list aggregated as 0 — indistinguishable from a code path
+/// that never ran, which is the worst possible failure mode for a diagnostic
+/// counter, and it had already happened once (ts_lmr_research read 0 in every
+/// bench report that touched it, 2026-09-06). Generating the struct and
+/// `merge_from` from one list makes that impossible: a counter can only exist
+/// by being declared here, and declaring it here merges it.
+macro_rules! prune_stats {
+    ($($name:ident : $ty:ty),* $(,)?) => {
+        /// Pruning counters for diagnostics.
+        #[derive(Default)]
+        pub struct PruneStats {
+            $(pub $name: $ty,)*
+        }
+
+        impl PruneStats {
+            /// Accumulate `other` into `self`, counter by counter. Plain
+            /// addition, as the hand-written bench merge used — this changes
+            /// how the totals are assembled, never what any counter means.
+            pub fn merge_from(&mut self, other: &PruneStats) {
+                $(self.$name.stat_add(&other.$name);)*
+            }
+
+            /// Every counter set to `v` — test support only.
+            #[cfg(test)]
+            fn filled_for_test(v: u64) -> PruneStats {
+                let mut s = PruneStats::default();
+                $(s.$name.stat_fill(v);)*
+                s
+            }
+
+            /// (field name, sum of its counters, how many counters it has) for
+            /// every field — test support only.
+            #[cfg(test)]
+            fn field_sums_for_test(&self) -> Vec<(&'static str, u64, usize)> {
+                vec![$((stringify!($name), self.$name.stat_sum(), self.$name.stat_cells()),)*]
+            }
+        }
+    };
+}
+
+prune_stats! {
+    tt_probes: u64,
+    tt_hits: u64,
+    tt_cross_gen_hits: u64,
+    tt_cross_gen_cutoffs: u64,
+    tt_cutoffs: u64,
+    tt_near_miss: u64,
+    nmp_attempts: u64,
+    nmp_cutoffs: u64,
+    nmp_verify: u64,
+    nmp_verify_fail: u64,
+    rfp_cutoffs: u64,
+    razor_cutoffs: u64,
+    lmp_prunes: u64,
+    futility_prunes: u64,
+    see_prunes: u64,
+    probcut_cutoffs: u64,
+    lmr_searches: u64,
+    singular_ext: u64,
+    double_ext: u64,
+    negative_ext: u64,
+    multicut: u64,
+    qnodes: u64,
+    beta_cutoffs: u64,
+    first_move_cutoffs: u64,
     // fh1 source split: [tt_move, noisy, quiet]
-    pub cut_by_source: [u64; 3],
-    pub first_cut_by_source: [u64; 3],
+    cut_by_source: [u64; 3],
+    first_cut_by_source: [u64; 3],
     // fh1 conditioned on TT-move presence: [no_tt, has_tt]
-    pub cut_by_ttpresence: [u64; 2],
-    pub first_cut_by_ttpresence: [u64; 2],
+    cut_by_ttpresence: [u64; 2],
+    first_cut_by_ttpresence: [u64; 2],
     // RFP-audit FP bucketed by corr-source spread (cp): [<8, 8-24, >=24]
-    pub rfp_audit_var_attempts: [u64; 3],
-    pub rfp_audit_var_fp: [u64; 3],
-    pub cut_quiet_rank1: u64,
-    pub cut_quiet_rank_sum: u64,
+    rfp_audit_var_attempts: [u64; 3],
+    rfp_audit_var_fp: [u64; 3],
+    cut_quiet_rank1: u64,
+    cut_quiet_rank_sum: u64,
     // Dual-net dispatch instrumentation: |material-proxy| buckets of 100
     // SEE units, index 11 = 1100+.
-    pub dualnet_evals: [u64; 12],
-    pub dualnet_abseval: [u64; 12],
-    pub dualnet_neareq: [u64; 12],
+    dualnet_evals: [u64; 12],
+    dualnet_abseval: [u64; 12],
+    dualnet_neareq: [u64; 12],
     // Fail-low node histogram, indexed
     // [depth band 0-2][margin band 0-3][quiet-count band 0-3]:
     // depth {<=4, 5-8, >=9}, margin {<50, 50-150, 150-300, >=300}cp,
@@ -1126,36 +1209,36 @@ pub struct PruneStats {
     // v10 net 2026-08-17: the tail at margin>=150 (the only safely prunable
     // part) is ~1% of all move-searches, so that idea is closed. Kept
     // because it is the standing measurement of fail-low node shape.
-    pub b_probe_nodes: [[u64; 16]; 3],
-    pub b_probe_quiets: [[u64; 16]; 3],
-    pub b_probe_late: [[u64; 16]; 3],
-    pub moves_searched: u64,
+    b_probe_nodes: [[u64; 16]; 3],
+    b_probe_quiets: [[u64; 16]; 3],
+    b_probe_late: [[u64; 16]; 3],
+    moves_searched: u64,
     // Move ordering quality: sum of move_count² at beta cutoff (lower = better ordering)
-    pub cutoff_movecount_sq_sum: u64,
-    pub cutoff_movecount_sum: u64,
+    cutoff_movecount_sq_sum: u64,
+    cutoff_movecount_sum: u64,
     // RFP false-positive audit (diagnostic, env RFP_AUDIT=1). At each RFP
     // cutoff, additionally run an NMP-style null-move verification (same R
     // formula as real NMP) and count cutoffs the null search REJECTS
     // (null_score < beta), bucketed by remaining depth. Answers "is RFP's
     // expanded habitat cutting nodes a dynamic threat check would refuse?"
     // Behavior-preserving: the RFP cutoff is returned regardless.
-    pub rfp_audit_attempts: [u64; 24],
-    pub rfp_audit_fp: [u64; 24],
+    rfp_audit_attempts: [u64; 24],
+    rfp_audit_fp: [u64; 24],
     // TREESTATS parity counters, for tree-shape comparison against an
     // instrumented SF build; dumped by the UCI `treestats` command in the same
     // line format that patch emits. Bucket 0 = qsearch;
     // interior nodes bucket by ENTRY depth min(31) — same convention both
     // sides so per-depth lines stay mutually consistent. Reset per `go`
     // (Coda's existing stats convention; harness dumps after each go).
-    pub nodes_by_depth: [u64; 32],
-    pub cuts_by_depth: [u64; 32],
-    pub first_cuts_by_depth: [u64; 32],
-    pub width_sum_by_depth: [u64; 32],
-    pub width_cnt_by_depth: [u64; 32],
-    pub ts_lmr_research: u64,
-    pub ts_lmr_failhigh: u64,
-    pub ts_asp_fail_low: u64,
-    pub ts_asp_fail_high: u64,
+    nodes_by_depth: [u64; 32],
+    cuts_by_depth: [u64; 32],
+    first_cuts_by_depth: [u64; 32],
+    width_sum_by_depth: [u64; 32],
+    width_cnt_by_depth: [u64; 32],
+    ts_lmr_research: u64,
+    ts_lmr_failhigh: u64,
+    ts_asp_fail_low: u64,
+    ts_asp_fail_high: u64,
 }
 
 /// Forced-move detection state (set by `detect_forced_move`).
@@ -1797,6 +1880,33 @@ impl SearchInfo {
         self.cont.clear();
         self.clear_pawn_hist();
         self.clear_correction_history();
+    }
+
+    /// Read and clear the cross-thread best-move-change slots, returning the
+    /// total. This is a ONE-ITERATION window: every completed root iteration
+    /// that changes a thread's best move adds one to that thread's slot, and
+    /// the consumer (`bmc_instability_factor`) divides by the thread count, so
+    /// "every thread changed once" — total == num_threads — is the intended
+    /// maximum. The drain therefore has to happen once per root iteration,
+    /// unconditionally; see the call site in `search`.
+    ///
+    /// `swap(AcqRel)` and not `Relaxed`: the writers publish with `Release`
+    /// (main's own slot and every helper's), so the drain needs the paired
+    /// `Acquire` to be guaranteed to observe them on a weakly-ordered target
+    /// such as aarch64, and the `Release` half so a helper's next `fetch_add`
+    /// cannot be reordered ahead of the zeroing it must follow.
+    ///
+    /// Not gated on `num_threads > 1`, because the write side is not: main
+    /// adds to slot 0 on every root best-move change whatever the thread
+    /// count, while the per-search reset runs only on the threads > 1 path.
+    /// An ungated drain is what keeps slot 0 from accumulating across a whole
+    /// single-threaded game.
+    pub fn take_bmc_window(&self) -> u32 {
+        let mut total: u32 = 0;
+        for slot in self.thread_bmc.iter().take(self.num_threads.max(1)) {
+            total = total.saturating_add(slot.swap(0, Ordering::AcqRel));
+        }
+        total
     }
 
     #[cfg(test)]
@@ -2774,6 +2884,29 @@ pub(crate) fn nnue_net_identity(info: &SearchInfo) -> usize {
         .as_ref()
         .map(|n| std::sync::Arc::as_ptr(n) as *const () as usize)
         .unwrap_or(0)
+}
+
+/// Dynamic-TM factor 6: cross-thread best-move instability (Threads > 1 only).
+///
+/// `window` is one iteration's best-move changes summed over the pool (see
+/// `SearchInfo::take_bmc_window`), normalized by the thread count so the factor
+/// means "what fraction of the pool changed its mind this iteration", not "how
+/// many threads are running". Scales time UP when the pool is collectively
+/// still churning — main may have momentarily settled while helpers disagree,
+/// which its own stability table cannot see.
+///
+/// With the live knobs (TM_BMC_INSTAB_BASE 1000, TM_BMC_INSTAB_MULT 2315) the
+/// per-iteration range is 1.00 (nobody changed) to 1.00 + 2.315 = 3.32 (every
+/// thread changed). That ceiling is a property of the window being ONE
+/// iteration wide: a window that banks several iterations of changes has no
+/// bound and saturates the multiplier product against tm_max_time.
+fn bmc_instability_factor(window: u32, num_threads: usize) -> f64 {
+    if num_threads <= 1 {
+        return 1.0;
+    }
+    let base = tp(&TM_BMC_INSTAB_BASE) as f64 / 1000.0;
+    let mult = tp(&TM_BMC_INSTAB_MULT) as f64 / 1000.0;
+    base + mult * (window as f64) / (num_threads as f64)
 }
 
 /// Compute time-management budgets from clock state. Returns
@@ -4325,6 +4458,32 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             }
         }
 
+        // Drain the cross-thread best-move-change slots on EVERY completed
+        // iteration, before the dynamic-TM block below may or may not consume
+        // them. The slots are a one-iteration window (see take_bmc_window);
+        // draining inside the TM block instead made the window as wide as the
+        // gap between two iterations that both satisfy
+        // `soft_limit > 0 && depth >= 4 && !should_stop()`.
+        //
+        // That gap is the whole ponder. `go ponder` runs with soft_limit == 0
+        // (UCI marks the search infinite and no budget exists until
+        // ponderhit), so every ponder iteration's changes piled into one
+        // window and the FIRST post-ponderhit iteration read them as though a
+        // single iteration had produced them. With the live knobs the intended
+        // per-iteration maximum is 1.00 + 2.315 = 3.32; a 30-iteration ponder
+        // on 4 threads banking ~30 changes gives 1.00 + 2.315 * 30/4 = 18.4,
+        // which pins the factor product at the increment ceiling and then at
+        // tm_max_time — roughly one extra iteration of spend, at the frontier
+        // about a doubling of the first post-hit iteration. Depths 1-3 and
+        // stopped iterations bank the same way, just narrower.
+        //
+        // Unconditional rather than a one-shot drain at the post-ponderhit
+        // arming block: arming is one of several ways to skip the TM block,
+        // and this keeps the invariant "the slots hold changes since main's
+        // previous completed iteration" true on every path, including
+        // Threads == 1 where the write side is ungated too.
+        let bmc_window = info.take_bmc_window();
+
         // Dynamic TM: a multiplicative factor product applied to the soft
         // budget, clamped to max_time — there is no separate cap. A bounded
         // product (~9.5× max) against a wide hard window (46% of clock, from
@@ -4467,24 +4626,10 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             // Combined multiplier — the standard factors + score-trend + cross-thread.
             // Max product ~ 2.50 × 1.68 × 1.0 × 2.27 × 1.45 = 13.8×
             // Min product ~ 0.75 × 1.0  × 0.386 × 0.87 × 0.80 = 0.20×
-            // Factor 6: cross-thread best-move instability (concept from SF, Threads>1
-            // only). Sum this iteration's best-move changes across ALL threads,
-            // normalize by thread count, and scale time UP when the pool is
-            // collectively still churning — main may have momentarily settled
-            // while helpers disagree, which its own stability table can't see.
-            // Reset the per-thread slots after reading (per-iteration window).
-            let cross_thread_instability = if info.num_threads > 1 {
-                let n = info.num_threads;
-                let mut total: u32 = 0;
-                for slot in info.thread_bmc.iter().take(n) {
-                    total = total.saturating_add(slot.swap(0, Ordering::AcqRel));
-                }
-                let base = tp(&TM_BMC_INSTAB_BASE) as f64 / 1000.0;
-                let mult = tp(&TM_BMC_INSTAB_MULT) as f64 / 1000.0;
-                base + mult * (total as f64) / (n as f64)
-            } else {
-                1.0
-            };
+            // Factor 6: cross-thread best-move instability (concept from SF,
+            // Threads>1 only) — this iteration's pool-wide best-move changes,
+            // drained above. See `bmc_instability_factor`.
+            let cross_thread_instability = bmc_instability_factor(bmc_window, info.num_threads);
 
             let mut multiplier = stability_multiplier
                 * failed_low_multiplier
@@ -7998,67 +8143,11 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
         let _mv = search(&mut board, &mut info, &limits);
         total_nodes += info.nodes;
 
-        // Accumulate stats across all positions
-        total_stats.tt_probes += info.stats.tt_probes;
-        // These two were accumulated per search but never summed here, so the
-        // bench readout could not show them (2026-09-06 audit).
-        total_stats.ts_lmr_research += info.stats.ts_lmr_research;
-        total_stats.ts_lmr_failhigh += info.stats.ts_lmr_failhigh;
-        // ts_lmr_research was collected but never merged, so it read 0 in every
-        // bench report that touched it.
-        total_stats.ts_asp_fail_low += info.stats.ts_asp_fail_low;
-        total_stats.ts_asp_fail_high += info.stats.ts_asp_fail_high;
-        total_stats.tt_hits += info.stats.tt_hits;
-        total_stats.tt_cross_gen_hits += info.stats.tt_cross_gen_hits;
-        total_stats.tt_cross_gen_cutoffs += info.stats.tt_cross_gen_cutoffs;
-        total_stats.tt_cutoffs += info.stats.tt_cutoffs;
-        total_stats.tt_near_miss += info.stats.tt_near_miss;
-        total_stats.nmp_attempts += info.stats.nmp_attempts;
-        total_stats.nmp_cutoffs += info.stats.nmp_cutoffs;
-        total_stats.rfp_cutoffs += info.stats.rfp_cutoffs;
-        total_stats.lmp_prunes += info.stats.lmp_prunes;
-        total_stats.futility_prunes += info.stats.futility_prunes;
-        total_stats.see_prunes += info.stats.see_prunes;
-        total_stats.probcut_cutoffs += info.stats.probcut_cutoffs;
-        total_stats.lmr_searches += info.stats.lmr_searches;
-        total_stats.singular_ext += info.stats.singular_ext;
-        total_stats.double_ext += info.stats.double_ext;
-        total_stats.negative_ext += info.stats.negative_ext;
-        total_stats.multicut += info.stats.multicut;
-        total_stats.qnodes += info.stats.qnodes;
-        total_stats.beta_cutoffs += info.stats.beta_cutoffs;
-        total_stats.first_move_cutoffs += info.stats.first_move_cutoffs;
-        for i in 0..3 {
-            total_stats.cut_by_source[i] += info.stats.cut_by_source[i];
-            total_stats.first_cut_by_source[i] += info.stats.first_cut_by_source[i];
-            total_stats.rfp_audit_var_attempts[i] += info.stats.rfp_audit_var_attempts[i];
-            total_stats.rfp_audit_var_fp[i] += info.stats.rfp_audit_var_fp[i];
-        }
-        for i in 0..2 {
-            total_stats.cut_by_ttpresence[i] += info.stats.cut_by_ttpresence[i];
-            total_stats.first_cut_by_ttpresence[i] += info.stats.first_cut_by_ttpresence[i];
-        }
-        total_stats.cut_quiet_rank1 += info.stats.cut_quiet_rank1;
-        total_stats.cut_quiet_rank_sum += info.stats.cut_quiet_rank_sum;
-        for i in 0..12 {
-            total_stats.dualnet_evals[i] += info.stats.dualnet_evals[i];
-            total_stats.dualnet_abseval[i] += info.stats.dualnet_abseval[i];
-            total_stats.dualnet_neareq[i] += info.stats.dualnet_neareq[i];
-        }
-        for d in 0..3 {
-            for i in 0..16 {
-                total_stats.b_probe_nodes[d][i] += info.stats.b_probe_nodes[d][i];
-                total_stats.b_probe_quiets[d][i] += info.stats.b_probe_quiets[d][i];
-                total_stats.b_probe_late[d][i] += info.stats.b_probe_late[d][i];
-            }
-        }
-        total_stats.moves_searched += info.stats.moves_searched;
-        total_stats.cutoff_movecount_sum += info.stats.cutoff_movecount_sum;
-        total_stats.cutoff_movecount_sq_sum += info.stats.cutoff_movecount_sq_sum;
-        for d in 0..24 {
-            total_stats.rfp_audit_attempts[d] += info.stats.rfp_audit_attempts[d];
-            total_stats.rfp_audit_fp[d] += info.stats.rfp_audit_fp[d];
-        }
+        // Accumulate stats across all positions. Generated from the field
+        // list of the `prune_stats!` declaration, so a counter added there is
+        // aggregated here by construction — the hand-written merge this
+        // replaced could silently total a live counter as 0.
+        total_stats.merge_from(&info.stats);
 
         // Accumulate EBF data across all positions
         let max_d = info.completed_depth as usize;
@@ -8464,6 +8553,98 @@ mod tests {
         let _ = negamax(&mut board, &mut info, -1, 0, 7, 1, true);
         assert!(info.nodes > 1, "rejected bound must not return via TT narrowing");
         assert_eq!(board.hash, hash);
+    }
+
+    /// A `go ponder` search is infinite with no clock, so `soft_limit` stays 0
+    /// for its whole duration and the dynamic-TM block — which used to be the
+    /// only place the cross-thread best-move-change slots were drained — never
+    /// runs. The slots are a ONE-ITERATION window, so the root loop has to
+    /// drain them itself; otherwise the first post-ponderhit iteration inherits
+    /// every ponder iteration's churn as if it were its own.
+    ///
+    /// The limits below are that shape (infinite, no clock), and the slots are
+    /// pre-loaded as a long ponder would leave them.
+    #[test]
+    fn root_iterations_drain_the_cross_thread_bmc_window() {
+        crate::init();
+        let Some(net) = test_net_path() else {
+            eprintln!("Skipping root_iterations_drain_the_cross_thread_bmc_window: \
+                       no NNUE net found (set CODA_TEST_NET or fetch the net.txt net)");
+            return;
+        };
+        let mut info = SearchInfo::new(16);
+        info.load_nnue(&net).unwrap();
+        info.silent = true;
+        const THREADS: usize = 4;
+        const PONDER_ITERS: u32 = 30;
+        info.num_threads = THREADS;
+        // A 30-iteration ponder on 4 threads with every thread changing its
+        // best move every iteration — the worst case a ponder can bank.
+        for slot in info.thread_bmc.iter().take(THREADS) {
+            slot.store(PONDER_ITERS, Ordering::Relaxed);
+        }
+        let limits = SearchLimits {
+            depth: 6,
+            fixed_depth: true,
+            infinite: true,
+            ..SearchLimits::new()
+        };
+        assert_eq!(limits.movetime, 0, "the ponder shape has no clock");
+        let mut board = Board::from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+        let _ = search(&mut board, &mut info, &limits);
+        assert_eq!(info.soft_limit, 0, "this search must have no soft limit, or it is not the ponder path");
+        let left: u32 = info.thread_bmc.iter().take(THREADS)
+            .map(|s| s.load(Ordering::Acquire)).sum();
+        assert_eq!(left, 0,
+                   "root iterations must drain the cross-thread bmc window even with no soft limit; \
+                    {} changes were still banked for the first post-ponderhit iteration", left);
+    }
+
+    /// The instability factor is normalized by thread count, so "every thread
+    /// changed once" is one fixed ceiling at any `Threads` setting — and a
+    /// window that banks N iterations of that is N times as far above the idle
+    /// rail, with no bound of its own. That is the whole reason the drain has
+    /// to happen once per iteration.
+    #[test]
+    fn bmc_instability_ceiling_is_one_change_per_thread() {
+        let idle = bmc_instability_factor(0, 2);
+        let ceiling = bmc_instability_factor(2, 2);
+        assert!(ceiling > idle, "a churning pool must ask for more time, not less");
+        for n in [2usize, 4, 8, 16, 64] {
+            assert_eq!(bmc_instability_factor(0, n), idle, "idle rail must not depend on thread count");
+            assert!((bmc_instability_factor(n as u32, n) - ceiling).abs() < 1e-9,
+                    "one change per thread must be the same ceiling at Threads={}", n);
+            // 30 banked iterations of the ceiling window sit 30 increments
+            // above the idle rail — unbounded in the window width.
+            let banked = bmc_instability_factor(30 * n as u32, n);
+            assert!((banked - idle - 30.0 * (ceiling - idle)).abs() < 1e-9,
+                    "an undrained window scales linearly past the ceiling at Threads={}", n);
+            assert!(banked > 5.0 * ceiling, "30 banked iterations must be far past the per-iteration ceiling");
+        }
+        // Threads <= 1 has no cross-thread signal: the factor is inert, even
+        // though main writes its own slot at every thread count.
+        assert_eq!(bmc_instability_factor(30, 1), 1.0);
+        assert_eq!(bmc_instability_factor(30, 0), 1.0);
+    }
+
+    /// Every `PruneStats` counter must survive the bench merge. The generated
+    /// `merge_from` makes omission impossible — a counter exists only by being
+    /// in the `prune_stats!` field list, and being in that list is what merges
+    /// it — so this guards the per-shape `stat_add` implementations that
+    /// generation rests on: fill one set of counters with 1 and another with 2,
+    /// merge, and every single counter (not just every field) must read 3.
+    #[test]
+    fn bench_merge_covers_every_prune_stats_counter() {
+        let mut a = PruneStats::filled_for_test(1);
+        let b = PruneStats::filled_for_test(2);
+        a.merge_from(&b);
+        let fields = a.field_sums_for_test();
+        assert!(fields.len() > 40, "field list looks truncated: {} fields", fields.len());
+        for (name, sum, cells) in fields {
+            assert!(cells > 0, "field {} reports no counters", name);
+            assert_eq!(sum, 3 * cells as u64,
+                       "field {} did not merge every counter ({} over {} counters)", name, sum, cells);
+        }
     }
 
     #[test]
