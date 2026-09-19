@@ -825,6 +825,10 @@ pub const PH_FL_MAX_EXTENSIONS: u32 = 2;
 /// which are routine noise — burn the entire extension budget within
 /// milliseconds. Only a fail-low at a real search frontier signals genuine
 /// destabilization.
+///
+/// EXTENSION ONLY. This is an argument about spending the budget, so it does
+/// not gate the `ph_fl_active` soft-band suspension, which is a correctness
+/// guard (see `ph_fl_on_root_fail_low`).
 pub const PH_FL_MIN_DEPTH: i32 = 10;
 
 /// stopOnPonderhit-class instant-reply decision (SF stopOnPonderhit
@@ -1434,8 +1438,10 @@ pub struct SearchInfo {
     /// inflate the optimum by the same capped fail-low factor the plain-`go`
     /// path uses (soft x the factor, with the event count capped).
     pub ponderhit_isoft: std::sync::Arc<AtomicU64>,
-    /// FL-EXT v3: MAIN thread's "deep root fail-low unresolved in the
-    /// post-hit frame" state. While true, should_stop suspends the
+    /// FL-EXT v3: MAIN thread's "root fail-low unresolved in the
+    /// post-hit frame" state (armed at any root depth, and independently of
+    /// the `ph_fl_extensions` deadline-inflation budget — it is a safety
+    /// guard, not a spend). While true, should_stop suspends the
     /// mid-iteration soft band (hard + abs still bind): a
     /// root fail-low revokes the optimum stop entirely; only maximum time
     /// bounds the re-think (the >1s tail source; a soft multiple cannot
@@ -1884,6 +1890,84 @@ impl SearchInfo {
             }
         }
         false
+    }
+
+    /// Post-ponderhit root fail-low bookkeeping. Main thread only (helpers
+    /// are silent, and their aspiration state must not clobber the shared
+    /// flag). Inert outside a post-hit frame, where `ponderhit_time` is 0.
+    ///
+    /// TWO INDEPENDENT MECHANISMS, deliberately no longer sharing a gate:
+    ///
+    /// 1. SAFETY — `ph_fl_active`. While the main thread's root fail-low is
+    ///    unresolved, `should_stop` suspends the mid-iteration soft band so
+    ///    the shared soft stopper cannot cut the root re-search exactly while
+    ///    the root conclusion is collapsing (a fail-low leaves `pv_len[0]`
+    ///    empty, so a cut there restores the stable PV and emits the
+    ///    PRE-collapse move). Hard and absolute deadlines keep binding, and
+    ///    the flag self-clears the moment the window resolves, so the cost of
+    ///    arming it is bounded by how long the re-search takes.
+    ///
+    /// 2. BUDGET — `ph_fl_extensions`, capped at PH_FL_MAX_EXTENSIONS. Each
+    ///    event inflates the post-hit deadlines in the from-go-ponder frame:
+    ///      allowed(from go ponder) = intended_soft x (1 + PH_FL_HARD_EXT_PCT n)
+    ///    The cap is what stops a storm of misses compounding the deadline,
+    ///    and PH_FL_MIN_DEPTH keeps routine shallow aspiration noise from
+    ///    burning that budget in milliseconds. Long ponders (elapsed already
+    ///    past the inflated optimum) correctly get nothing. Every push
+    ///    saturates at `ponderhit_abs` — the forfeit wall never moves.
+    ///
+    /// These were nested, so a spent budget silently revoked the safety for
+    /// the rest of the search, and the depth floor — an argument about budget,
+    /// not about correctness — withheld it below PH_FL_MIN_DEPTH. Meanwhile
+    /// `root_fail_low`, the UCI-side half of the very same veto, is published
+    /// unconditionally just above the call site. The two halves disagreed, and
+    /// only under a rare enough interleaving to stay invisible. The safety now
+    /// arms on its own terms, which is also what makes the two halves agree at
+    /// every depth and after any number of events; the budget still caps the
+    /// deadline extension exactly as before.
+    fn ph_fl_on_root_fail_low(&mut self) {
+        if self.silent {
+            return;
+        }
+        let ph_hard = self.ponderhit_time.load(Ordering::Acquire);
+        if ph_hard == 0 {
+            return; // not a post-ponderhit frame
+        }
+        // (1) SAFETY. Cleared in the aspiration loop's resolve branch; a
+        // mid-fail-low abort leaves it true harmlessly — the search is ending
+        // anyway and the next search resets it.
+        self.ph_fl_active.store(true, Ordering::Relaxed);
+
+        // (2) BUDGET.
+        if self.ph_fl_extensions >= PH_FL_MAX_EXTENSIONS
+            || self.root_depth < PH_FL_MIN_DEPTH
+        {
+            return;
+        }
+        let isoft = self.ponderhit_isoft.load(Ordering::Relaxed);
+        let abs = self.ponderhit_abs.load(Ordering::Relaxed);
+        let clamp_abs = |v: u64| if abs > 0 { v.min(abs) } else { v };
+        let n = (self.ph_fl_extensions + 1) as u64;
+        let inflated = isoft.saturating_mul(100 + PH_FL_HARD_EXT_PCT * n) / 100;
+        let cur_soft = self.ponderhit_soft.load(Ordering::Relaxed);
+        let new_soft = clamp_abs(inflated.max(cur_soft));
+        if new_soft > cur_soft {
+            self.ph_fl_extensions += 1;
+            let slice = self.ponderhit_floor.load(Ordering::Relaxed)
+                .max(MIN_POST_PONDERHIT_MS);
+            let new_hard = clamp_abs(ph_hard.max(new_soft.saturating_add(slice)));
+            self.tm_max_time = self.tm_max_time
+                .max(new_hard.saturating_sub(self.tm_baseline));
+            // A1 publish order: soft Relaxed first, hard (the publish flag)
+            // Release last.
+            self.ponderhit_soft.store(new_soft, Ordering::Relaxed);
+            self.ponderhit_time.store(new_hard, Ordering::Release);
+            if TM_DEBUG.load(Ordering::Relaxed) {
+                eprintln!(
+                    "PH_FL_EXT n={} depth={} isoft={}ms soft->{}ms hard->{}ms abs={}ms",
+                    self.ph_fl_extensions, self.root_depth, isoft, new_soft, new_hard, abs);
+            }
+        }
     }
 
     pub fn clear_correction_history(&mut self) {
@@ -4013,57 +4097,11 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                     // below. Relaxed: independent bool gate, no dependent
                     // data (see field doc).
                     info.root_fail_low.store(true, std::sync::atomic::Ordering::Relaxed);
-                    // Fail-low extension, during-post-hit half: a root
-                    // fail-low at a REAL search frontier (depth floor below)
-                    // inflates the intended optimum SF-style and re-publishes
-                    // the post-hit soft deadline in the from-go-ponder frame:
-                    //   allowed(from go ponder) = intended_soft x (1 + 0.34 n)
-                    // Long ponders (elapsed already past the inflated
-                    // optimum) correctly get nothing -- SF stops promptly
-                    // there too; short-ponder deep fail-lows get the >1s
-                    // re-think tail (SF: 3.3% of post-hit moves; we had
-                    // 0.0%). Main thread only; at most PH_FL_MAX_EXTENSIONS
-                    // effective events (SF's min(2, fl)); every push
-                    // saturates at ponderhit_abs -- the forfeit wall never
-                    // moves.
-                    if !info.silent
-                        && info.ph_fl_extensions < PH_FL_MAX_EXTENSIONS
-                        && info.root_depth >= PH_FL_MIN_DEPTH
-                    {
-                        let ph_hard = info.ponderhit_time.load(std::sync::atomic::Ordering::Acquire);
-                        if ph_hard > 0 {
-                            // v3: suspend the soft band until this fail-low
-                            // resolves (cleared in the resolve branch below;
-                            // a mid-fail-low abort leaves it true harmlessly
-                            // — the search is ending anyway and the next
-                            // search resets it).
-                            info.ph_fl_active.store(true, std::sync::atomic::Ordering::Relaxed);
-                            let isoft = info.ponderhit_isoft.load(std::sync::atomic::Ordering::Relaxed);
-                            let abs = info.ponderhit_abs.load(std::sync::atomic::Ordering::Relaxed);
-                            let clamp_abs = |v: u64| if abs > 0 { v.min(abs) } else { v };
-                            let n = (info.ph_fl_extensions + 1) as u64;
-                            let inflated = isoft.saturating_mul(100 + PH_FL_HARD_EXT_PCT * n) / 100;
-                            let cur_soft = info.ponderhit_soft.load(std::sync::atomic::Ordering::Relaxed);
-                            let new_soft = clamp_abs(inflated.max(cur_soft));
-                            if new_soft > cur_soft {
-                                info.ph_fl_extensions += 1;
-                                let slice = info.ponderhit_floor.load(std::sync::atomic::Ordering::Relaxed)
-                                    .max(MIN_POST_PONDERHIT_MS);
-                                let new_hard = clamp_abs(ph_hard.max(new_soft.saturating_add(slice)));
-                                info.tm_max_time = info.tm_max_time
-                                    .max(new_hard.saturating_sub(info.tm_baseline));
-                                // A1 publish order: soft Relaxed first, hard
-                                // (the publish flag) Release last.
-                                info.ponderhit_soft.store(new_soft, std::sync::atomic::Ordering::Relaxed);
-                                info.ponderhit_time.store(new_hard, std::sync::atomic::Ordering::Release);
-                                if TM_DEBUG.load(std::sync::atomic::Ordering::Relaxed) {
-                                    eprintln!(
-                                        "PH_FL_EXT n={} depth={} isoft={}ms soft->{}ms hard->{}ms abs={}ms",
-                                        info.ph_fl_extensions, info.root_depth, isoft, new_soft, new_hard, abs);
-                                }
-                            }
-                        }
-                    }
+                    // Search-side half of the same veto, plus the post-hit
+                    // deadline extension: see ph_fl_on_root_fail_low, which
+                    // keeps the soft-band suspension (safety) and the
+                    // deadline inflation (a capped budget) independent.
+                    info.ph_fl_on_root_fail_low();
                     // Fail low: contract beta aggressively toward alpha, widen alpha
                     beta = (3 * alpha + 5 * beta) / 8;
                     alpha = (result - delta).max(-INFINITY);
@@ -9542,5 +9580,160 @@ mod tests {
             !guard_passes,
             "stale g2f3 must be rejected when the king is on h2 (no piece on g2)"
         );
+    }
+
+    /// Build a post-ponderhit frame (deadline group published, in the
+    /// start_time frame) for the FL-EXT v3 suspension tests below.
+    /// `soft`/`hard`/`abs` are absolute ms since start_time; the post-hit
+    /// slice is `ponderhit_floor` floored at MIN_POST_PONDERHIT_MS.
+    fn post_ponderhit_info(soft: u64, hard: u64, abs: u64, isoft: u64) -> SearchInfo {
+        let mut info = SearchInfo::new(1);
+        // The FL-EXT bookkeeping is main-thread-only (helpers are silent),
+        // so the test has to present itself as the main thread.
+        info.silent = false;
+        info.ponderhit_soft.store(soft, Ordering::Relaxed);
+        info.ponderhit_isoft.store(isoft, Ordering::Relaxed);
+        info.ponderhit_floor.store(MIN_POST_PONDERHIT_MS, Ordering::Relaxed);
+        info.ponderhit_abs.store(abs, Ordering::Relaxed);
+        // A1 publish order: hard (the publish flag) last, with Release.
+        info.ponderhit_time.store(hard, Ordering::Release);
+        info
+    }
+
+    /// Virtual clock: rewind start_time so `should_stop` sees exactly
+    /// `elapsed_ms`. `nodes` is 0, which satisfies its 4096-node gate.
+    fn set_virtual_elapsed(info: &mut SearchInfo, elapsed_ms: u64) {
+        info.start_time = Instant::now() - std::time::Duration::from_millis(elapsed_ms);
+    }
+
+    /// FL-EXT v3 decoupling regression.
+    ///
+    /// `ph_fl_active` is a SAFETY flag — while a root fail-low is unresolved
+    /// it suspends the mid-iteration soft band in `should_stop` so the shared
+    /// soft stopper cannot cut the root re-search while the root conclusion is
+    /// collapsing (hard and absolute deadlines still bind).
+    /// `ph_fl_extensions` is a BUDGET, capped at PH_FL_MAX_EXTENSIONS, for
+    /// deadline INFLATION.
+    ///
+    /// They used to share one gate, so a spent budget silently revoked the
+    /// safety for the rest of the search — while `root_fail_low`, the UCI-side
+    /// half of the same veto, stayed set unconditionally. The two vetoes then
+    /// disagreed: the soft stopper cut the re-search and the engine emitted the
+    /// pre-collapse move with hard and absolute budget unspent.
+    #[test]
+    fn ph_fl_suspension_survives_exhausted_extension_budget() {
+        let (soft, hard, abs) = (200u64, 800u64, 5_000u64);
+        let slice = MIN_POST_PONDERHIT_MS;
+        // isoft large enough that the extension WOULD raise soft if the
+        // budget allowed it — so this test fails for the right reason.
+        let mut info = post_ponderhit_info(soft, hard, abs, 1_000);
+        info.root_depth = PH_FL_MIN_DEPTH;
+        info.ph_fl_extensions = PH_FL_MAX_EXTENSIONS; // budget exhausted
+        assert!(!info.ph_fl_active.load(Ordering::Relaxed));
+
+        info.ph_fl_on_root_fail_low();
+
+        // SAFETY: armed, independent of the spent budget.
+        assert!(
+            info.ph_fl_active.load(Ordering::Relaxed),
+            "a deep post-hit root fail-low must suspend the soft band even \
+             with the extension budget exhausted"
+        );
+        // BUDGET: still capped — no deadline moved.
+        assert_eq!(info.ph_fl_extensions, PH_FL_MAX_EXTENSIONS,
+            "the extension counter must stay at its cap");
+        assert_eq!(info.ponderhit_soft.load(Ordering::Relaxed), soft,
+            "an exhausted budget must not inflate the soft deadline");
+        assert_eq!(info.ponderhit_time.load(Ordering::Relaxed), hard,
+            "an exhausted budget must not inflate the hard deadline");
+
+        // The suspension must actually reach should_stop: past soft + slice,
+        // the mid-iteration band does not fire while the fail-low is live.
+        set_virtual_elapsed(&mut info, soft + slice + 10);
+        assert!(!info.should_stop(),
+            "soft band must stay suspended while the root fail-low is unresolved");
+
+        // ... but the hard deadline still binds (grace is 0 past hard).
+        set_virtual_elapsed(&mut info, hard + 10);
+        assert!(info.should_stop(), "hard deadline must still bind under suspension");
+    }
+
+    /// Premise guard for the test above: with the suspension NOT armed, the
+    /// soft band is exactly what cuts the re-search at `soft + slice`. That
+    /// is the consequence the fix prevents, and it pins that the suspension
+    /// is the only thing standing between the two outcomes.
+    #[test]
+    fn ph_fl_soft_band_cuts_the_research_without_the_suspension() {
+        let (soft, hard, abs) = (200u64, 800u64, 5_000u64);
+        let slice = MIN_POST_PONDERHIT_MS;
+        let mut info = post_ponderhit_info(soft, hard, abs, 1_000);
+        // Suspension deliberately NOT armed.
+        set_virtual_elapsed(&mut info, soft + slice + 10);
+        assert!(info.should_stop(),
+            "test premise: past soft + slice the band cuts when unsuspended");
+    }
+
+    /// The depth floor is an EXTENSION-budget rule (shallow aspiration misses
+    /// are routine noise and must not burn the inflation budget); it is not a
+    /// safety rule. A shallow post-hit fail-low gets the suspension but no
+    /// deadline inflation — matching `root_fail_low`, which is ungated by
+    /// depth, so the UCI-side and search-side vetoes agree at every depth.
+    #[test]
+    fn ph_fl_shallow_fail_low_suspends_but_does_not_extend() {
+        let (soft, hard, abs) = (200u64, 800u64, 5_000u64);
+        let mut info = post_ponderhit_info(soft, hard, abs, 1_000);
+        info.root_depth = PH_FL_MIN_DEPTH - 1; // below the extension floor
+        assert_eq!(info.ph_fl_extensions, 0, "budget is untouched");
+
+        info.ph_fl_on_root_fail_low();
+
+        assert!(info.ph_fl_active.load(Ordering::Relaxed),
+            "a shallow post-hit root fail-low must still suspend the soft band");
+        assert_eq!(info.ph_fl_extensions, 0,
+            "a shallow fail-low must not consume the extension budget");
+        assert_eq!(info.ponderhit_soft.load(Ordering::Relaxed), soft,
+            "a shallow fail-low must not inflate the soft deadline");
+        assert_eq!(info.ponderhit_time.load(Ordering::Relaxed), hard,
+            "a shallow fail-low must not inflate the hard deadline");
+    }
+
+    /// The extension itself is unchanged by the decoupling: a deep fail-low
+    /// with budget left still inflates soft to intended_soft x (1 + 0.34 n),
+    /// raises hard to soft + slice, and spends one unit of budget; and the
+    /// absolute forfeit wall clamps both.
+    #[test]
+    fn ph_fl_extension_still_inflates_and_still_caps() {
+        let (soft, hard, isoft) = (200u64, 300u64, 1_000u64);
+        let slice = MIN_POST_PONDERHIT_MS;
+        let mut info = post_ponderhit_info(soft, hard, 0, isoft);
+        info.root_depth = PH_FL_MIN_DEPTH;
+
+        info.ph_fl_on_root_fail_low();
+        assert_eq!(info.ph_fl_extensions, 1);
+        let want1 = isoft * (100 + PH_FL_HARD_EXT_PCT) / 100;
+        assert_eq!(info.ponderhit_soft.load(Ordering::Relaxed), want1);
+        assert_eq!(info.ponderhit_time.load(Ordering::Relaxed), want1 + slice);
+
+        // Second event: n = 2.
+        info.ph_fl_on_root_fail_low();
+        assert_eq!(info.ph_fl_extensions, PH_FL_MAX_EXTENSIONS);
+        let want2 = isoft * (100 + PH_FL_HARD_EXT_PCT * 2) / 100;
+        assert_eq!(info.ponderhit_soft.load(Ordering::Relaxed), want2);
+
+        // Third and later events: budget spent, deadlines frozen.
+        for _ in 0..3 {
+            info.ph_fl_on_root_fail_low();
+        }
+        assert_eq!(info.ph_fl_extensions, PH_FL_MAX_EXTENSIONS,
+            "a storm of fail-lows must not compound the deadline");
+        assert_eq!(info.ponderhit_soft.load(Ordering::Relaxed), want2);
+
+        // The absolute forfeit wall clamps the inflation.
+        let abs = want1 - 1;
+        let mut capped = post_ponderhit_info(soft, hard, abs, isoft);
+        capped.root_depth = PH_FL_MIN_DEPTH;
+        capped.ph_fl_on_root_fail_low();
+        assert_eq!(capped.ponderhit_soft.load(Ordering::Relaxed), abs);
+        assert_eq!(capped.ponderhit_time.load(Ordering::Relaxed), abs);
     }
 }
