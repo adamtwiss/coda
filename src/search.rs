@@ -4956,8 +4956,10 @@ fn negamax(
 
     // Cuckoo cycle detection: proactive repetition avoidance (Stockfish/Berserk)
     // If we're losing (alpha < 0) and a repetition can be forced, raise alpha to draw score.
+    let mut cycle_seen = false;
     if ply > 0 && alpha < 0 && FEAT_CUCKOO.load(Ordering::Relaxed) && crate::cuckoo::has_game_cycle(board, ply) {
         alpha = 0;
+        cycle_seen = true;
         if alpha >= beta {
             return alpha;
         }
@@ -5327,6 +5329,14 @@ fn negamax(
         scaled_eval = apply_halfmove_scale(raw_eval, board.halfmove);
         // Apply correction history to the halfmove-scaled value
         static_eval = if FEAT_CORRECTION.load(Ordering::Relaxed) { corrected_eval(info, board, scaled_eval, ply_u) } else { scaled_eval };
+        // Upcoming repetition: a draw is claimable, so record the DRAW SCORE
+        // against the static eval as soon as that eval exists — a supplement to
+        // the ordinary end-of-node update rather than a fallback for it, and
+        // not subject to the fail-high/fail-low direction guards, which are
+        // bound-consistency checks for ordinary search results.
+        if cycle_seen && !in_check && scaled_eval > -(MATE_IN_MAX_PLY) {
+            update_correction_history(info, board, 0, static_eval, depth, ply_u);
+        }
         if ply_u < MAX_PLY {
             info.static_evals[ply_u] = static_eval;
         }
@@ -7318,8 +7328,10 @@ fn quiescence_with_depth(
     // Cuckoo cycle detection in quiescence
     // Gate QS cuckoo on ply > 0, mirroring the main-search check.
     // Cuckoo's root-boundary STM check is undefined at ply 0.
+    let mut qs_cycle_seen = false;
     if ply > 0 && alpha < 0 && FEAT_CUCKOO.load(Ordering::Relaxed) && crate::cuckoo::has_game_cycle(board, ply) {
         alpha = 0;
+        qs_cycle_seen = true;
         if alpha >= beta {
             return alpha;
         }
@@ -7540,6 +7552,11 @@ fn quiescence_with_depth(
     } else {
         scaled_stand_pat
     };
+    // Upcoming repetition in QS: same recording as the main search. Hobbes does
+    // it in both, and qsearch is where a repetition is most often reachable.
+    if qs_cycle_seen && qs_checkers == 0 && scaled_stand_pat > -(MATE_IN_MAX_PLY) {
+        update_correction_history(info, board, 0, stand_pat, 0, ply as usize);
+    }
     let mut best_score = stand_pat;
 
     // TT bound refinement of stand-pat (consensus: every top engine does this)
