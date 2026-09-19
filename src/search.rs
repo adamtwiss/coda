@@ -406,6 +406,10 @@ tunables!(
     // (from+to+captured+side), richer than cont_corr's [piece][to]. Captures
     // "this structural CHANGE tends to be mis-evaluated."
     (CORR_W_TRANS, 108, 0, 400, 18.5, true),
+    // Reduce one ply less where this pawn-structure class has a history of
+    // deeper searches overturning shallower ones. Measured mean |deep-shallow|
+    // is ~66cp, so 120 fires on classes well above average rather than the bulk.
+    (LMR_INSTAB_THRESH, 120, 32, 512, 24.0, false),
     (FH_BLEND_DEPTH_10X, 21, 0, 80, 15.0, false),
     // TT_DAMP_TT_WEIGHT: weight of tt_score in TT-LOWER non-PV cutoff score
     // dampening. Formula: (W*tt_score + beta) / (W+1).
@@ -1141,6 +1145,8 @@ pub struct PruneStats {
     pub width_cnt_by_depth: [u64; 32],
     pub ts_lmr_research: u64,
     pub ts_lmr_failhigh: u64,
+    pub ts_depth_overturn: [u64; 8],
+    pub ts_depth_overturn_n: u64,
     pub ts_asp_fail_low: u64,
     pub ts_asp_fail_high: u64,
 }
@@ -1394,6 +1400,15 @@ pub struct SearchInfo {
     /// decided and the search is deep enough for that score to be trusted.
     /// Read at interior nodes to suppress positive singular extensions.
     pub root_decided: bool,
+    /// DEPTH INSTABILITY per position class (pawn hash): an EWMA of how far a
+    /// deeper search moves a verdict a shallower one already left. Measured on
+    /// bench over 139,716 samples: |deep - shallow| is under 32cp half the time
+    /// but over 224cp in 8.3% of cases — a long tail, observable on every TT
+    /// hit below the node's depth and discarded today.
+    ///
+    /// LMR substitutes a shallow verdict for a deep one, so it is exactly the
+    /// wrong thing to do where shallow verdicts are known to be unreliable.
+    pub depth_instab: Box<[i16; CORR_HIST_SIZE]>,
     /// TMDebug-only stop-time snapshot of the dynamic-TM factors (see TmDbg).
     tm_dbg: TmDbg,
     /// Line-trace forensics (CODA_TRACE_LINE env): zobrist hashes of the
@@ -1522,6 +1537,7 @@ impl SearchInfo {
             completed_depth: 0,
             root_depth: 0,
             root_decided: false,
+            depth_instab: alloc_zeroed_box(),
             tm_dbg: TmDbg::default(),
             trace_hashes: Vec::new(),
             trace_line_mv: Vec::new(),
@@ -5011,6 +5027,7 @@ fn negamax(
             }
         }
     }
+    let mut shallow_verdict: Option<i32> = None;
     let tt_cur_gen = info.tt.current_generation();
     let tt_cross_gen = tt_hit && tt_entry.generation != tt_cur_gen;
     info.stats.tt_probes += 1;
@@ -5043,6 +5060,9 @@ fn negamax(
             // (SF value_from_tt placement), so every consumer
             // below sees the sanitized score.
             let tt_score = score_from_tt(tt_entry.score, ply, board.halfmove);
+            if tt_entry.depth < depth && !is_decisive(tt_score) {
+                shallow_verdict = Some(tt_score);
+            }
 
             // Halfmove-gated TT cutoff: TT scores are stored without halfmove
             // context. Near the 50-move cliff a cached mate-in-N may be unreachable,
@@ -6575,6 +6595,12 @@ fn negamax(
                         }
                     }
 
+                    // Shallow verdicts are unreliable in this class — reduce less.
+                    if info.depth_instab[(board.pawn_hash as usize) & (CORR_HIST_SIZE - 1)]
+                        >= tp(&LMR_INSTAB_THRESH) as i16
+                    {
+                        reduction -= LMR_SCALE;
+                    }
                     if reduction < 0 {
                         reduction = 0;
                     }
@@ -7075,6 +7101,15 @@ fn negamax(
             // the opponent's last move was good and this node belongs to the PV
             // region on revisit. Inherit the parent's tt_pv into the store.
             let tt_pv = tt_pv || (best_score <= alpha_orig && ply_u > 0 && info.tt_pv_stack[ply_u - 1]);
+            if let Some(sv) = shallow_verdict {
+                if !is_decisive(best_score) {
+                    let d = (best_score - sv).abs();
+                    info.stats.ts_depth_overturn[((d / 32) as usize).min(7)] += 1;
+                    info.stats.ts_depth_overturn_n += 1;
+                    let slot = &mut info.depth_instab[(board.pawn_hash as usize) & (CORR_HIST_SIZE - 1)];
+                    *slot = (*slot + ((d.min(1024) as i16 - *slot) / 8)).clamp(0, 1024);
+                }
+            }
             info.tt.store(board.hash, depth, store_score, flag, best_move, raw_eval, tt_pv);
         }
     }
@@ -7926,6 +7961,8 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
         total_stats.tt_probes += info.stats.tt_probes;
         // These two were accumulated per search but never summed here, so the
         // bench readout could not show them (2026-09-06 audit).
+        for i in 0..8 { total_stats.ts_depth_overturn[i] += info.stats.ts_depth_overturn[i]; }
+        total_stats.ts_depth_overturn_n += info.stats.ts_depth_overturn_n;
         total_stats.ts_lmr_research += info.stats.ts_lmr_research;
         total_stats.ts_lmr_failhigh += info.stats.ts_lmr_failhigh;
         // ts_lmr_research was collected but never merged, so it read 0 in every
@@ -8018,6 +8055,12 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
     // audit). Games say the narrow window is optimal regardless -- the
     // re-searches are cheap -- but the rate should stay visible.
     eprintln!("Asp fail-low:   {:>8}  fail-high: {}", s.ts_asp_fail_low, s.ts_asp_fail_high);
+    if s.ts_depth_overturn_n > 0 {
+        let pct: Vec<String> = s.ts_depth_overturn.iter()
+            .map(|c| format!("{:5.1}", 100.0 * *c as f64 / s.ts_depth_overturn_n as f64)).collect();
+        eprintln!("Depth overturn: {:>8} samples  |deep-shallow| by 32cp bucket: {}",
+            s.ts_depth_overturn_n, pct.join(" "));
+    }
     eprintln!("LMR fail-high:  {:>8}  ({:.1}% of LMR searches); deepened re-searches: {}",
         s.ts_lmr_failhigh, 100.0 * s.ts_lmr_failhigh as f64 / s.lmr_searches.max(1) as f64, s.ts_lmr_research);
     eprintln!("NMP attempts:   {:>8}  cutoffs: {} ({:.0}%)", s.nmp_attempts, s.nmp_cutoffs,
