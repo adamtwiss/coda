@@ -4956,8 +4956,13 @@ fn negamax(
 
     // Cuckoo cycle detection: proactive repetition avoidance (Stockfish/Berserk)
     // If we're losing (alpha < 0) and a repetition can be forced, raise alpha to draw score.
+    // Remembered for the correction update at the end of the node: a reachable
+    // cycle means a draw is CLAIMABLE from here, so the position's practical
+    // value is the draw score whatever the net thinks of it.
+    let mut cycle_draw_available = false;
     if ply > 0 && alpha < 0 && FEAT_CUCKOO.load(Ordering::Relaxed) && crate::cuckoo::has_game_cycle(board, ply) {
         alpha = 0;
+        cycle_draw_available = true;
         if alpha >= beta {
             return alpha;
         }
@@ -7160,6 +7165,21 @@ fn negamax(
         // and self-stabilises. Both are in scaled space, so the err term
         // isolates positional miscalibration rather than halfmove decay.
         update_correction_history(info, board, best_score, static_eval, depth, ply_u);
+    } else if cycle_draw_available
+        && !in_check
+        && info.excluded_move[ply_u] == NO_MOVE
+        && !is_decisive(best_score)
+        && scaled_eval > -(MATE_IN_MAX_PLY)
+        && !info.stop.load(Ordering::Relaxed)
+    {
+        // Upcoming repetition: a draw is claimable, so train the correction
+        // toward the DRAW SCORE instead of skipping the node. The guards above
+        // are bound-consistency checks for ordinary search results; a claimable
+        // draw is a known value rather than a bound, so it does not need them.
+        // (Idea from Hobbes. Nodes that ARE a repetition return long before
+        // this point and still train nothing — the open question is whether a
+        // PATH-specific draw should teach a STRUCTURE-keyed table at all.)
+        update_correction_history(info, board, 0, static_eval, depth, ply_u);
     }
 
     // Fail-high score blending: dampen inflated cutoff scores at non-PV nodes.
