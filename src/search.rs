@@ -5587,6 +5587,10 @@ fn negamax(
         && ply >= info.nmp_min_ply  // Ply barrier: verification subtree cannot re-trigger NMP (audit B1)
         && beta.abs() < MATE_IN_MAX_PLY  // Skip NMP for mate/TB scores
         && info.excluded_move[ply_u] == NO_MOVE  // Skip NMP during SE verification
+        // A null-move cutoff IS a shallow verdict: it accepts a reduced search
+        // in place of the real one. Skip it where this class has a history of
+        // deeper searches overturning shallower ones.
+        && info.depth_instab[(board.pawn_hash as usize) & (CORR_HIST_SIZE - 1)] < tp(&LMR_INSTAB_THRESH) as i16
         && cut_node  // cut-node gate: only attempt NMP at expected fail-high nodes (closes 30%->57% NMP cutoff-rate gap)
         && FEAT_NMP.load(Ordering::Relaxed)
     {
@@ -6595,12 +6599,6 @@ fn negamax(
                         }
                     }
 
-                    // Shallow verdicts are unreliable in this class — reduce less.
-                    if info.depth_instab[(board.pawn_hash as usize) & (CORR_HIST_SIZE - 1)]
-                        >= tp(&LMR_INSTAB_THRESH) as i16
-                    {
-                        reduction -= LMR_SCALE;
-                    }
                     if reduction < 0 {
                         reduction = 0;
                     }
