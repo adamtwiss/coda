@@ -406,6 +406,8 @@ tunables!(
     // (from+to+captured+side), richer than cont_corr's [piece][to]. Captures
     // "this structural CHANGE tends to be mis-evaluated."
     (CORR_W_TRANS, 108, 0, 400, 18.5, true),
+    // Ply at which the pawn-correction band switches from near-root to deep.
+    (CORR_PLY_SPLIT, 6, 2, 20, 2.0, false),
     (FH_BLEND_DEPTH_10X, 21, 0, 80, 15.0, false),
     // TT_DAMP_TT_WEIGHT: weight of tt_score in TT-LOWER non-PV cutoff score
     // dampening. Formula: (W*tt_score + beta) / (W+1).
@@ -963,7 +965,13 @@ const CORR_HIST_SIZE: usize = 16384;
 /// gravity step; they can never produce an out-of-range value.
 pub struct CorrTables {
     /// Pawn correction history: [stm][pawn_hash % size]
-    pawn: Box<[[std::sync::atomic::AtomicI32; CORR_HIST_SIZE]; 2]>,
+    /// Pawn correction, SPLIT BY PLY BAND. A residual recorded near the root
+    /// comes from a deep subtree and is good evidence; one recorded deep in the
+    /// tree comes from a shallow remainder and is mostly noise. Today both feed
+    /// ONE entry — depth-weighted, which scales the update but still pools two
+    /// different quantities into one number. Splitting lets a node read the
+    /// band its own search belongs to.
+    pawn: Box<[[[std::sync::atomic::AtomicI32; CORR_HIST_SIZE]; 2]; 2]>,
     /// Non-pawn correction history: [stm][color][nonpawn_hash % size]
     np: Box<[[[std::sync::atomic::AtomicI32; CORR_HIST_SIZE]; 2]; 2]>,
     /// Paired continuation correction: [prev_piece][prev_to][cur_piece][cur_to],
@@ -985,7 +993,7 @@ impl CorrTables {
 
     /// Zero every table (ucinewgame). Shared, so one call clears for all threads.
     fn clear(&self) {
-        for row in self.pawn.iter() { for e in row.iter() { e.store(0, Ordering::Relaxed); } }
+        for a in self.pawn.iter() { for row in a.iter() { for e in row.iter() { e.store(0, Ordering::Relaxed); } } }
         for mat in self.np.iter() { for row in mat.iter() { for e in row.iter() { e.store(0, Ordering::Relaxed); } } }
         for a in self.cont.iter() { for b in a.iter() { for c in b.iter() { for e in c.iter() { e.store(0, Ordering::Relaxed); } } } }
         for row in self.trans.iter() { for e in row.iter() { e.store(0, Ordering::Relaxed); } }
@@ -1786,7 +1794,7 @@ impl SearchInfo {
         self.history.capture[1][4][2] = -45;
         self.cont.t[1][4][2][5].store(67, Ordering::Relaxed);
         self.pawn_hist[3][1][7] = 89;
-        self.corr.pawn[WHITE as usize][5].store(101, Ordering::Relaxed);
+        self.corr.pawn[WHITE as usize][0][5].store(101, Ordering::Relaxed);
         self.corr.np[BLACK as usize][WHITE as usize][6].store(-202, Ordering::Relaxed);
         self.corr.cont[1][8][2][9].store(303, Ordering::Relaxed);
         self.corr.trans[BLACK as usize][10].store(-404, Ordering::Relaxed);
@@ -2283,7 +2291,8 @@ fn cont_corr_value(info: &SearchInfo, ply: usize) -> i64 {
 fn correction_value(info: &SearchInfo, board: &Board, ply: usize) -> i32 {
     let stm = board.side_to_move as usize;
     let pawn_idx = (board.pawn_hash as usize) & (CORR_HIST_SIZE - 1);
-    let pawn_corr = info.corr.pawn[stm][pawn_idx].load(Ordering::Relaxed) as i64;
+    let band = (ply >= tp(&CORR_PLY_SPLIT) as usize) as usize;
+    let pawn_corr = info.corr.pawn[stm][band][pawn_idx].load(Ordering::Relaxed) as i64;
     let white_np_idx = (board.non_pawn_key[WHITE as usize] as usize) & (CORR_HIST_SIZE - 1);
     let white_np_corr = info.corr.np[stm][WHITE as usize][white_np_idx].load(Ordering::Relaxed) as i64;
     let black_np_idx = (board.non_pawn_key[BLACK as usize] as usize) & (CORR_HIST_SIZE - 1);
@@ -2357,7 +2366,8 @@ fn update_correction_history(info: &mut SearchInfo, board: &Board, search_score:
 
     // Pawn correction
     let pawn_idx = (board.pawn_hash as usize) & (CORR_HIST_SIZE - 1);
-    update_corr_entry(&info.corr.pawn[stm][pawn_idx], scaled_err, cap_div);
+    let band = (ply >= tp(&CORR_PLY_SPLIT) as usize) as usize;
+    update_corr_entry(&info.corr.pawn[stm][band][pawn_idx], scaled_err, cap_div);
 
     // Non-pawn corrections (per color)
     let white_np_idx = (board.non_pawn_key[WHITE as usize] as usize) & (CORR_HIST_SIZE - 1);
@@ -4982,7 +4992,8 @@ fn negamax(
         let stm = board.side_to_move as usize;
         unsafe {
             let pawn_idx = (board.pawn_hash as usize) & (CORR_HIST_SIZE - 1);
-            _mm_prefetch(&info.corr.pawn[stm][pawn_idx] as *const std::sync::atomic::AtomicI32 as *const i8, _MM_HINT_T0);
+            let pband = (ply_u >= tp(&CORR_PLY_SPLIT) as usize) as usize;
+            _mm_prefetch(&info.corr.pawn[stm][pband][pawn_idx] as *const std::sync::atomic::AtomicI32 as *const i8, _MM_HINT_T0);
             let wnp_idx = (board.non_pawn_key[WHITE as usize] as usize) & (CORR_HIST_SIZE - 1);
             _mm_prefetch(&info.corr.np[stm][WHITE as usize][wnp_idx] as *const std::sync::atomic::AtomicI32 as *const i8, _MM_HINT_T0);
             let bnp_idx = (board.non_pawn_key[BLACK as usize] as usize) & (CORR_HIST_SIZE - 1);
@@ -5509,7 +5520,8 @@ fn negamax(
                         let grain = tp(&CORR_HIST_GRAIN_T) as i64;
                         let scale = (div * grain).max(1);
                         let pawn_idx = (board.pawn_hash as usize) & (CORR_HIST_SIZE - 1);
-                        let c1 = info.corr.pawn[stm][pawn_idx].load(Ordering::Relaxed) as i64 * tp(&CORR_W_PAWN) as i64 / scale;
+                        let c1b = (ply_u >= tp(&CORR_PLY_SPLIT) as usize) as usize;
+                        let c1 = info.corr.pawn[stm][c1b][pawn_idx].load(Ordering::Relaxed) as i64 * tp(&CORR_W_PAWN) as i64 / scale;
                         let wnp = (board.non_pawn_key[WHITE as usize] as usize) & (CORR_HIST_SIZE - 1);
                         let c2 = info.corr.np[stm][WHITE as usize][wnp].load(Ordering::Relaxed) as i64 * tp(&CORR_W_NP) as i64 / scale;
                         let bnp = (board.non_pawn_key[BLACK as usize] as usize) & (CORR_HIST_SIZE - 1);
@@ -8773,7 +8785,7 @@ mod tests {
         // The slot indexed by the test position's hash must be non-zero
         // in every per-position table. cont_corr is excluded — needs a
         // last-move undo entry, which the test position doesn't have.
-        assert!(info.corr.pawn[stm][pawn_idx].load(Ordering::Relaxed) != 0,
+        assert!(info.corr.pawn[stm][0][pawn_idx].load(Ordering::Relaxed) != 0,
             "pawn_corr slot must be written");
         assert!(info.corr.np[stm][WHITE as usize][white_np_idx].load(Ordering::Relaxed) != 0,
             "white np_corr slot must be written");
