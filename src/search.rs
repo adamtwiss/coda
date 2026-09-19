@@ -6595,11 +6595,12 @@ fn negamax(
                         }
                     }
 
-                    // Shallow verdicts are unreliable in this class — reduce less.
+                    // Inverse reading: where deeper searches have NOT overturned
+                    // shallow ones, a shallow verdict is reliable here — reduce more.
                     if info.depth_instab[(board.pawn_hash as usize) & (CORR_HIST_SIZE - 1)]
-                        >= tp(&LMR_INSTAB_THRESH) as i16
+                        <= tp(&LMR_INSTAB_THRESH) as i16 / 4
                     {
-                        reduction -= LMR_SCALE;
+                        reduction += LMR_SCALE;
                     }
                     if reduction < 0 {
                         reduction = 0;
