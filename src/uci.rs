@@ -377,6 +377,11 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>) {
                 println!("readyok");
             }
             "ucinewgame" => {
+                // Forget the previous game's phase-damp entry point. The
+                // tracker also self-heals on a lower fullmove, so this is a
+                // tidy-up rather than the guarantee (see
+                // tm_record_entry_fullmove).
+                crate::search::tm_reset_entry_fullmove();
                 // Wait for any active search to finish before clearing state
                 if let Some(handle) = search_handle.take() {
                     suppress_bestmove.store(true, Ordering::Relaxed);
@@ -1135,7 +1140,8 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>) {
                         // the P3 +25% optimum bump through.
                         let (soft, hard, _max_time, floor) = crate::search::compute_tm_budgets(
                             our_time, our_inc, pl.movestogo, overhead, board.fullmove,
-                            crate::search::ponder_enabled());
+                            crate::search::ponder_enabled(),
+                            crate::search::tm_record_entry_fullmove(board.fullmove));
 
                         // Instant-reply gate inputs (P1): the ponder search's
                         // completed root depth, its best-move stability, and

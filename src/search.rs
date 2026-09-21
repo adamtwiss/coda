@@ -261,6 +261,19 @@ tunables!(
     // the full derivation.
     (NO_INC_MTG_BASE, 34, 20, 80, 4.0, false),
     (NO_INC_MTG_GROWTH_PCT, 94, 0, 200, 10.0, false),
+    // Opening-phase damp late-entry credit, in fullmoves. The damp ramps from
+    // the game's move 1, but a game that opens out of a book is not on move 1
+    // when we first think: our own Cacique book runs to a measured p50 of
+    // 10-11 fullmoves, so the first position we ever search is already past
+    // the cold-start the damp exists to cover, and we damp it as if it were
+    // the first move of the game. See compute_tm_budgets for the credit form.
+    //
+    // Units are fullmoves and the value is a CAP, not a multiplier: credit =
+    // min(entry_fullmove - 1, this). The cap is what keeps some damp on a deep
+    // book exit — an uncapped credit drives phase_mult to ~0.98 at entry 44
+    // (our observed maximum book depth), i.e. no cold-start damp at all on the
+    // very games that exit deepest. 0 = current behaviour exactly.
+    (TM_PHASE_ENTRY_CREDIT, 0, 0, 20, 2.0, false),
     // TM window + factor constants. Coda's own parameters, tuned and validated
     // on Coda's own search and net; provenance in
     // docs/license_analysis_2026-07-13.md. All non-core, for the reason given
@@ -776,6 +789,40 @@ pub fn ponderhit_credit_pct() -> u64 {
 /// move when on; refunded on average by the instant replies of
 /// `should_instant_reply`). Default false → bit-identical no-ponder behavior.
 pub static PONDER_ENABLED: AtomicBool = AtomicBool::new(false);
+
+/// Fullmove number of the first position this game for which we actually
+/// computed a time budget — i.e. the first move we THOUGHT about, as opposed
+/// to played from the opening book. 0 = "not yet seen".
+///
+/// Book moves never reach `compute_tm_budgets` (uci.rs answers them before
+/// `parse_go`), and they emit no ponder move, so the GUI cannot start a ponder
+/// search during book either. That makes "first budgeted move" exactly "first
+/// searched move", which is the quantity the late-entry credit wants.
+static TM_ENTRY_FULLMOVE: AtomicU32 = AtomicU32::new(0);
+
+/// Record `fullmove` as this game's entry point if we have not seen one yet,
+/// and return the entry in force. Feeds the phase-damp late-entry credit.
+///
+/// Takes the MINIMUM rather than only writing once: fullmove is monotone
+/// within a game, so a smaller value can only mean a new game (or an operator
+/// stepping backwards in analysis). That makes the tracker self-healing
+/// against a GUI that omits `ucinewgame` — the reset in the `ucinewgame`
+/// handler is then belt-and-braces rather than the thing correctness rests on.
+pub fn tm_record_entry_fullmove(fullmove: u16) -> u16 {
+    let fm = fullmove.max(1) as u32;
+    let prev = TM_ENTRY_FULLMOVE.load(Ordering::Relaxed);
+    if prev == 0 || fm < prev {
+        TM_ENTRY_FULLMOVE.store(fm, Ordering::Relaxed);
+        fullmove.max(1)
+    } else {
+        prev as u16
+    }
+}
+
+/// Clear the recorded entry fullmove. Called from the `ucinewgame` handler.
+pub fn tm_reset_entry_fullmove() {
+    TM_ENTRY_FULLMOVE.store(0, Ordering::Relaxed);
+}
 
 #[inline(always)]
 pub fn ponder_enabled() -> bool {
@@ -3031,6 +3078,10 @@ fn bmc_instability_factor(window: u32, num_threads: usize) -> f64 {
 /// MoveOverhead UCI option (default 100ms). `ponder_on` is the `Ponder`
 /// UCI option state (callers pass `ponder_enabled()`): when true the
 /// optimum gets the +25% ponder pre-funding bump (see PONDER_OPT_BUMP_PCT).
+/// `entry_fullmove` is the first fullmove this game we actually budgeted for
+/// (callers pass `tm_record_entry_fullmove(board.fullmove)`); it feeds the
+/// opening-phase damp's late-entry credit. Pass 1 for "no book, started at
+/// move 1", which is also what leaves the damp at its pre-credit behaviour.
 pub fn compute_tm_budgets(
     our_time: u64,
     our_inc: u64,
@@ -3038,6 +3089,7 @@ pub fn compute_tm_budgets(
     overhead: u64,
     fullmove: u16,
     ponder_on: bool,
+    entry_fullmove: u16,
 ) -> (u64, u64, u64, u64) {
     // TM windows: opt/hard/max model with a multiplicative factor product —
     // the structure common to modern engines (SF, Obsidian, Hobbes and
@@ -3184,10 +3236,31 @@ pub fn compute_tm_budgets(
     // floor (0.36, giving 0.39× at fm=1) still left most games overspending the
     // opening. Skip the damp when movestogo > 0 — that path paces from the
     // explicit count.
+    //
+    // LATE-ENTRY CREDIT (TM_PHASE_ENTRY_CREDIT, default 0 = off). The ramp is
+    // keyed on the fullmove number, which assumes the first move we think
+    // about is the first move of the game. Out of a book that is false: with
+    // our own Cacique book the first SEARCHED position sits at fullmove ~11,
+    // and we hand it 0.53× — roughly 40% of its budget withheld to cover a
+    // cold start that the book already covered. The credit advances the ramp
+    // by however many fullmoves the book supplied, capped:
+    //
+    //   credit   = min(entry_fullmove - 1, TM_PHASE_ENTRY_CREDIT)
+    //   phase_fm = fullmove + credit
+    //
+    // The cap is the whole point of the form. An uncapped credit reaches
+    // phase_mult ~0.98 at our deepest observed book exits, removing the damp
+    // entirely on exactly those games; capped, a deep exit still gets damped,
+    // it just stops being punished for the book's depth. Keyed on the entry
+    // fullmove, which is a property of the position as the GUI sends it — so
+    // a harness that normalises the move counter to 1 gets credit 0 and the
+    // knob is simply off, rather than off in a way that looks like a null.
     let opt_time = if movestogo > 0 {
         opt_time_base
     } else {
-        let phase_mult = 0.22 + 0.78 * (1.0 - (-0.045 * fullmove as f64).exp());
+        let credit = (entry_fullmove.max(1) - 1).min(tp(&TM_PHASE_ENTRY_CREDIT).max(0) as u16);
+        let phase_fm = fullmove.saturating_add(credit);
+        let phase_mult = 0.22 + 0.78 * (1.0 - (-0.045 * phase_fm as f64).exp());
         ((opt_time_base as f64) * phase_mult.clamp(0.22, 1.0)) as u64
     };
     // +25% optimum when the Ponder UCI option is on — SF's ponder-optimum
@@ -3892,7 +3965,8 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     } else if our_time > 0 {
         let (soft, hard, max_time, soft_floor) =
             compute_tm_budgets(our_time, our_inc, limits.movestogo, info.move_overhead,
-                               board.fullmove, ponder_enabled());
+                               board.fullmove, ponder_enabled(),
+                               tm_record_entry_fullmove(board.fullmove));
         info.soft_limit = soft;
         info.hard_limit = hard;
         info.tm_max_time = max_time;
@@ -9394,7 +9468,7 @@ mod tests {
         // seconds — a 1ms ponder must lead to a full normal think via the
         // elapsed >= soft condition alone.
         let (soft, _hard, _max, _floor) =
-            compute_tm_budgets(60_000, 10_000, 0, 100, 20, true);
+            compute_tm_budgets(60_000, 10_000, 0, 100, 20, true, 1);
         assert!(soft >= 1000,
             "test premise: big-inc soft should be seconds, got {}ms", soft);
         assert!(!should_instant_reply(1, soft, 64, false, 4),
@@ -9452,9 +9526,9 @@ mod tests {
             (60_000, 0, 40, 15),   // movestogo
         ] {
             let (opt_np, hard_np, max_np, floor_np) =
-                compute_tm_budgets(t, inc, mtg, 100, fm, false);
+                compute_tm_budgets(t, inc, mtg, 100, fm, false, 1);
             let (opt_p, hard_p, max_p, floor_p) =
-                compute_tm_budgets(t, inc, mtg, 100, fm, true);
+                compute_tm_budgets(t, inc, mtg, 100, fm, true, 1);
             assert_eq!(hard_np, hard_p, "hard must be ponder-independent");
             assert_eq!(max_np, max_p, "max must be ponder-independent");
             assert_eq!(floor_np, floor_p, "floor must be ponder-independent");
@@ -9483,6 +9557,86 @@ mod tests {
         PONDERHIT_CREDIT_PCT.store(saved, Ordering::Relaxed);
         // Fresh-binary default is the sentinel.
         assert_eq!(saved, -1, "shipping default must be the -1 sentinel");
+    }
+
+    /// The phase-damp late-entry credit. One test, not three, because it
+    /// mutates a global tunable and cargo runs tests in parallel — keeping
+    /// every assertion that needs a non-default value in a single test keeps
+    /// the mutation confined to one thread's window.
+    #[test]
+    fn phase_entry_credit_shape() {
+        // Shipping default must be 0 = exactly today's behaviour.
+        assert_eq!(tp(&TM_PHASE_ENTRY_CREDIT), 0,
+                   "shipping default must be 0 (current behaviour)");
+
+        // At the default, the entry fullmove must not move the budget at all,
+        // whatever it is. This is the "off means off" half.
+        for entry in [1u16, 5, 11, 44] {
+            let (soft_a, ..) = compute_tm_budgets(60_000, 1_000, 0, 100, 11, false, 1);
+            let (soft_b, ..) = compute_tm_budgets(60_000, 1_000, 0, 100, 11, false, entry);
+            assert_eq!(soft_a, soft_b,
+                       "credit 0 must ignore entry_fullmove (entry={})", entry);
+        }
+
+        let saved = TM_PHASE_ENTRY_CREDIT.load(Ordering::Relaxed);
+        TM_PHASE_ENTRY_CREDIT.store(10, Ordering::Relaxed);
+
+        // ...and "on means on": with a book exit at the measured p50 of 11,
+        // the first searched move must get MORE than it does with no credit.
+        // A knob that reads identical here is inert, and an inert knob is
+        // indistinguishable from a measured null in an RR.
+        let (soft_off, ..) = compute_tm_budgets(60_000, 1_000, 0, 100, 11, false, 1);
+        let (soft_on, ..) = compute_tm_budgets(60_000, 1_000, 0, 100, 11, false, 11);
+        assert!(soft_on > soft_off,
+                "credit must raise the first searched move's budget: {} vs {}",
+                soft_on, soft_off);
+
+        // The damp must still BITE on that first searched move. The credit
+        // exists to stop charging us for the book's depth, not to remove the
+        // cold-start damp — so the credited budget stays below the undamped
+        // one. phase(21) is ~0.70, so a third of the budget is still withheld.
+        let (soft_late, ..) = compute_tm_budgets(60_000, 1_000, 0, 100, 400, false, 1);
+        assert!(soft_on < soft_late,
+                "credited opening must still be damped below the late-game \
+                 asymptote: {} vs {}", soft_on, soft_late);
+
+        // The cap is what guarantees that at ANY book depth, including the
+        // deepest we have observed (44). Uncapped, this position would damp
+        // at ~0.98 and the assertion below would fail.
+        let (soft_deep, ..) = compute_tm_budgets(60_000, 1_000, 0, 100, 44, false, 44);
+        let (soft_deep_undamped, ..) = compute_tm_budgets(60_000, 1_000, 0, 100, 400, false, 1);
+        assert!(soft_deep < soft_deep_undamped,
+                "a deep book exit must still be damped: {} vs {}",
+                soft_deep, soft_deep_undamped);
+
+        // Credit saturates at the cap: entry 11+cap and entry 44 both give
+        // credit 10, so the same fullmove must budget identically.
+        let (a, ..) = compute_tm_budgets(60_000, 1_000, 0, 100, 44, false, 11);
+        let (b, ..) = compute_tm_budgets(60_000, 1_000, 0, 100, 44, false, 44);
+        assert_eq!(a, b, "credit must saturate at the cap");
+
+        // movestogo paces from its own count and must be untouched.
+        let (m_off, ..) = compute_tm_budgets(60_000, 0, 20, 100, 11, false, 1);
+        let (m_on, ..) = compute_tm_budgets(60_000, 0, 20, 100, 11, false, 11);
+        assert_eq!(m_off, m_on, "movestogo path must not see the credit");
+
+        TM_PHASE_ENTRY_CREDIT.store(saved, Ordering::Relaxed);
+    }
+
+    /// The entry tracker takes the MINIMUM, so a new game resets it even when
+    /// the GUI never sends `ucinewgame`.
+    #[test]
+    fn entry_fullmove_tracker_self_heals() {
+        tm_reset_entry_fullmove();
+        assert_eq!(tm_record_entry_fullmove(11), 11, "first budgeted move wins");
+        assert_eq!(tm_record_entry_fullmove(12), 11, "later moves must not move it");
+        assert_eq!(tm_record_entry_fullmove(40), 11);
+        // A lower fullmove can only mean a new game.
+        assert_eq!(tm_record_entry_fullmove(2), 2, "a lower fullmove starts a new game");
+        assert_eq!(tm_record_entry_fullmove(9), 2);
+        tm_reset_entry_fullmove();
+        assert_eq!(tm_record_entry_fullmove(7), 7, "reset must clear the entry");
+        tm_reset_entry_fullmove();
     }
 
     /// A quiet, clearly-not-forced middlegame with many legal moves and no
@@ -9597,7 +9751,7 @@ mod tests {
         let our_inc = 1_000u64;
         let overhead = 100u64;
         let (soft, hard, _max, stockpile) =
-            compute_tm_budgets(our_time, our_inc, 0, overhead, 20, true);
+            compute_tm_budgets(our_time, our_inc, 0, overhead, 20, true, 1);
         // A short ponder, charged in full: the slice is nearly the whole soft.
         let elapsed = 200u64;
         let slice = soft.saturating_sub(elapsed)
