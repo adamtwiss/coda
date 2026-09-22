@@ -551,7 +551,7 @@ tunables!(
     // steers the tree off the draw; shallow corrections partly mask it. The tables
     // are trained overwhelmingly at depth 1-3, so trusting them less deep in the
     // tree is the direction the training distribution supports.
-    (CORR_APPLY_PLY_FADE, 0, 0, 64, 4.0, false),
+    (CORR_APPLY_PLY_FADE, 16, 0, 64, 4.0, false),
     // Correction-history output scaling — the output is scaled rather than the
     // input pre-clamped:
     //   bonus = err * (depth+1).min(W) / CORR_ERR_DIV
