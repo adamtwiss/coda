@@ -542,6 +542,16 @@ tunables!(
     // Fixed-point /10.
     (CORR_BONUS_CAP_DIV_10X, 38, 10, 160, 15.0, false),
     (CORR_HIST_GRAIN_T, 13, 1, 32, 1.55, false),
+    // Fade the APPLIED correction with ply: applied = corr * max(0, FADE - ply) / FADE.
+    // 0 = off (current behaviour). Measured 2026-09-22 on five externally-verified
+    // drawn positions where the PV reaches a repetition the root does not credit:
+    // applying corrhist only at ply <= 4 reads 80, only at ply >= 16 reads 125, both
+    // far worse than everywhere (33) or off (6); excluding the root alone changes
+    // nothing. The corrected static at DEEP nodes feeds RFP/futility/NMP/LMR and
+    // steers the tree off the draw; shallow corrections partly mask it. The tables
+    // are trained overwhelmingly at depth 1-3, so trusting them less deep in the
+    // tree is the direction the training distribution supports.
+    (CORR_APPLY_PLY_FADE, 0, 0, 64, 4.0, false),
     // Correction-history output scaling — the output is scaled rather than the
     // input pre-clamped:
     //   bonus = err * (depth+1).min(W) / CORR_ERR_DIV
@@ -2542,7 +2552,10 @@ fn corrected_eval(info: &SearchInfo, board: &Board, raw_eval: i32, ply: usize) -
     // There is deliberately no material damping here: the residual update
     // baseline makes corrhist converge to the true (~0) correction in
     // low-signal positions, so a piece-count fortress guard is redundant.
-    let adjusted = raw_eval + correction_value(info, board, ply);
+    let fade = tp(&CORR_APPLY_PLY_FADE);
+    let corr = correction_value(info, board, ply);
+    let corr = if fade > 0 { corr * (fade - (ply as i32).min(fade)) / fade } else { corr };
+    let adjusted = raw_eval + corr;
     // Keep the corrected static eval strictly inside the non-mate band so it
     // can never be read back as a mate by the MATE_IN_MAX_PLY guards. (Real
     // evals live in ±4095, so this clamp is purely defensive.)
