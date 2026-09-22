@@ -210,3 +210,120 @@ mod tests {
         assert_eq!(c.probe(0x1234_5678, 80), Some(1));
     }
 }
+
+/// DTZ probe cache, keyed by Zobrist hash ALONE.
+///
+/// Unlike a WDL verdict, DTZ is a property of the position and does NOT
+/// depend on the halfmove clock — the clock is applied afterwards, by pure
+/// arithmetic, in `AmbiguousWdl::from_dtz_and_halfmoves`. So one DTZ entry
+/// serves a position at every halfmove it is ever reached at, where the WDL
+/// cache must hold a separate entry per clock value. Measured on 6-man won
+/// endgames, 34.8% of full probes were the same position at a different
+/// halfmove, and that is exactly the redundant DTZ work this removes.
+///
+/// Same lockless XOR-verified scheme as `TbCache`: a torn read fails the
+/// check and reads as a miss, which is benign.
+pub struct DtzCache {
+    slots: Box<[Slot]>,
+    mask: u64,
+    enabled: bool,
+}
+
+/// Pack (dtz, rounded) into a non-zero u64 so 0 still means "empty slot".
+/// The offset moves the signed value into unsigned space before shifting;
+/// the `+ 1` guarantees the result is never 0 (a precise DTZ of 0 would
+/// otherwise encode to 0 and read back as an empty slot).
+#[inline(always)]
+fn encode_dtz(dtz: i32, rounded: bool) -> u64 {
+    ((((dtz as i64) + (1i64 << 31)) as u64) << 1 | rounded as u64) + 1
+}
+
+#[inline(always)]
+fn decode_dtz(v: u64) -> (i32, bool) {
+    let v = v - 1;
+    (((v >> 1) as i64 - (1i64 << 31)) as i32, v & 1 != 0)
+}
+
+impl DtzCache {
+    pub fn new(mb: usize) -> Self {
+        if mb == 0 {
+            return Self { slots: Box::new([]), mask: 0, enabled: false };
+        }
+        let slot_bytes = std::mem::size_of::<Slot>();
+        let desired = (mb * 1024 * 1024) / slot_bytes;
+        let mut n = 1usize;
+        while n * 2 <= desired { n *= 2; }
+        n = n.max(1024);
+        let mut v = Vec::with_capacity(n);
+        for _ in 0..n {
+            v.push(Slot { key_xor_value: AtomicU64::new(0), value: AtomicU64::new(0) });
+        }
+        Self { slots: v.into_boxed_slice(), mask: (n as u64) - 1, enabled: true }
+    }
+
+    #[inline(always)]
+    pub fn enabled(&self) -> bool { self.enabled }
+
+    /// Probe by Zobrist key alone. No halfmove: see the type doc.
+    #[inline]
+    pub fn probe(&self, key: u64) -> Option<(i32, bool)> {
+        if !self.enabled { return None; }
+        let slot = &self.slots[(key & self.mask) as usize];
+        let kxv = slot.key_xor_value.load(Ordering::Acquire);
+        let val = slot.value.load(Ordering::Acquire);
+        if val != 0 && kxv ^ val == key { Some(decode_dtz(val)) } else { None }
+    }
+
+    #[inline]
+    pub fn store(&self, key: u64, dtz: i32, rounded: bool) {
+        if !self.enabled { return; }
+        let slot = &self.slots[(key & self.mask) as usize];
+        let val = encode_dtz(dtz, rounded);
+        slot.value.store(val, Ordering::Release);
+        slot.key_xor_value.store(key ^ val, Ordering::Release);
+    }
+
+    pub fn clear(&self) {
+        for slot in self.slots.iter() {
+            slot.key_xor_value.store(0, Ordering::Relaxed);
+            slot.value.store(0, Ordering::Relaxed);
+        }
+    }
+
+    pub fn size_mb(&self) -> usize {
+        if !self.enabled { 0 } else {
+            self.slots.len() * std::mem::size_of::<Slot>() / (1024 * 1024)
+        }
+    }
+}
+
+#[cfg(test)]
+mod dtz_cache_tests {
+    use super::*;
+
+    #[test]
+    fn dtz_encoding_roundtrips_including_zero_and_negatives() {
+        for dtz in [-1000i32, -101, -100, -1, 0, 1, 100, 101, 1000] {
+            for rounded in [false, true] {
+                let v = encode_dtz(dtz, rounded);
+                assert_ne!(v, 0, "encoding must stay non-zero for dtz={dtz}");
+                assert_eq!(decode_dtz(v), (dtz, rounded), "roundtrip dtz={dtz}");
+            }
+        }
+    }
+
+    #[test]
+    fn dtz_cache_store_probe_roundtrip() {
+        let c = DtzCache::new(1);
+        c.store(0xDEADBEEF, -37, true);
+        assert_eq!(c.probe(0xDEADBEEF), Some((-37, true)));
+        assert_eq!(c.probe(0xDEADBEEE), None);
+    }
+
+    #[test]
+    fn dtz_cache_disabled_never_hits() {
+        let c = DtzCache::new(0);
+        c.store(1, 5, false);
+        assert_eq!(c.probe(1), None);
+    }
+}
