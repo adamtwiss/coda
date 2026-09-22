@@ -819,6 +819,15 @@ pub fn tm_record_entry_fullmove(fullmove: u16) -> u16 {
     }
 }
 
+/// This game's recorded entry fullmove, 0 before the first budgeted move.
+/// Read by the TMDebug emit so a log can prove the late-entry credit fired —
+/// the global is the same value BOTH budget sites pass, including the
+/// ponderhit path in uci.rs, where the search thread owns `info` and a
+/// per-search field would silently read 0.
+pub fn tm_entry_fullmove() -> u16 {
+    TM_ENTRY_FULLMOVE.load(Ordering::Relaxed) as u16
+}
+
 /// Clear the recorded entry fullmove. Called from the `ucinewgame` handler.
 pub fn tm_reset_entry_fullmove() {
     TM_ENTRY_FULLMOVE.store(0, Ordering::Relaxed);
@@ -5034,7 +5043,8 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                  tm_baseline={} stab={} bmc={} asp_fl={} asp_fh={} forced={:?} \
                  cross_prev={} \
                  stabf={:.2} flf={:.2} forcedf={:.3} subf={:.2} subfrac={:.3} \
-                 trendf={:.2} mult={:.2} adjsoft={} overshoot={}",
+                 trendf={:.2} mult={:.2} adjsoft={} overshoot={} \
+                 entryfm={} credit={}",
                 info.completed_depth,
                 move_to_uci(best_move),
                 info.last_score,
@@ -5060,6 +5070,9 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                 info.tm_dbg.product,
                 info.tm_dbg.adjusted_soft,
                 overshoot,
+                tm_entry_fullmove(),
+                (tm_entry_fullmove().max(1) - 1)
+                    .min(tp(&TM_PHASE_ENTRY_CREDIT).max(0) as u16),
             );
         }
     }
