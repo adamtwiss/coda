@@ -5754,7 +5754,15 @@ fn negamax(
         // qsearch-verified non-PV form: when static eval is hopelessly below
         // alpha at shallow depth, drop to qsearch and trust its fail-low.
         // Runs before RFP (consensus order: razor -> RFP -> NMP).
+        // allNode-only gate. Razoring is a fail-LOW cutoff, so it belongs at
+        // the node type where a fail low is expected — allNodes — exactly as
+        // NMP, a fail-HIGH cutoff, is already restricted to cutNodes above.
+        // Measured on our own bench tree before gating: razoring succeeded on
+        // 83.1% of allNode attempts against 45.3% of cutNode ones, so more
+        // than half of cutNode attempts paid for a verification qsearch and
+        // then searched anyway. Same shape as the NMP cut-node gate.
         if !is_pv
+            && !cut_node
             && ply > 0
             && depth <= tp10(&RAZOR_DEPTH_10X)
             && alpha.abs() < 2000
