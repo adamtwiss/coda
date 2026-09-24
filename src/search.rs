@@ -5750,11 +5750,24 @@ fn negamax(
     // it removes the mechanism that kills shallow NMP — NMP-first intercepts
     // free RFP cutoffs — which is what enables the min-depth de-gate below.
     if !in_check {
+        // Does the TT name a QUIET move as best here? Shared by razoring and
+        // RFP below. For RFP the argument is "a good quiet move is known, so
+        // do not prune on static eval alone". For razoring the argument is
+        // STRONGER and specific to it: razoring's evidence is a QSEARCH,
+        // which searches only captures and checks and is therefore
+        // STRUCTURALLY BLIND to quiet moves. A TT entry naming a quiet best
+        // move is exactly the case where that evidence cannot see the escape.
+        let tt_move_is_quiet = tt_move != NO_MOVE
+            && board.piece_type_at(move_to(tt_move)) == NO_PIECE_TYPE
+            && move_flags(tt_move) != FLAG_EN_PASSANT
+            && !is_promotion(tt_move);
+
         // Razoring. 10/10 stronger engines have the
         // qsearch-verified non-PV form: when static eval is hopelessly below
         // alpha at shallow depth, drop to qsearch and trust its fail-low.
         // Runs before RFP (consensus order: razor -> RFP -> NMP).
         if !is_pv
+            && !tt_move_is_quiet
             && ply > 0
             && depth <= tp10(&RAZOR_DEPTH_10X)
             && alpha.abs() < 2000
@@ -5775,10 +5788,7 @@ fn negamax(
         // Reverse Futility Pruning (Static Null Move Pruning) — pre-NMP site.
         // RFP TT quiet guard: skip RFP when TT has a quiet best move (Tucano/Weiss).
         // If we know a good quiet move exists, don't prune based on static eval alone.
-        let tt_move_is_quiet = tt_move != NO_MOVE
-            && board.piece_type_at(move_to(tt_move)) == NO_PIECE_TYPE
-            && move_flags(tt_move) != FLAG_EN_PASSANT
-            && !is_promotion(tt_move);
+        // (computed above, shared with razoring)
         // TB/mate guard: every peer skips RFP when eval is near mate/TB range.
         // Without this, RFP could cut a node where NNUE sees forced mate. (RFP audit RFP-3)
         if depth <= tp(&RFP_DEPTH) && ply > 0 && !tt_pv && !tt_move_is_quiet && info.excluded_move[ply_u] == NO_MOVE && FEAT_RFP.load(Ordering::Relaxed)
