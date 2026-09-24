@@ -5754,7 +5754,13 @@ fn negamax(
         // qsearch-verified non-PV form: when static eval is hopelessly below
         // alpha at shallow depth, drop to qsearch and trust its fail-low.
         // Runs before RFP (consensus order: razor -> RFP -> NMP).
+        // Decline at nodes that have ever been on the PV. RFP already does
+        // this. Unlike the quiet-TT-move guard there is no razoring-specific
+        // mechanism here, only the general argument that formerly-PV nodes are
+        // the ones least worth resolving on a shallow static margin — so this
+        // is tested separately rather than bundled.
         if !is_pv
+            && !tt_pv
             && ply > 0
             && depth <= tp10(&RAZOR_DEPTH_10X)
             && alpha.abs() < 2000
