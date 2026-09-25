@@ -114,7 +114,10 @@ tunables!(
     // effective value, so such a parameter can post a large SPSA percentage
     // while changing nothing at all. Check the bucket before acting on a mover.
     (NMP_BASE_R_10X, 58, 20, 80, 15.0, true),
-    (NMP_DEPTH_DIV_10X, 32, 10, 200, 15.0, true),
+    (NMP_DEPTH_DIV_10X, 41, 10, 200, 15.0, true),
+    // Clock-keyed: NMP_DEPTH_DIV_10X is the deep (root depth >= 17) value, the LTC walk #3709's 41; the
+    // shallow value (root depth <= 14) is the STC walk #3701's 21 — see clock_blend.
+    (NMP_DEPTH_DIV_SHALLOW_10X, 21, 10, 200, 15.0, false),
     (NMP_EVAL_DIV, 51, 50, 400, 17.5, true),
     (NMP_EVAL_MAX_10X, 35, 10, 60, 5.0, false),
     // Depth at/above which an NMP cutoff must be re-searched to verify it.
@@ -891,6 +894,22 @@ pub fn tp10(param: &AtomicI32) -> i32 {
     let v = param.load(Ordering::Relaxed);
     if v >= 0 { (v + 5) / 10 } else { (v - 5) / 10 }
 }
+
+/// Clock-keyed blend on iteration depth — the LMP/SE root-depth template, bounded. Returns the
+/// LTC-walk value at root depth >= CLOCK_KNEE, the STC-walk value at <= CLOCK_KNEE - CLOCK_SPAN,
+/// and a linear ramp between; shallower iterations do not extrapolate past the STC value.
+#[inline]
+fn clock_blend(root_depth: i32, deep: i32, shallow: i32) -> i32 {
+    let s = (CLOCK_KNEE - root_depth).clamp(0, CLOCK_SPAN);
+    deep + (shallow - deep) * s / CLOCK_SPAN
+}
+/// Measured median root depth in the LTC regime (ledger 2026-09-16, the SE_ROOT_KNEE derivation).
+const CLOCK_KNEE: i32 = 17;
+/// Measured STC-to-LTC gap in median root depth: 14 at 100 ms/move against 17 deep.
+const CLOCK_SPAN: i32 = 3;
+/// `tp10` rounding for an already-loaded x10 value.
+#[inline]
+fn round10(v: i32) -> i32 { if v >= 0 { (v + 5) / 10 } else { (v - 5) / 10 } }
 
 // Feature flags for ablation testing. All true = normal play.
 pub static FEAT_NMP: AtomicBool = AtomicBool::new(true);
@@ -5869,7 +5888,7 @@ fn negamax(
                         if spread < 8 { 0 } else if spread < 24 { 1 } else { 2 }
                     };
                     info.stats.rfp_audit_var_attempts[var_bucket] += 1;
-                    let mut r = tp10(&NMP_BASE_R_10X) + depth / tp10(&NMP_DEPTH_DIV_10X);
+                    let mut r = tp10(&NMP_BASE_R_10X) + depth / round10(clock_blend(info.root_depth, tp(&NMP_DEPTH_DIV_10X), tp(&NMP_DEPTH_DIV_SHALLOW_10X))).max(1);
                     if static_eval > beta {
                         let eval_r = ((static_eval - beta) / tp(&NMP_EVAL_DIV)).min(tp10(&NMP_EVAL_MAX_10X));
                         r += eval_r;
@@ -5914,7 +5933,7 @@ fn negamax(
     {
         info.stats.nmp_attempts += 1;
         // Adaptive reduction: scales with depth and eval margin above beta
-        let mut r = tp10(&NMP_BASE_R_10X) + depth / tp10(&NMP_DEPTH_DIV_10X);
+        let mut r = tp10(&NMP_BASE_R_10X) + depth / round10(clock_blend(info.root_depth, tp(&NMP_DEPTH_DIV_10X), tp(&NMP_DEPTH_DIV_SHALLOW_10X))).max(1);
         // Reduce more after captures: opponent just captured, null move more likely to work.
         // NOT a cross-engine consensus: SF's R is flat, and Obsidian keys on
         // the CURRENT node's ttMoveNoisy instead (a shape that has failed four
