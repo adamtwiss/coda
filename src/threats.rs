@@ -651,6 +651,32 @@ pub fn select_feature_space(net_num_threat_features: usize) -> Result<(), String
 /// Both sides of that race must hold this lock. `unwrap_or_else(into_inner)`
 /// so one genuinely-failing test doesn't poison every other test.
 #[cfg(test)]
+mod push_delta_tests {
+    use super::*;
+
+    /// `push_delta` filters with the white-orientation pair; the black
+    /// accumulator decodes the colour-flipped pair. The filter is only sound
+    /// if both give the same answer for every pair and square order, in both
+    /// feature spaces.
+    #[test]
+    fn pair_skip_is_perspective_independent() {
+        crate::init();
+        for cell in [&THREAT_TABLES_KING, &THREAT_TABLES_NOKING] {
+            let t = cell.get().expect("tables built at init");
+            for a in 0..NUM_COLORED_PIECES {
+                for v in 0..NUM_COLORED_PIECES {
+                    let w = t.pairs[a][v];
+                    let b = t.pairs[flipped_colored_piece(a)][flipped_colored_piece(v)];
+                    for (from, to) in [(3u32, 40u32), (40, 3)] {
+                        assert_eq!(w.skip(from, to), b.skip(from, to), "pair {} {}", a, v);
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
 pub(crate) static FEATURE_SPACE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// True when the active feature space tracks the king as an attacker.
@@ -676,6 +702,30 @@ fn get_threat_tables() -> &'static ThreatTables {
     // 'static OnceLock payload; select_feature_space only ever swaps it for
     // the other 'static payload. Acquire pairs with those Release stores.
     unsafe { &*ACTIVE_TABLES.load(std::sync::atomic::Ordering::Acquire) }
+}
+
+/// Emit a threat delta only when its (attacker, victim) pair yields a feature
+/// for these physical squares. Pairs that yield none — untracked, or symmetric
+/// and seen in the discarded order — used to be generated anyway and then
+/// decoded and thrown away on every replay: 19.7% of all decoded deltas on the
+/// H2H positions. Skipping is independent of perspective (see
+/// `pair_skip_is_perspective_independent`), so one check here stands for both
+/// accumulators, and the decode loops no longer need validity masking.
+#[inline(always)]
+fn push_delta(
+    deltas: &mut Vec<RawThreatDelta>,
+    tables: &ThreatTables,
+    attacker: usize,
+    from: u32,
+    victim: usize,
+    to: u32,
+    add: bool,
+) {
+    debug_assert!(attacker < NUM_COLORED_PIECES && victim < NUM_COLORED_PIECES);
+    let pair = unsafe { *tables.pairs.get_unchecked(attacker).get_unchecked(victim) };
+    if !pair.skip(from, to) {
+        deltas.push(RawThreatDelta::new(attacker as u8, from as u8, victim as u8, to as u8, add));
+    }
 }
 
 /// Get the total threat feature count (call after init_threats).
@@ -1382,6 +1432,7 @@ fn push_threats_for_piece(
     square: u32,
     add: bool,
 ) {
+    let tables = get_threat_tables();
     #[cfg(feature = "profile-threats")]
     let fn_start_tsc = crate::threats::thr_stats::rdtsc();
     #[cfg(feature = "profile-threats")]
@@ -1408,7 +1459,7 @@ fn push_threats_for_piece(
         let victim_pt = mailbox[target_sq as usize];
         if victim_pt >= 6 { continue; }
         let victim_color = if white_bb & (1u64 << target_sq) != 0 { WHITE } else { BLACK };
-        deltas.push(RawThreatDelta::new(cp as u8, square as u8, colored_piece(victim_color, victim_pt) as u8, target_sq as u8, add));
+        push_delta(deltas, tables, cp, square, colored_piece(victim_color, victim_pt), target_sq, add);
     }
 
     #[cfg(feature = "profile-threats")]
@@ -1519,18 +1570,15 @@ fn push_threats_for_piece(
                 let ypt = mailbox[y_sq as usize];
                 if ypt < 6 {
                     let ycolor = if white_bb & (1u64 << y_sq) != 0 { WHITE } else { BLACK };
-                    deltas.push(RawThreatDelta::new(
-                        slider_cp as u8, slider_sq as u8,
-                        colored_piece(ycolor, ypt) as u8, y_sq as u8,
-                        !add,
-                    ));
+                    push_delta(deltas, tables, slider_cp as usize, slider_sq as u32,
+                        colored_piece(ycolor, ypt), y_sq as u32, !add);
                 }
             }
         }
 
         // The slider itself attacks/no longer attacks this square
         if emit_slider_sees {
-            deltas.push(RawThreatDelta::new(slider_cp as u8, slider_sq as u8, cp as u8, square as u8, add));
+            push_delta(deltas, tables, slider_cp as usize, slider_sq as u32, cp, square, add);
         }
     }
 
@@ -1644,7 +1692,7 @@ fn push_threats_for_piece(
         let ns_pt = mailbox[ns_sq as usize];
         if ns_pt >= 6 { continue; }
         let ns_color = if white_bb & (1u64 << ns_sq) != 0 { WHITE } else { BLACK };
-        deltas.push(RawThreatDelta::new(colored_piece(ns_color, ns_pt) as u8, ns_sq as u8, cp as u8, square as u8, add));
+        push_delta(deltas, tables, colored_piece(ns_color, ns_pt), ns_sq as u32, cp, square, add);
     }
 
     #[cfg(feature = "profile-threats")]
@@ -1954,11 +2002,11 @@ unsafe fn apply_threat_deltas_dual_body(
     let mut subs_b_storage = std::mem::MaybeUninit::<[usize; MAX_THREAT_DELTAS + crate::pawn_pair::MAX_PAWN_PAIR_DELTAS]>::uninit();
     // Branch-free compress. Per delta we always compute both perspectives'
     // feature index and store it into the next slot of BOTH the add and the
-    // sub list, then advance only the count of the list it belongs to, and
-    // only when the delta is valid. A slot written for an invalid delta
-    // (untracked pair, discarded symmetric order, index out of range) or for
-    // the wrong list is scratch: the next store to that list overwrites it
-    // and the final `scratch_slice!` never exposes it. This replaces three
+    // sub list, then advance only the count of the list it belongs to. A slot
+    // written for the wrong list is scratch: the next store to that list
+    // overwrites it and the final `scratch_slice!` never exposes it. (Invalid
+    // deltas — untracked pairs, the discarded symmetric order — are no longer
+    // generated at all; see `push_delta`.) This replaces three
     // data-dependent branches per delta (`skip`, the bound check, and the
     // add/sub selection) that LBR sampling showed were ~12% of ALL
     // mispredicts in the engine — the same shape as the L2 zero-skip
@@ -1990,26 +2038,24 @@ unsafe fn apply_threat_deltas_dual_body(
         let victim = delta.victim_cp() as usize;
         let to = delta.to_sq() as u32;
         let add = delta.add();
-        // Physical-square order for the symmetric-pair tie-break; identical
-        // for both perspectives.
-        let discard_order = (from as u8) < (to as u8);
 
+        // Generation emits only deltas that yield a feature (`push_delta`),
+        // so every delta here is valid for both perspectives and needs no
+        // masking; the checks stay as debug assertions.
         let pair_w = tables.pairs[attacker][victim];
         let from_w = (from ^ flip_w) as usize;
         let to_w = (to ^ flip_w) as usize;
         let idx_w = pair_w.base
             + tables.from_offset[attacker][from_w]
             + tables.ray_rank[attacker][from_w][to_w] as i32;
-        let valid_w = pair_w.tracked
-            & !(pair_w.symmetric & discard_order)
-            & ((idx_w as usize) < num_threats);
+        debug_assert!(!pair_w.skip(from, to) && (idx_w as usize) < num_threats);
         unsafe {
             adds_w_ptr.add(n_adds_w).write(idx_w as usize);
             subs_w_ptr.add(n_subs_w).write(idx_w as usize);
         }
-        prefetch_row(threat_weights, idx_w, valid_w, hidden_size);
-        n_adds_w += (valid_w & add) as usize;
-        n_subs_w += (valid_w & !add) as usize;
+        prefetch_row(threat_weights, idx_w, true, hidden_size);
+        n_adds_w += add as usize;
+        n_subs_w += !add as usize;
 
         let attacker_b = flipped_colored_piece(attacker);
         let victim_b = flipped_colored_piece(victim);
@@ -2019,16 +2065,14 @@ unsafe fn apply_threat_deltas_dual_body(
         let idx_b = pair_b.base
             + tables.from_offset[attacker_b][from_b]
             + tables.ray_rank[attacker_b][from_b][to_b] as i32;
-        let valid_b = pair_b.tracked
-            & !(pair_b.symmetric & discard_order)
-            & ((idx_b as usize) < num_threats);
+        debug_assert!(!pair_b.skip(from, to) && (idx_b as usize) < num_threats);
         unsafe {
             adds_b_ptr.add(n_adds_b).write(idx_b as usize);
             subs_b_ptr.add(n_subs_b).write(idx_b as usize);
         }
-        prefetch_row(threat_weights, idx_b, valid_b, hidden_size);
-        n_adds_b += (valid_b & add) as usize;
-        n_subs_b += (valid_b & !add) as usize;
+        prefetch_row(threat_weights, idx_b, true, hidden_size);
+        n_adds_b += add as usize;
+        n_subs_b += !add as usize;
     }
 
     // Same fold as the single-perspective path, once per perspective. Each
