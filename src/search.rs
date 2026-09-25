@@ -316,7 +316,10 @@ tunables!(
     // move-count term that the source shape omits, so the constants would
     // otherwise double-count. Ranges run to 0 so SPSA can kill dead terms.
     (LMR_WINBETA_CENTI, 32, 0, 250, 12.0, false),
-    (LMR_TTALPHA_CENTI, 27, 0, 150, 8.0, true),
+    (LMR_TTALPHA_CENTI, 25, 0, 150, 8.0, true),
+    // Clock-keyed: LMR_TTALPHA_CENTI is the deep (root depth >= 17) value, the LTC walk #3709's 25; the
+    // shallow value (root depth <= 14) is the STC walk #3701's 36 — see clock_blend.
+    (LMR_TTALPHA_SHALLOW_CENTI, 36, 0, 150, 8.0, false),
     (LMR_EXPECT_MULT, 20, 0, 120, 6.0, true),
     // cutoff_count LMR terms. When the child ply has failed high more than
     // twice under this node, reduce late moves more (with extra at non-PV
@@ -891,6 +894,22 @@ pub fn tp10(param: &AtomicI32) -> i32 {
     let v = param.load(Ordering::Relaxed);
     if v >= 0 { (v + 5) / 10 } else { (v - 5) / 10 }
 }
+
+/// Clock-keyed blend on iteration depth — the LMP/SE root-depth template, bounded. Returns the
+/// LTC-walk value at root depth >= CLOCK_KNEE, the STC-walk value at <= CLOCK_KNEE - CLOCK_SPAN,
+/// and a linear ramp between; shallower iterations do not extrapolate past the STC value.
+#[inline]
+fn clock_blend(root_depth: i32, deep: i32, shallow: i32) -> i32 {
+    let s = (CLOCK_KNEE - root_depth).clamp(0, CLOCK_SPAN);
+    deep + (shallow - deep) * s / CLOCK_SPAN
+}
+/// Measured median root depth in the LTC regime (ledger 2026-09-16, the SE_ROOT_KNEE derivation).
+const CLOCK_KNEE: i32 = 17;
+/// Measured STC-to-LTC gap in median root depth: 14 at 100 ms/move against 17 deep.
+const CLOCK_SPAN: i32 = 3;
+/// `tp10` rounding for an already-loaded x10 value.
+#[inline]
+fn round10(v: i32) -> i32 { if v >= 0 { (v + 5) / 10 } else { (v - 5) / 10 } }
 
 // Feature flags for ablation testing. All true = normal play.
 pub static FEAT_NMP: AtomicBool = AtomicBool::new(true);
@@ -6758,7 +6777,7 @@ fn negamax(
                     let tt_score_node = score_from_tt(tt_entry.score, ply, board.halfmove);
                     // (b) TT already says this node can't beat alpha.
                     if tt_score_node <= alpha {
-                        reduction += tp(&LMR_TTALPHA_CENTI);
+                        reduction += clock_blend(info.root_depth, tp(&LMR_TTALPHA_CENTI), tp(&LMR_TTALPHA_SHALLOW_CENTI));
                     }
                 }
                 // (d) Quiet expectation gap: eval far below alpha → this node is
@@ -6907,7 +6926,7 @@ fn negamax(
                     if tt_hit && tt_entry.flag != TT_FLAG_NONE {
                         let tt_score_node = score_from_tt(tt_entry.score, ply, board.halfmove);
                         if tt_score_node <= alpha {
-                            reduction += tp(&LMR_TTALPHA_CENTI);
+                            reduction += clock_blend(info.root_depth, tp(&LMR_TTALPHA_CENTI), tp(&LMR_TTALPHA_SHALLOW_CENTI));
                         }
                     }
 
