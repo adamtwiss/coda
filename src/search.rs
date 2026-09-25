@@ -5775,7 +5775,12 @@ fn negamax(
         // qsearch-verified non-PV form: when static eval is hopelessly below
         // alpha at shallow depth, drop to qsearch and trust its fail-low.
         // Runs before RFP (consensus order: razor -> RFP -> NMP).
+        // allNode-only. Razoring is a fail-LOW cutoff and NMP, a fail-HIGH
+        // one, is already restricted to cutNodes; this is the mirror. Measured
+        // razor hit rate before gating: 83.1% at allNodes against 45.3% at
+        // cutNodes.
         if !is_pv
+            && !cut_node
             && ply > 0
             && FEAT_RAZOR.load(Ordering::Relaxed)
             && depth <= tp10(&RAZOR_DEPTH_10X)
