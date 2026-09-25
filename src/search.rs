@@ -174,7 +174,10 @@ tunables!(
     // Futility margin: base + per-depth, compared against alpha at the
     // frontier. History adjusts the effective lmr_depth used here, so these
     // interact with the LMR history terms — retune the pair together.
-    (FUT_BASE, 84, 0, 200, 9.0, true),
+    (FUT_BASE, 91, 0, 200, 9.0, true),
+    // Clock-keyed: FUT_BASE is the deep (root depth >= 17) value, the LTC walk #3709's 91; the
+    // shallow value (root depth <= 14) is the STC walk #3701's 80 — see clock_blend.
+    (FUT_BASE_SHALLOW, 80, 0, 200, 9.0, false),
     (FUT_PER_DEPTH, 94, 40, 250, 10.5, true),
     // Strong-history exemption for quiet futility: a quiet whose main history
     // exceeds this is never futility-pruned. It was the hardcoded literal 12000
@@ -891,6 +894,22 @@ pub fn tp10(param: &AtomicI32) -> i32 {
     let v = param.load(Ordering::Relaxed);
     if v >= 0 { (v + 5) / 10 } else { (v - 5) / 10 }
 }
+
+/// Clock-keyed blend on iteration depth — the LMP/SE root-depth template, bounded. Returns the
+/// LTC-walk value at root depth >= CLOCK_KNEE, the STC-walk value at <= CLOCK_KNEE - CLOCK_SPAN,
+/// and a linear ramp between; shallower iterations do not extrapolate past the STC value.
+#[inline]
+fn clock_blend(root_depth: i32, deep: i32, shallow: i32) -> i32 {
+    let s = (CLOCK_KNEE - root_depth).clamp(0, CLOCK_SPAN);
+    deep + (shallow - deep) * s / CLOCK_SPAN
+}
+/// Measured median root depth in the LTC regime (ledger 2026-09-16, the SE_ROOT_KNEE derivation).
+const CLOCK_KNEE: i32 = 17;
+/// Measured STC-to-LTC gap in median root depth: 14 at 100 ms/move against 17 deep.
+const CLOCK_SPAN: i32 = 3;
+/// `tp10` rounding for an already-loaded x10 value.
+#[inline]
+fn round10(v: i32) -> i32 { if v >= 0 { (v + 5) / 10 } else { (v - 5) / 10 } }
 
 // Feature flags for ablation testing. All true = normal play.
 pub static FEAT_NMP: AtomicBool = AtomicBool::new(true);
@@ -6362,7 +6381,7 @@ fn negamax(
             let hist_adj = main_hist / 128;
             let threats_adj = any_threat_count * tp(&FUT_THREATS_MARGIN);
             let mc_adj = (move_count * tp(&FUT_MC_PER_MOVE)).min(lmr_d * tp(&FUT_PER_DEPTH));
-            let futility_value = static_eval + tp(&FUT_BASE) + lmr_d * tp(&FUT_PER_DEPTH) + hist_adj + threats_adj - mc_adj;
+            let futility_value = static_eval + clock_blend(info.root_depth, tp(&FUT_BASE), tp(&FUT_BASE_SHALLOW)) + lmr_d * tp(&FUT_PER_DEPTH) + hist_adj + threats_adj - mc_adj;
             // Direct-check carve-out + strong-history exemption: a move that
             // gives check, or one our own history rates highly, is not futile.
             if futility_value <= alpha && main_hist < tp(&FUT_HIST_EXEMPT) && !board.gives_direct_check(mv) {
