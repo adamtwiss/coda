@@ -270,6 +270,14 @@ tunables!(
     (TM_STAB_3_100, 80, 50, 120, 3.0, false),         // stability table [3]
     (TM_STAB_4_100, 74, 40, 110, 3.0, false),         // stability table [4+]
     (TM_FAIL_LOW_BONUS_1000, 350, 100, 700, 20.0, false), // 1 + N/1000 * fail_lows
+    // Churn-memory factor (Threads == 1): 1 + N/1000 * min(2, root best-move
+    // changes this search). 0 = off (bench-identical). Same shape, cap and
+    // per-event step as the fail-low factor above, so the natural first value
+    // to test is that factor's own 350. TM_CHURN_GATED = 1 applies it only once
+    // the move has settled (tm_best_stable >= 1), where the stability table has
+    // stopped responding to the churn it saw earlier in the search.
+    (TM_CHURN_1000, 0, 0, 700, 20.0, false),
+    (TM_CHURN_GATED, 0, 0, 1, 1.0, false),
     (TM_FORCED_STRONG_1000, 381, 150, 700, 20.0, false),  // strong-forced * N/1000
     (TM_FORCED_WEAK_1000, 631, 300, 950, 25.0, false),    // weak-forced * N/1000
     (TM_SUBTREE_MULT_100, 140, 90, 200, 4.0, false),      // (base-frac) * N/100
@@ -1260,6 +1268,7 @@ struct TmDbg {
     forced: f64,
     subtree: f64,
     trend: f64,
+    churn: f64,
     /// Best-move node fraction feeding the subtree factor; -1 when not computed.
     frac: f64,
     /// Post-ceiling factor product applied to soft_limit.
@@ -1339,9 +1348,8 @@ pub struct SearchInfo {
     /// expected — already captured by score_factor's upward sense).
     tm_asp_fail_high: u32,
     /// Cumulative count of root best-move changes between iterations,
-    /// reset at search start. DIAGNOSTIC-ONLY (TMDebug output) — the upward
-    /// multiplier it once drove was dropped. A candidate for re-use as an
-    /// SF-style within-iteration instability factor.
+    /// reset at search start. Read by the churn-memory TM factor
+    /// (TM_CHURN_1000, Threads == 1, off by default) and by TMDebug.
     tm_best_move_changes: u32,
     /// Forced-move detection state. Set after an ID iteration
     /// at the root when `detect_forced_move` finds that excluding the current best
@@ -4229,9 +4237,8 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                 } else {
                     info.tm_best_stable = 0;
                     // Cumulative count of root best-move changes since
-                    // search start. Drives an upward multiplier on tactically
-                    // unstable positions (Stockfish's best-move-instability
-                    // multiplier pattern).
+                    // search start. Read by the churn-memory factor
+                    // (TM_CHURN_1000, Threads == 1) and by TMDebug.
                     info.tm_best_move_changes = info.tm_best_move_changes.saturating_add(1);
                     // Publish main's change into its own slot (thread 0) of the
                     // cross-thread bmc array (concept from SF). Read+reset in the TM block.
@@ -4747,12 +4754,33 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             // drained above. See `bmc_instability_factor`.
             let cross_thread_instability = bmc_instability_factor(bmc_window, info.num_threads);
 
+            // Factor 7: churn memory (Threads == 1 only; at Threads > 1 the
+            // pool-wide factor above already reads best-move changes). The
+            // stability table only sees the CURRENT streak, so a search whose
+            // best move flipped several times and then held for an iteration
+            // is priced like one that never flipped. Measured on 60+0
+            // gauntlets (500 balanced positions, 3 extra plies, SF-refereed):
+            // with the stability and subtree factors both quiet, two or more
+            // changes lifted the rate at which extra depth changed the move
+            // from 4% to 17%. Shape mirrors the fail-low factor: a per-event
+            // step capped at two events.
+            let churn_multiplier = {
+                let k = tp(&TM_CHURN_1000) as f64 / 1000.0;
+                let gated_out = tp(&TM_CHURN_GATED) != 0 && info.tm_best_stable < 1;
+                if info.num_threads <= 1 && k > 0.0 && !gated_out {
+                    1.0 + k * (info.tm_best_move_changes.min(2) as f64)
+                } else {
+                    1.0
+                }
+            };
+
             let mut multiplier = stability_multiplier
                 * failed_low_multiplier
                 * forced_move_multiplier
                 * subtree_size_multiplier
                 * score_trend_multiplier
-                * cross_thread_instability;
+                * cross_thread_instability
+                * churn_multiplier;
             // No-inc clamp: factor product up to 6.5× at no-inc TCs blows
             // adjusted_soft past hard_time via iteration-overflow even with
             // the smaller no-inc opt baseline — observed at 3+0 as a run of a
@@ -4795,6 +4823,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                     forced: forced_move_multiplier,
                     subtree: subtree_size_multiplier,
                     trend: score_trend_multiplier,
+                    churn: churn_multiplier,
                     frac: subtree_frac,
                     product: multiplier,
                     adjusted_soft,
@@ -4948,7 +4977,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                  tm_baseline={} stab={} bmc={} asp_fl={} asp_fh={} forced={:?} \
                  cross_prev={} \
                  stabf={:.2} flf={:.2} forcedf={:.3} subf={:.2} subfrac={:.3} \
-                 trendf={:.2} mult={:.2} adjsoft={} overshoot={}",
+                 trendf={:.2} churnf={:.2} mult={:.2} adjsoft={} overshoot={}",
                 info.completed_depth,
                 move_to_uci(best_move),
                 info.last_score,
@@ -4971,6 +5000,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                 info.tm_dbg.subtree,
                 info.tm_dbg.frac,
                 info.tm_dbg.trend,
+                info.tm_dbg.churn,
                 info.tm_dbg.product,
                 info.tm_dbg.adjusted_soft,
                 overshoot,
