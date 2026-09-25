@@ -5411,6 +5411,7 @@ fn negamax(
                     && !child_disagrees
                 {
                     info.stats.tt_cutoffs += 1;
+                    trace_node!(info, board.hash, ply, "tt_cut", depth);
                     if tt_cross_gen {
                         info.stats.tt_cross_gen_cutoffs += 1;
                     }
@@ -5493,6 +5494,7 @@ fn negamax(
                 if alpha >= beta && halfmove_ok {
                     if tt_move != NO_MOVE {
                         info.stats.tt_cutoffs += 1;
+                        trace_node!(info, board.hash, ply, "tt_cut", depth);
                         if tt_cross_gen {
                             info.stats.tt_cross_gen_cutoffs += 1;
                         }
@@ -5963,11 +5965,13 @@ fn negamax(
                 }
                 if v_score >= beta {
                     info.stats.nmp_cutoffs += 1;
+                    trace_node!(info, board.hash, ply, "nmp_cut", depth);
                     return nmp_score;
                 }
                 info.stats.nmp_verify_fail += 1;
             } else {
                 info.stats.nmp_cutoffs += 1;
+                trace_node!(info, board.hash, ply, "nmp_cut", depth);
                 return nmp_score;
             }
         } else {
@@ -6119,6 +6123,7 @@ fn negamax(
 
             if score >= candidate_beta {
                 info.stats.probcut_cutoffs += 1;
+                trace_node!(info, board.hash, ply, "probcut_cut", depth);
                 // TT stores the RAW verified score (a tighter lower bound than
                 // the dampened value) and preserves the sticky PV flag — matches
                 // Stockfish. Prior code stored `dampened` and
