@@ -156,7 +156,7 @@ tunables!(
     // Razoring: drop straight to qsearch when static eval is far enough below
     // alpha that a full search is unlikely to recover it. Margin scales with
     // depth, gated to shallow depths only.
-    (RAZOR_MULT, 294, 100, 500, 20.0, false),
+    (RAZOR_MULT, 220, 100, 500, 20.0, false),
     (RAZOR_DEPTH_10X, 35, 10, 80, 5.0, true),
     // Razoring is disabled once |alpha| exceeds this, so it only fires in
     // positions that are still in the balance. The MAX IS DELIBERATELY FAR
@@ -5776,6 +5776,7 @@ fn negamax(
         // alpha at shallow depth, drop to qsearch and trust its fail-low.
         // Runs before RFP (consensus order: razor -> RFP -> NMP).
         if !is_pv
+            && !cut_node
             && ply > 0
             && FEAT_RAZOR.load(Ordering::Relaxed)
             && depth <= tp10(&RAZOR_DEPTH_10X)
