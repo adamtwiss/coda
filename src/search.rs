@@ -350,7 +350,10 @@ tunables!(
     // Non-core: near-inert in warm-TT games (dead-knob audit 2026-09-24).
     // One step down changes 0.02% of LMP prunes and one step up none: the
     // move-count limit already outgrows the move list at these depths.
-    (LMP_DEPTH_10X, 127, 40, 200, 20.0, false),
+    (LMP_DEPTH_10X, 143, 40, 200, 20.0, false),
+    // Clock-keyed: LMP_DEPTH_10X is the deep (root depth >= 17) value, the LTC walk #3709's 143; the
+    // shallow value (root depth <= 14) is the STC walk #3701's 114 — see clock_blend.
+    (LMP_DEPTH_SHALLOW_10X, 114, 40, 200, 20.0, false),
     // Margin-aware LMP. Coda's LMP limit keys on depth and improving only; the
     // fail-low histogram (b_probe_*) shows late-quiet work concentrating at
     // nodes that end up failing low, but its margin is only knowable AFTER the
@@ -891,6 +894,22 @@ pub fn tp10(param: &AtomicI32) -> i32 {
     let v = param.load(Ordering::Relaxed);
     if v >= 0 { (v + 5) / 10 } else { (v - 5) / 10 }
 }
+
+/// Clock-keyed blend on iteration depth — the LMP/SE root-depth template, bounded. Returns the
+/// LTC-walk value at root depth >= CLOCK_KNEE, the STC-walk value at <= CLOCK_KNEE - CLOCK_SPAN,
+/// and a linear ramp between; shallower iterations do not extrapolate past the STC value.
+#[inline]
+fn clock_blend(root_depth: i32, deep: i32, shallow: i32) -> i32 {
+    let s = (CLOCK_KNEE - root_depth).clamp(0, CLOCK_SPAN);
+    deep + (shallow - deep) * s / CLOCK_SPAN
+}
+/// Measured median root depth in the LTC regime (ledger 2026-09-16, the SE_ROOT_KNEE derivation).
+const CLOCK_KNEE: i32 = 17;
+/// Measured STC-to-LTC gap in median root depth: 14 at 100 ms/move against 17 deep.
+const CLOCK_SPAN: i32 = 3;
+/// `tp10` rounding for an already-loaded x10 value.
+#[inline]
+fn round10(v: i32) -> i32 { if v >= 0 { (v + 5) / 10 } else { (v - 5) / 10 } }
 
 // Feature flags for ablation testing. All true = normal play.
 pub static FEAT_NMP: AtomicBool = AtomicBool::new(true);
@@ -6290,7 +6309,7 @@ fn negamax(
         // count-pruning riskier and kept LMP_BASE blunt. SF/Berserk/
         // Obsidian all set skipQuiets before SEE/futility.
         // Formula: (LMP_BASE + depth²) / (2 - improving); check carve at depth<4.
-        if ply > 0 && !in_check && depth >= 1 && depth <= tp10(&LMP_DEPTH_10X)
+        if ply > 0 && !in_check && depth >= 1 && depth <= round10(clock_blend(info.root_depth, tp(&LMP_DEPTH_10X), tp(&LMP_DEPTH_SHALLOW_10X)))
             && !is_cap && !is_promo
             && !is_loss(best_score)
             && beta < MATE_IN_MAX_PLY  // forced-win guard: don't count-prune quiets while proving a win
