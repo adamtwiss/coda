@@ -37,17 +37,43 @@ pub fn transpose_weights_for_sparse(
     total_input: usize,  // pw * 2 (both perspectives)
     num_neurons: usize,
 ) -> Vec<i8> {
+    transpose_weights_for_sparse_range(weights_8t, total_input, num_neurons, 0, num_neurons)
+}
+
+/// As `transpose_weights_for_sparse`, but emits only neurons
+/// `neuron_base .. neuron_base + neuron_count`, laid out as if they were the
+/// whole table (per-chunk stride `neuron_count * 4`).
+///
+/// This is what lets a bucketed-hidden net keep the fast column-major kernels:
+/// `l1_weights_8t` holds every bucket's neurons in one array, so a table built
+/// over all of them strides by the TOTAL neuron count and the kernels — which
+/// take no bucket offset — would read the wrong slice. Emitting one section per
+/// bucket instead gives each bucket a table the kernels can consume unchanged,
+/// selected by a flat byte offset.
+///
+/// `num_neurons_total` is needed because the source array is
+/// `[all neurons' STM][all neurons' NTM]`, so the NTM block's start depends on
+/// the total, not on the slice being emitted.
+pub fn transpose_weights_for_sparse_range(
+    weights_8t: &[i8],
+    total_input: usize,
+    num_neurons_total: usize,
+    neuron_base: usize,
+    neuron_count: usize,
+) -> Vec<i8> {
     let per_persp = total_input / 2; // pw
     let num_chunks = total_input / 4; // total chunks for both perspectives
-    let mut sparse = vec![0i8; num_chunks * num_neurons * 4];
+    let mut sparse = vec![0i8; num_chunks * neuron_count * 4];
 
-    let ntm_offset = num_neurons * per_persp; // start of NTM block in weights_8t
+    // NTM block starts after EVERY neuron's STM row, not just the emitted ones.
+    let ntm_offset = num_neurons_total * per_persp;
 
     for chunk in 0..num_chunks {
         let is_ntm = chunk >= per_persp / 4;
         let local_chunk = if is_ntm { chunk - per_persp / 4 } else { chunk };
 
-        for neuron in 0..num_neurons {
+        for local in 0..neuron_count {
+            let neuron = neuron_base + local;
             for byte in 0..4 {
                 let input_idx = local_chunk * 4 + byte;
                 let src = if is_ntm {
@@ -55,7 +81,7 @@ pub fn transpose_weights_for_sparse(
                 } else {
                     neuron * per_persp + input_idx
                 };
-                let dst = chunk * num_neurons * 4 + neuron * 4 + byte;
+                let dst = chunk * neuron_count * 4 + local * 4 + byte;
                 if src < weights_8t.len() {
                     sparse[dst] = weights_8t[src];
                 }
