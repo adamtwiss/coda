@@ -2870,7 +2870,12 @@ fn select_l1_kernel(
     }
     // Bucketed nets are fine on the column-major path now that the table is
     // built one section per bucket and the caller passes that section.
-    let col_ok = have_sparse;
+    //
+    // CODA_FORCE_ROWMAJOR_L1 forces the row-major path. It exists so the two
+    // kernels can be compared on the SAME binary and net: row-major already
+    // handled bucketed nets correctly, so it is the reference implementation
+    // this change is verified against. Off unless the variable is set.
+    let col_ok = have_sparse && std::env::var_os("CODA_FORCE_ROWMAJOR_L1").is_none();
     #[cfg(target_arch = "x86_64")]
     {
         if has_avx512_vnni && col_ok && l1 == 16 && pw.is_multiple_of(4) {
