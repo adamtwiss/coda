@@ -6348,7 +6348,7 @@ fn negamax(
         // material. SF-shaped margin: base depth*MULT plus a capture-history
         // relaxation so historically-good captures (cutoff producers) survive a
         // lower base. Prune if SEE < -margin.
-        if is_cap && ply > 0 && !in_check && depth <= tp10(&SEE_CAP_DEPTH_10X)
+        if is_cap && ply > 0 && !is_pv && !in_check && depth <= tp10(&SEE_CAP_DEPTH_10X)  // node-type gate (research/node-type-gates-unverified-2026-09-29.md): an unverified move prune at a PV node can discard the move that sets the node's exact score
             && mv != tt_move && !is_loss(best_score)
             && FEAT_SEE_PRUNE.load(Ordering::Relaxed)
         {
@@ -6403,7 +6403,7 @@ fn negamax(
 
         // SEE quiet pruning: prune quiet moves landing on attacked squares.
         // Use lmrDepth² scaling (matching Stockfish/Berserk/Obsidian).
-        if ply > 0 && !in_check
+        if ply > 0 && !is_pv && !in_check  // node-type gate (research/node-type-gates-unverified-2026-09-29.md): an unverified move prune at a PV node can discard the move that sets the node's exact score
             && !is_cap && !is_promo
             && mv != tt_move
             && !is_loss(best_score)
