@@ -1567,6 +1567,10 @@ pub struct SearchInfo {
     /// Empty except during a MultiPV>1 secondary search, so single-PV play is
     /// byte-identical.
     pub root_ban: Vec<Move>,
+    /// UCI `go searchmoves`: when non-empty, the root searches only these
+    /// moves (main thread and helpers alike). Set on every `go`, so it never
+    /// leaks into the next search.
+    pub root_allow: Vec<Move>,
     static_evals: [i32; MAX_PLY + 1],
     /// Per-ply tt_pv, so a child can inherit its parent's PV-region flag.
     tt_pv_stack: [bool; MAX_PLY + 1],
@@ -1710,6 +1714,7 @@ impl SearchInfo {
             pv_len: [0; MAX_PLY + 1],
             multipv: 1,
             root_ban: Vec::new(),
+            root_allow: Vec::new(),
             pawn_hist: alloc_zeroed_box(),
             corr: CorrTables::new(),
             nnue_net: None,
@@ -2908,6 +2913,7 @@ fn refresh_helper_common(helper: &mut SearchInfo, main: &SearchInfo) {
     helper.global_nodes = main.global_nodes.clone();
     helper.thread_bmc = main.thread_bmc.clone(); // shared per-thread bmc array (SF cross-thread TM)
     helper.syzygy = main.syzygy.clone();
+    helper.root_allow = main.root_allow.clone(); // `go searchmoves` applies to helpers too
     helper.tb_probe_depth = main.tb_probe_depth;
 
     // Correction tables — SHARED with main (one Arc), so every thread trains
@@ -2945,6 +2951,25 @@ pub(crate) fn seed_helper_from_main(helper: &mut SearchInfo, main: &SearchInfo) 
 /// previously threw away by rebuilding a fresh helper every move. Eval-side
 /// state (corrhist) is still copied from main by `refresh_helper_common` for
 /// consistency, and pawn_hist is still cleared.
+/// The root's legal moves, restricted to `go searchmoves` when one was given.
+/// The root fallback move, the TT-move fallback and the forced-move shortcut
+/// all read this list, so they can never pick a move outside the restriction.
+fn root_moves(board: &Board, info: &SearchInfo) -> crate::movegen::MoveList {
+    let legal = generate_legal_moves(board);
+    if info.root_allow.is_empty() {
+        return legal;
+    }
+    let mut allowed = crate::movegen::MoveList::new();
+    for i in 0..legal.len {
+        if info.root_allow.contains(&legal.get(i)) {
+            allowed.push(legal.get(i));
+        }
+    }
+    // The UCI layer only passes legal moves, so this is never empty in
+    // practice; fall back to all moves rather than search nothing.
+    if allowed.len == 0 { legal } else { allowed }
+}
+
 pub(crate) fn refresh_helper_per_go(helper: &mut SearchInfo, main: &SearchInfo) {
     refresh_helper_common(helper, main);
     helper.history.age(4, 5);
@@ -3499,7 +3524,7 @@ pub(crate) fn search_helper(board: &mut Board, info: &mut SearchInfo, _limits: &
         }
     }
 
-    let root_legal = generate_legal_moves(board);
+    let root_legal = root_moves(board, info);
     let mut best_move = if root_legal.len > 0 { root_legal.get(0) } else { NO_MOVE };
 
     // Iterative deepening with aspiration windows — same flow as main
@@ -3992,7 +4017,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     let mut iter_pv: [Move; MAX_PLY + 1] = [NO_MOVE; MAX_PLY + 1];
 
     // Get a fallback move and keep the legal list for final validation
-    let root_legal = generate_legal_moves(board);
+    let root_legal = root_moves(board, info);
     if root_legal.len > 0 {
         best_move = root_legal.get(0);
         // Prefer the TT move (the previous search's best for this
@@ -6281,6 +6306,11 @@ fn negamax(
         // line. root_ban is empty except during MultiPV>1 secondary searches,
         // so single-PV play is byte-identical.
         if ply_u == 0 && !info.root_ban.is_empty() && info.root_ban.iter().any(|&m| m == mv) {
+            continue;
+        }
+        // `go searchmoves`: at the root, search only the listed moves. Empty
+        // (the normal case) leaves play byte-identical.
+        if ply_u == 0 && !info.root_allow.is_empty() && !info.root_allow.contains(&mv) {
             continue;
         }
 

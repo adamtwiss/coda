@@ -482,6 +482,10 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>) {
                     }
                 }
                 let is_ponder = tokens.contains(&"ponder");
+                // `go searchmoves ...`: restrict the root to these moves. The
+                // tablebase and book shortcuts below pick from ALL moves, so
+                // they are skipped while a restriction is in force.
+                let root_allow = parse_searchmoves(&tokens, &board);
 
                 // Try Syzygy tablebase at root. Behaviour splits on is_ponder:
                 //   - Non-ponder: walk DTZ to build a multi-ply PV, emit a
@@ -493,7 +497,7 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>) {
                 //     bestmove), and depth-counter updates. Ponderhit handler
                 //     below will override with TB-optimal move when the time
                 //     comes to play.
-                if let Some(ref tb) = syzygy {
+                if let Some(ref tb) = syzygy.as_ref().filter(|_| root_allow.is_empty()) {
                     if crate::bitboard::popcount(board.occupied()) as usize <= tb.max_pieces() {
                         if let Some((mut tb_pv, wdl)) = tb.probe_root_pv(&board, 32) {
                             // Drawn-root qualitative tiebreak (wdl == 0 only;
@@ -628,7 +632,7 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>) {
                 }
 
                 // Try opening book first (not in ponder mode)
-                if use_book && !is_ponder {
+                if use_book && !is_ponder && root_allow.is_empty() {
                     if let Some(ref book) = opening_book {
                         if let Some(book_move) = book.pick_move(&board) {
                             let uci = move_to_uci(book_move);
@@ -730,6 +734,9 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>) {
                 suppress_bestmove.store(false, Ordering::Relaxed);
                 ponder_search_start = Some(std::time::Instant::now());
                 let mut search_board = board.clone();
+                // Set on every `go` (empty when absent), so a restriction never
+                // carries over to the next search.
+                info.root_allow = root_allow;
                 let shared_tt = info.tt.clone();
                 let shared_net = info.nnue_net.clone();
                 let shared_stop = stop_flag.clone();
@@ -1608,6 +1615,26 @@ fn parse_clock_ms(tok: &str) -> u64 {
     }
 }
 
+/// The moves after `searchmoves` in a `go` command, up to the next `go`
+/// keyword, converted against `board`. Unparseable or illegal entries are
+/// dropped, so the result only ever holds legal moves; an empty result means
+/// no restriction.
+fn parse_searchmoves(tokens: &[&str], board: &Board) -> Vec<Move> {
+    const GO_KEYWORDS: [&str; 11] = ["wtime", "btime", "winc", "binc", "movestogo", "depth",
+        "nodes", "mate", "movetime", "infinite", "ponder"];
+    let Some(start) = tokens.iter().position(|&t| t == "searchmoves") else { return Vec::new() };
+    let legal = crate::movegen::generate_legal_moves(board);
+    let mut out = Vec::new();
+    for &t in tokens[start + 1..].iter().take_while(|t| !GO_KEYWORDS.contains(t)) {
+        if let Some(mv) = parse_uci_move(board, t) {
+            if (0..legal.len).any(|i| legal.get(i) == mv) && !out.contains(&mv) {
+                out.push(mv);
+            }
+        }
+    }
+    out
+}
+
 fn parse_go(tokens: &[&str]) -> SearchLimits {
     let mut limits = SearchLimits::new();
     let mut idx = 1;
@@ -1972,6 +1999,48 @@ mod tests {
 
         let clock = parse_go(&["go", "wtime", "10000", "btime", "10000"]);
         assert!(!clock.fixed_depth);
+    }
+
+    #[test]
+    fn parse_searchmoves_keeps_only_legal_listed_moves() {
+        init();
+        let board = Board::startpos();
+        // Moves up to the next keyword; illegal (e2e5) and junk entries dropped;
+        // duplicates collapsed.
+        let got = parse_searchmoves(
+            &["go", "searchmoves", "e2e4", "e2e5", "zz", "d2d4", "e2e4", "depth", "5"], &board);
+        let names: Vec<String> = got.iter().map(|&m| move_to_uci(m)).collect();
+        assert_eq!(names, vec!["e2e4", "d2d4"]);
+        // No searchmoves token -> no restriction.
+        assert!(parse_searchmoves(&["go", "depth", "5"], &board).is_empty());
+        // searchmoves before other limits.
+        let got = parse_searchmoves(&["go", "searchmoves", "a2a3", "wtime", "1000"], &board);
+        assert_eq!(got.len(), 1);
+    }
+
+    /// `go searchmoves` restricts the root: at startpos the engine would never
+    /// choose a2a3 on its own, so it is a clean witness that the restriction
+    /// holds through a real search.
+    #[test]
+    fn search_respects_root_allow() {
+        init();
+        let net_path = match crate::search::test_net_path() {
+            Some(p) => p,
+            None => { eprintln!("Skipping searchmoves test: no NNUE net found"); return; }
+        };
+        let mut board = Board::startpos();
+        let mut info = SearchInfo::new(1);
+        info.silent = true;
+        if let Err(e) = info.load_nnue(&net_path) {
+            eprintln!("Skipping searchmoves test: net load failed: {}", e);
+            return;
+        }
+        info.root_allow = parse_searchmoves(&["go", "searchmoves", "a2a3"], &board);
+        let mut limits = SearchLimits::new();
+        limits.depth = 6;
+        limits.fixed_depth = true;
+        let mv = crate::search::search(&mut board, &mut info, &limits);
+        assert_eq!(move_to_uci(mv), "a2a3");
     }
 
     /// P4 — the TT-probe ponder-hint fallback must NEVER emit an illegal
