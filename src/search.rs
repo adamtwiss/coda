@@ -134,18 +134,24 @@ tunables!(
     (RFP_DEPTH, 17, 2, 20, 2.0, true),
     (RFP_MARGIN_IMP, 24, 0, 150, 6.0, true),
     (RFP_MARGIN_NOIMP, 32, 0, 200, 7.5, true),
-    // Root-depth-aware RFP relaxation (single-set, self-adapts STC<->LTC):
+    // Naming: `_ITER_` knobs key on `info.root_depth`, the depth of the current
+    // iterative-deepening pass, and act at EVERY node of that pass, not at the
+    // root node. (They were called `_ROOT_` until 2026-09-29, which invited the
+    // misreading. Knobs about the root node itself, e.g. SE_ROOT_DECIDED_*,
+    // keep `_ROOT_`.)
+    //
+    // Iteration-depth-aware RFP relaxation (single-set, self-adapts STC<->LTC):
     // demand MORE static-eval confidence to RFP-cut as the OVERALL search
-    // depth grows past RFP_ROOT_THRESH (diminishing-returns of depth — the
+    // depth grows past RFP_ITER_THRESH (diminishing-returns of depth — the
     // marginal ply is cheap at LTC so deep pruning trades blindness for
     // worthless depth); relaxes deep RFP at LTC. SPSA tunes both.
     //
-    // NOT STC-neutral — same correction as the LMR_ROOT_* block below. Gated on
+    // NOT STC-neutral — same correction as the LMR_ITER_* block below. Gated on
     // root_depth, not on TC. Warm-TT measurement at 250ms/move: root_depth > 18
     // on 39% of moves overall — 0% in the opening but 92% through the late
     // middlegame. Cold-TT probes understate this badly.
-    (RFP_ROOT_THRESH, 17, 6, 30, 1.5, true),
-    (RFP_ROOT_COEF, 20, 0, 150, 7.5, false),
+    (RFP_ITER_THRESH, 17, 6, 30, 1.5, true),
+    (RFP_ITER_COEF, 20, 0, 150, 7.5, false),
     // Additional depth-local RFP relaxation: current main already scales RFP
     // by overall root depth; this term raises the margin for high remaining
     // depth regardless of TC. Consensus engines either cap RFP around d9-11
@@ -330,8 +336,8 @@ tunables!(
     // Minimum depth at which singular extension is attempted. Too low and
     // singular_depth is itself too shallow to judge singularity reliably.
     (SE_DEPTH_10X, 40, 40, 200, 20.0, true),
-    // Root-depth-aware uplift on the singular-extension depth gate, the same
-    // shape as LMP_ROOT_* and as the RFP_ROOT_* correction those both follow.
+    // Iteration-depth-aware uplift on the singular-extension depth gate, the same
+    // shape as LMP_ITER_* and as the RFP_ITER_* correction those both follow.
     // SE_DEPTH_10X now holds the deep-search value: the LTC core tune left it
     // at 4.0 (a9cf975d) while an STC walk started from that point pulled it to
     // 5.3, i.e. shallow searches want singular verification to start LATER.
@@ -339,11 +345,11 @@ tunables!(
     // short search has fewer plies to amortise it over.
     //
     // KNEE = 17, our measured deep-search median root depth (same measurement
-    // as LMP_ROOT_KNEE: 14 at 100ms/move, 17 at 1s, 22 at 4s), so the uplift
+    // as LMP_ITER_KNEE: 14 at 100ms/move, 17 at 1s, 22 at 4s), so the uplift
     // is zero at LTC and main is unchanged there. COEF = 4 = the STC walk's
     // preferred +13 (in tenths of a ply) over the measured 3-ply gap.
-    (SE_ROOT_KNEE, 17, 10, 24, 1.5, true),
-    (SE_ROOT_COEF, 4, 0, 15, 1.5, true),
+    (SE_ITER_KNEE, 17, 10, 24, 1.5, true),
+    (SE_ITER_COEF, 4, 0, 15, 1.5, true),
     (ASP_DELTA, 11, 5, 30, 1.5, false),
     (ASP_SCORE_DIV, 12000, 8000, 50000, 2100.0, false),
     // Late move pruning: quiets searched before the cutoff, on the shape
@@ -367,8 +373,8 @@ tunables!(
     // implementation. Tested anyway at Adam's request (2026-08-17) since the
     // predictor here differs from the post-hoc selector that was measured.
     (LMP_MARGIN_THRESH, 61, 50, 500, 35.0, true),
-    // Root-depth-aware uplift on the LMP predictive margin, same shape as the
-    // RFP_ROOT_* correction above with the sign flipped: that one demands MORE
+    // Iteration-depth-aware uplift on the LMP predictive margin, same shape as the
+    // RFP_ITER_* correction above with the sign flipped: that one demands MORE
     // confidence as the search gets deeper, this one demands more as it gets
     // SHALLOWER. LMP_MARGIN_THRESH now holds the deep-search value (the LTC
     // core tune moved it 77 -> 53, a9cf975d); an STC walk started from that
@@ -380,11 +386,11 @@ tunables!(
     // KNEE = 17, the measured deep-search median, so the uplift is zero at LTC
     // and above and main is unchanged there. COEF = 8 = the STC walk's
     // preferred +23 divided by the measured 3-ply gap between the two medians.
-    (LMP_ROOT_KNEE, 17, 10, 24, 1.5, true),
-    (LMP_ROOT_COEF, 8, 0, 20, 1.5, true),
+    (LMP_ITER_KNEE, 17, 10, 24, 1.5, true),
+    (LMP_ITER_COEF, 8, 0, 20, 1.5, true),
     (LMP_MARGIN_PCT, 55, 40, 100, 6.0, true),
-    // Root-depth-aware LMR relaxation (single-set, self-adapts STC<->LTC):
-    // reduce LESS as the OVERALL search depth grows past LMR_ROOT_THRESH
+    // Iteration-depth-aware LMR relaxation (single-set, self-adapts STC<->LTC):
+    // reduce LESS as the OVERALL search depth grows past LMR_ITER_THRESH
     // (diminishing returns — at LTC the reduced re-search is cheap vs the
     // budget and a wrong reduction costs more). SPSA tunes both.
     //
@@ -395,8 +401,8 @@ tunables!(
     // the late middlegame into the endgame. A cold-TT probe shows 0% and is
     // what makes this term look dead — warm caches roughly double reached
     // depth, so measure with the TT warm or the answer inverts.
-    (LMR_ROOT_THRESH, 15, 6, 30, 1.5, false),
-    (LMR_ROOT_COEF_10X, 4, 0, 800, 40.0, true),
+    (LMR_ITER_THRESH, 15, 6, 30, 1.5, false),
+    (LMR_ITER_COEF_10X, 4, 0, 800, 40.0, true),
     (BAD_NOISY_MARGIN, 87, 30, 150, 6.0, true),
     (PROBCUT_MARGIN, 162, 80, 300, 11.0, true),
     // ProbCut margin reduction when improving (Stockfish/Alexandria shape):
@@ -404,12 +410,12 @@ tunables!(
     // keep the safer base margin. Effective improving margin is
     // PROBCUT_MARGIN - PROBCUT_MARGIN_IMP.
     (PROBCUT_MARGIN_IMP, 48, 0, 120, 8.0, true),
-    // Root-depth-aware ProbCut: a more conservative margin is wanted at
-    // shallow root depths than deep ones, so add an offset below
-    // PROBCUT_ROOT_THRESH and fade it out as root depth grows.
-    (PROBCUT_ROOT_THRESH, 17, 8, 28, 1.5, true),
-    (PROBCUT_ROOT_FADE_10X, 40, 10, 120, 10.0, true),
-    (PROBCUT_ROOT_MARGIN, 74, 0, 120, 8.0, false),
+    // Iteration-depth-aware ProbCut: a more conservative margin is wanted at
+    // shallow iteration depths than deep ones, so add an offset below
+    // PROBCUT_ITER_THRESH and fade it out as the iteration depth grows.
+    (PROBCUT_ITER_THRESH, 17, 8, 28, 1.5, true),
+    (PROBCUT_ITER_FADE_10X, 40, 10, 120, 10.0, true),
+    (PROBCUT_ITER_MARGIN, 74, 0, 120, 8.0, false),
     (HINDSIGHT_THRESH, 133, 50, 400, 17.5, true),
     (QS_DELTA_MARGIN, 361, 100, 500, 20.0, true),
     // Cap on captures actually SEARCHED in qsearch (delta/SEE-pruned moves
@@ -629,7 +635,7 @@ tunables!(
     // can explore "fire at any depth >= 1" rather than being clamped out of it.
     (IIR_MIN_DEPTH_10X, 34, 5, 100, 15.0, true),
     (PROBCUT_MIN_DEPTH_10X, 12, 10, 120, 15.0, false),     // ProbCut activation gate
-    (PROBCUT_ROOT_MIN_DEPTH_10X, 23, 0, 80, 8.0, true),
+    (PROBCUT_ITER_MIN_DEPTH_10X, 23, 0, 80, 8.0, true),
     (SEE_CAP_DEPTH_10X, 99, 30, 150, 15.0, true),         // SEE capture prune depth cap
     // Capture-SEE prune margin, a common cross-engine shape: margin =
     // depth*MULT + capt_hist*HIST/1024, prune if SEE < -margin. MULT is
@@ -903,7 +909,7 @@ fn clock_blend(root_depth: i32, deep: i32, shallow: i32) -> i32 {
     let s = (CLOCK_KNEE - root_depth).clamp(0, CLOCK_SPAN);
     deep + (shallow - deep) * s / CLOCK_SPAN
 }
-/// Measured median root depth in the LTC regime (ledger 2026-09-16, the SE_ROOT_KNEE derivation).
+/// Measured median root depth in the LTC regime (ledger 2026-09-16, the SE_ITER_KNEE derivation).
 const CLOCK_KNEE: i32 = 17;
 /// Measured STC-to-LTC gap in median root depth: 14 at 100 ms/move against 17 deep.
 const CLOCK_SPAN: i32 = 3;
@@ -1539,7 +1545,9 @@ pub struct SearchInfo {
     /// iteration in both ID loops. Visible at every node so depth-dependent
     /// formulas adjust by the OVERALL search depth (= the time control's
     /// reach), giving a single tunable set that self-adapts STC<->LTC instead
-    /// of two constant sets.
+    /// of two constant sets. Despite the name this is the ITERATION depth,
+    /// read at every node, not anything about the root node; the tunables
+    /// keyed on it are the `_ITER_` family.
     pub root_depth: i32,
     /// Set once per completed ID iteration: the root score says the game is
     /// decided and the search is deep enough for that score to be trusted.
@@ -5833,11 +5841,11 @@ fn negamax(
         if depth <= tp(&RFP_DEPTH) && ply > 0 && !tt_pv && !tt_move_is_quiet && info.excluded_move[ply_u] == NO_MOVE && FEAT_RFP.load(Ordering::Relaxed)
             && static_eval.abs() < MATE_SCORE - 200 {
             let mut margin = if improving { depth * tp(&RFP_MARGIN_IMP) } else { depth * tp(&RFP_MARGIN_NOIMP) };
-            // Root-depth-aware relaxation: + depth*(root_depth-thresh)+ *coef/100.
+            // Iteration-depth-aware relaxation: + depth*(root_depth-thresh)+ *coef/100.
             // Zero at STC (root_depth <= thresh); grows with both remaining
             // depth and how deep the overall search is, so deep RFP at LTC
             // demands much more confidence. One formula, one tunable set.
-            margin += (depth * (info.root_depth - tp(&RFP_ROOT_THRESH)).max(0) * tp(&RFP_ROOT_COEF)) / 100;
+            margin += (depth * (info.root_depth - tp(&RFP_ITER_THRESH)).max(0) * tp(&RFP_ITER_COEF)) / 100;
             let deep_extra = (depth - tp10(&RFP_DEEP_KNEE_10X)).max(0);
             if deep_extra > 0 {
                 margin += deep_extra * tp(&RFP_DEEP_LINEAR);
@@ -6057,13 +6065,13 @@ fn negamax(
     let probcut_margin = (tp(&PROBCUT_MARGIN)
         - (improving as i32) * tp(&PROBCUT_MARGIN_IMP))
         .max(1);
-    let probcut_root_over = (info.root_depth - tp(&PROBCUT_ROOT_THRESH)).max(0);
-    let probcut_fade_span = tp(&PROBCUT_ROOT_FADE_10X).max(10);
-    let probcut_fade_num = (probcut_fade_span - 10 * probcut_root_over).clamp(0, probcut_fade_span);
+    let probcut_iter_over = (info.root_depth - tp(&PROBCUT_ITER_THRESH)).max(0);
+    let probcut_fade_span = tp(&PROBCUT_ITER_FADE_10X).max(10);
+    let probcut_fade_num = (probcut_fade_span - 10 * probcut_iter_over).clamp(0, probcut_fade_span);
     let probcut_beta = beta + probcut_margin
-        + (tp(&PROBCUT_ROOT_MARGIN) * probcut_fade_num) / probcut_fade_span;
+        + (tp(&PROBCUT_ITER_MARGIN) * probcut_fade_num) / probcut_fade_span;
     let probcut_min_depth_10x = tp(&PROBCUT_MIN_DEPTH_10X)
-        + (tp(&PROBCUT_ROOT_MIN_DEPTH_10X) * probcut_fade_num) / probcut_fade_span;
+        + (tp(&PROBCUT_ITER_MIN_DEPTH_10X) * probcut_fade_num) / probcut_fade_span;
     let probcut_min_depth = (probcut_min_depth_10x + 5) / 10;
     let probcut_tt_noshot = if tt_hit && tt_entry.depth >= depth - tp(&PROBCUT_TT_DEPTH_SLACK) {
         let adj_score = score_from_tt(tt_entry.score, ply, board.halfmove);
@@ -6326,9 +6334,9 @@ fn negamax(
             // is the best in-node signal that this will fail low, so spend fewer
             // quiets on it. Guarded on static_eval being real (it is -INFINITY
             // in check, though !in_check above already excludes that).
-            // Shallow searches want a larger margin here — see LMP_ROOT_KNEE.
+            // Shallow searches want a larger margin here — see LMP_ITER_KNEE.
             let lmp_margin = tp(&LMP_MARGIN_THRESH)
-                + (tp(&LMP_ROOT_KNEE) - info.root_depth).max(0) * tp(&LMP_ROOT_COEF);
+                + (tp(&LMP_ITER_KNEE) - info.root_depth).max(0) * tp(&LMP_ITER_COEF);
             if static_eval > -INFINITY && alpha - static_eval >= lmp_margin {
                 lmp_limit = (lmp_limit * tp(&LMP_MARGIN_PCT) / 100).max(1);
             }
@@ -6429,9 +6437,9 @@ fn negamax(
         if mv == tt_move
             && tt_move != NO_MOVE
             && ply > 0
-            // Shallow searches start singular verification later — see SE_ROOT_KNEE.
+            // Shallow searches start singular verification later — see SE_ITER_KNEE.
             && depth >= tp10(&SE_DEPTH_10X)
-                + (tp(&SE_ROOT_KNEE) - info.root_depth).max(0) * tp(&SE_ROOT_COEF) / 10
+                + (tp(&SE_ITER_KNEE) - info.root_depth).max(0) * tp(&SE_ITER_COEF) / 10
             // Deliberately NO !in_check gate. None of SF/Obsidian/Berserk/
             // Stormphrax gate SE on check, and gating it means a deep in-check
             // node's TT move (often the single forced evasion — maximally
@@ -6965,11 +6973,11 @@ fn negamax(
         // search is deep. Grows with how deep the search reaches, so late moves
         // are searched closer to full depth. NOT zero at STC: measured warm-TT
         // at 250ms/move this fires on 61% of moves (7% opening, 100% late
-        // middlegame). See the LMR_ROOT_THRESH block for the measurement. Deliberately one formula and one tunable set, rather
+        // middlegame). See the LMR_ITER_THRESH block for the measurement. Deliberately one formula and one tunable set, rather
         // than separate STC/LTC shapes.
         if reduction >= LMR_SCALE {
             // CONTINUOUS: /100 * LMR_SCALE(=100) cancels exactly.
-            reduction -= (info.root_depth - tp(&LMR_ROOT_THRESH)).max(0) * tp(&LMR_ROOT_COEF_10X) / 10;
+            reduction -= (info.root_depth - tp(&LMR_ITER_THRESH)).max(0) * tp(&LMR_ITER_COEF_10X) / 10;
             if reduction < 0 { reduction = 0; }
         }
 
