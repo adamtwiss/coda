@@ -6376,7 +6376,7 @@ fn negamax(
         // 5/6 reference engines order it this way.
         // Skip quiet moves when static eval + margin is below alpha. Uses shared
         // lmr_d for both gate and margin.
-        if ply > 0 && static_eval > -INFINITY && !in_check
+        if ply > 0 && !is_pv && static_eval > -INFINITY && !in_check  // node-type gate (research/node-type-gates-unverified-2026-09-29.md): an unverified move prune at a PV node can discard the move that sets the node's exact score
             && !is_cap && !is_promo
             && !is_loss(best_score)
             && beta < MATE_IN_MAX_PLY  // forced-win guard: don't futility-prune quiets while proving a win
