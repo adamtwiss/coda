@@ -237,6 +237,7 @@ pub fn convert_v7(
     num_threats: usize,
     hl_crelu: bool,
     pawn_pairs: bool,
+    signed_square: bool,
 ) -> Result<(), String> {
     // Pawn-pair features extend the THREAT feature space (see nnue.rs), so they
     // occupy l0 columns immediately after the threat block and cannot exist
@@ -566,10 +567,16 @@ pub fn convert_v7(
     // v11 arch_flags2 (ARCHITECTURE, not training config — that distinction is
     // why this is not a reserved training_flags bit).
     //   bit 0: has_pawn_pair, followed by a u32 feature count
-    //   bits 1-7: reserved (must be 0)
+    //   bit 1: reserved (claimed by the unmerged passed-pawn block)
+    //   bit 2: signed-square dual L1 (see NNUENet::signed_square)
+    //   other bits: reserved (must be 0)
+    if signed_square && !dual_l1 {
+        return Err("--signed-square only applies to a --dual L1".to_string());
+    }
     if version >= 11 {
         let mut arch_flags2 = 0u8;
         if num_pawn_pairs > 0 { arch_flags2 |= 1; }
+        if signed_square { arch_flags2 |= 4; }
         buf.push(arch_flags2);
         if num_pawn_pairs > 0 {
             write_u32_le(&mut buf, num_pawn_pairs as u32);

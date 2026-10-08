@@ -2965,6 +2965,13 @@ pub struct NNUENet {
     pub out_weights_f: Vec<f32>,  // [NNUE_OUTPUT_BUCKETS × out_l_size] — float output
     pub out_bias_f: Vec<f32>,     // [NNUE_OUTPUT_BUCKETS]
     pub dual_l1: bool,            // v8: dual L1 activation (CReLU+SCReLU on L1 output)
+    /// Signed-square dual L1. The square half squares the pre-activation
+    /// clamped to [-1, 1] instead of [0, 1], so a NEGATIVE pre-activation still
+    /// reaches L2 through the square half rather than being zeroed in both.
+    /// Motivation: in decided positions most L1 units sit clamped, so changes in
+    /// material barely reach the output (research repo, won-position saturation
+    /// 2026-10-08). The linear half is unchanged.
+    pub signed_square: bool,
     // v9 threat features
     pub threat_weights: AlignedVec<i8>,  // [num_threat_features × hidden_size] i8 weights, 64-B rows, hugepage-backed
     pub num_threat_features: usize,
@@ -3088,6 +3095,7 @@ impl NNUENet {
         let mut l1_scale = QA; // default int16 scale
         let mut bucketed_hidden = false; // bit 3: output buckets baked into L1/L2 dims
         let mut dual_l1 = false; // bit 4: dual L1 activation (CReLU+SCReLU, v8)
+        let mut signed_square = false; // arch_flags2 bit 2 (v11)
         // bit 5 is context-dependent:
         //   - extended_kb=0: consensus_buckets (legacy 16-bucket encoding)
         //   - extended_kb=1: hl_crelu (hidden-layer CReLU, vs default SCReLU)
@@ -3227,10 +3235,13 @@ impl NNUENet {
                 // it. Unlike training_flags (which records TRAINING-side config
                 // inference must match), this byte records ARCHITECTURE.
                 //   bit 0: has_pawn_pair — a u32 feature count follows
-                //   bits 1-7: reserved, must be zero
+                //   bit 1: reserved (claimed by the unmerged passed-pawn block)
+                //   bit 2: signed-square dual L1 (see `signed_square`)
+                //   other bits: reserved, must be zero
                 if version >= 11 {
                     let arch_flags2 = read_u8(reader)?;
-                    if arch_flags2 & !1 != 0 {
+                    signed_square = arch_flags2 & 4 != 0;
+                    if arch_flags2 & !(1 | 4) != 0 {
                         return Err(format!(
                             "unknown arch_flags2 bits set (0x{:02x}); this net uses an \
                              architecture feature this build does not implement",
@@ -3637,6 +3648,7 @@ impl NNUENet {
             out_weights_f,
             out_bias_f,
             dual_l1,
+            signed_square,
             threat_weights,
             num_threat_features,
             has_threats,
@@ -4268,12 +4280,19 @@ impl NNUENet {
             // for why it is not left to the autovectoriser.
             assert!(l1 <= DUAL_L1_MAX, "l1 {} exceeds DUAL_L1_MAX {}", l1, DUAL_L1_MAX);
             let mut hv = [0i32; DUAL_L1_MAX];
+            // Signed-square: clamp to [-qa, qa] so the square half carries the
+            // magnitude of a negative pre-activation. The linear half is then
+            // floored at zero below, which reproduces clamp(x, 0, qa)/qa exactly.
+            let lo = if self.signed_square { -qa_l1 } else { 0 };
             for i in 0..l1 {
-                hv[i] = (hidden32[i] / pw_scale).clamp(0, qa_l1);
+                hv[i] = (hidden32[i] / pw_scale).clamp(lo, qa_l1);
             }
             let (crelu, screlu) = l1_out.split_at_mut(l1);
             dual_l1_dequant(self.has_avx512, self.has_avx2, &hv[..l1],
                             qa_l1_f, qa_l1_sq, crelu, screlu);
+            if self.signed_square {
+                for c in crelu.iter_mut().take(l1) { *c = c.max(0.0); }
+            }
         } else if self.crelu_hidden.load(std::sync::atomic::Ordering::Relaxed) {
             // Clipped ReLU variant (for nets trained with .crelu() on L1/L2 in Bullet)
             for i in 0..l1 {
@@ -4578,10 +4597,12 @@ impl NNUENet {
             let mut l1_out = [0.0f32; 128]; // max: 64 neurons × 2 for dual
             if self.dual_l1 {
                 // Dual L1 activation: CReLU(L1) concat SCReLU(L1)
+                // signed_square: see the pairwise path — square half sees [-qa, qa].
+                let lo = if self.signed_square { -(qa_l1 as i32) } else { 0 };
                 for i in 0..l1 {
-                    let h_val = ((hidden[i] / qa) as i32).clamp(0, qa_l1 as i32);
-                    l1_out[i] = h_val as f32 / qa_l1_f;               // CReLU: [0, 1]
-                    l1_out[l1 + i] = (h_val * h_val) as f32 / qa_l1_sq; // SCReLU: [0, 1]
+                    let h_val = ((hidden[i] / qa) as i32).clamp(lo, qa_l1 as i32);
+                    l1_out[i] = h_val.max(0) as f32 / qa_l1_f;           // CReLU: [0, 1]
+                    l1_out[l1 + i] = (h_val * h_val) as f32 / qa_l1_sq; // square: [0, 1]
                 }
             } else if self.crelu_hidden.load(std::sync::atomic::Ordering::Relaxed) {
                 // Clipped ReLU variant
@@ -4688,9 +4709,10 @@ impl NNUENet {
             let l1_out_count = if self.dual_l1 { l1 * 2 } else { l1 };
             let mut l1_out = [0.0f32; 512]; // max: 256 × 2 for dual
             if self.dual_l1 {
+                let lo = if self.signed_square { -(qa_l1 as i32) } else { 0 };
                 for i in 0..l1 {
-                    let h_val = ((hidden[i] / qa as i64) as i32).clamp(0, qa_l1 as i32);
-                    l1_out[i] = h_val as f32 / qa_l1_f;
+                    let h_val = ((hidden[i] / qa as i64) as i32).clamp(lo, qa_l1 as i32);
+                    l1_out[i] = h_val.max(0) as f32 / qa_l1_f;
                     l1_out[l1 + i] = (h_val * h_val) as f32 / qa_l1_sq;
                 }
             } else {
@@ -9049,5 +9071,30 @@ mod tests {
         eprintln!("  rows with any |w| > 127: {} of {} ({:.2}%)", sat_rows, rows, 100.0 * sat_rows as f64 / rows as f64);
         let above = (hist[4] + hist[5]) as f64;
         eprintln!("  weights outside i8 range: {:.4}%", 100.0 * above / n);
+    }
+}
+
+#[cfg(test)]
+mod signed_square_tests {
+    /// The two halves a signed-square dual L1 must produce for a pre-activation
+    /// `x` (already divided by pw_scale), at activation scale `qa`:
+    /// linear = clamp(x, 0, qa)/qa, square = clamp(x, -qa, qa)^2/qa^2.
+    /// Checked against the expression the forward paths use, so a later edit
+    /// that drops the floor on the linear half, or reverts the square half to
+    /// the [0, qa] clamp, fails here rather than silently in a match.
+    #[test]
+    fn signed_square_halves() {
+        let qa = 127i32;
+        let (qf, qsq) = (qa as f32, (qa * qa) as f32);
+        for x in [-400, -127, -60, -1, 0, 1, 60, 127, 400] {
+            let h = (x as i32).clamp(-qa, qa);
+            let lin = h.max(0) as f32 / qf;
+            let sq = (h * h) as f32 / qsq;
+            let want_lin = (x.clamp(0, qa)) as f32 / qf;
+            let want_sq = ((x.clamp(-qa, qa)).pow(2)) as f32 / qsq;
+            assert_eq!(lin, want_lin, "linear half at x={}", x);
+            assert_eq!(sq, want_sq, "square half at x={}", x);
+            if x < 0 { assert!(sq > 0.0 && lin == 0.0, "negative x must reach only the square half"); }
+        }
     }
 }
