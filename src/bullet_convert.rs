@@ -297,7 +297,9 @@ pub fn convert_v7(
     // Verify size
     let l1_input = l1_mul * h;
     let expected = total_ft_inputs * h * 2 + h * 2 + l1_input * bl1 * l1w_bytes_per
-        + l1b_bytes + l2_bytes + out_bytes;
+        + l1b_bytes + l2_bytes + out_bytes
+        // L1 skip readout: [l1_input][BUCKETS] i8, appended after the output bias.
+        + if l1_skip { l1_input * NNUE_OUTPUT_BUCKETS } else { 0 };
     if expected != data_len {
         return Err(format!(
             "Size mismatch: expected {} bytes for FT={}, got {} (total_ft_inputs={}). \
