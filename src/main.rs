@@ -573,6 +573,11 @@ enum Commands {
         /// than converting silently.
         #[arg(long)]
         pawn_pairs: bool,
+        /// Net was trained with the signed-square dual L1 (trainer
+        /// --dual-signed-square). Sets arch_flags2 bit 2. Omitting it on such a
+        /// net would run the ordinary square half silently, so match the trainer.
+        #[arg(long)]
+        signed_square: bool,
         /// Source output bucket count (default 8, set to 2 for 2-bucket nets)
         #[arg(long, default_value_t = 8)]
         output_buckets: usize,
@@ -1387,7 +1392,7 @@ fn main() {
             run_binpack_material(&input, max);
         }
 
-        Some(Commands::ConvertBullet { input, output, screlu, pairwise, hidden, hidden2, int8l1, bucketed_hidden, ft_size, int16_hidden, dual, consensus_buckets, kb_layout, kb_count, threats, output_buckets, hl_crelu, pawn_pairs }) => {
+        Some(Commands::ConvertBullet { input, output, screlu, pairwise, hidden, hidden2, int8l1, bucketed_hidden, ft_size, int16_hidden, dual, consensus_buckets, kb_layout, kb_count, threats, output_buckets, hl_crelu, pawn_pairs, signed_square }) => {
             // Resolve king bucket layout and count. Explicit --kb-layout wins;
             // --consensus-buckets is the legacy path for 16-bucket consensus.
             let layout = if !kb_layout.is_empty() {
@@ -1403,7 +1408,7 @@ fn main() {
             let count = if kb_count > 0 { kb_count } else { layout.default_count() };
 
             let result = if hidden > 0 {
-                bullet_convert::convert_v7(&input, &output, screlu, pairwise, hidden, hidden2, int8l1, bucketed_hidden, ft_size, int16_hidden, dual, layout, count, threats, hl_crelu, pawn_pairs)
+                bullet_convert::convert_v7(&input, &output, screlu, pairwise, hidden, hidden2, int8l1, bucketed_hidden, ft_size, int16_hidden, dual, layout, count, threats, hl_crelu, pawn_pairs, signed_square)
             } else {
                 bullet_convert::convert_v5(&input, &output, screlu, pairwise, output_buckets, layout, count)
             };
