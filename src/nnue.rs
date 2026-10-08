@@ -3966,6 +3966,20 @@ impl NNUENet {
         // L1 skip readout, in the same units the L1 pre-activation dequantises
         // to: the u8 inputs are at PW_SCALE and the i8 weights at the L1 weight
         // scale, so dividing the integer dot by their product recovers W.x.
+        // RESEARCH INSTRUMENT (never merged): saturation counts per eval.
+        // FT is recomputed from the accumulators here so the count does not
+        // depend on which pairwise path (SIMD or scalar) produced stm_pw/ntm_pw.
+        if std::env::var_os("ACT_STATS").is_some() {
+            let (mut z, mut c) = (0, 0);
+            for (acc, thr) in [(stm_acc, stm_threat), (ntm_acc, ntm_threat)] {
+                for i in 0..h {
+                    let t = if self.has_threats { thr[i] as i32 } else { 0 };
+                    let v = acc[i] as i32 + t;
+                    if v <= 0 { z += 1 } else if v >= QA { c += 1 }
+                }
+            }
+            eprintln!("ACTSTAT FT n={} zero={} ceil={}", 2 * h, z, c);
+        }
         let skip_f = if self.has_skip {
             let row = &self.skip_w[bucket * h..bucket * h + h];
             let mut dot: i32 = 0;
@@ -4330,6 +4344,11 @@ impl NNUENet {
             for i in 0..l1 {
                 hv[i] = (hidden32[i] / pw_scale).clamp(lo, qa_l1);
             }
+            if std::env::var_os("ACT_STATS").is_some() {
+                let (mut z, mut c) = (0, 0);
+                for i in 0..l1 { let v = hidden32[i] / pw_scale; if v <= 0 { z += 1 } else if v >= qa_l1 { c += 1 } }
+                eprintln!("ACTSTAT L1 n={} zero={} ceil={}", l1, z, c);
+            }
             let (crelu, screlu) = l1_out.split_at_mut(l1);
             dual_l1_dequant(self.has_avx512, self.has_avx2, &hv[..l1],
                             qa_l1_f, qa_l1_sq, crelu, screlu);
@@ -4434,6 +4453,11 @@ impl NNUENet {
                 }
             }
             let h2 = scratch_slice!(mut h2_ptr, l2);
+            if std::env::var_os("ACT_STATS").is_some() {
+                let (mut z, mut c) = (0, 0);
+                for k in 0..l2 { if h2[k] <= 0.0 { z += 1 } else if h2[k] >= 1.0 { c += 1 } }
+                eprintln!("ACTSTAT L2 n={} zero={} ceil={}", l2, z, c);
+            }
             let crelu = self.crelu_hidden.load(std::sync::atomic::Ordering::Relaxed);
             #[cfg(target_arch = "x86_64")]
             if self.has_avx2 && l2 == 32 {
