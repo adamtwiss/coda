@@ -2972,6 +2972,15 @@ pub struct NNUENet {
     /// material barely reach the output (research repo, won-position saturation
     /// 2026-10-08). The linear half is unchanged.
     pub signed_square: bool,
+    /// L1 skip readout: an unclamped per-bucket linear read of the pairwise FT
+    /// output, added to the final output. Every other route from the FT to the
+    /// output crosses two clamps (dual L1, then L2), which in decided positions
+    /// leaves most units pinned so material changes barely reach the eval
+    /// (research repo, won-position saturation 2026-10-08). `skip_w` is
+    /// [BUCKETS][hidden_size] i8 at the L1 weight scale; `skip_b` per bucket.
+    pub has_skip: bool,
+    pub skip_w: Vec<i8>,
+    pub skip_b: [f32; NNUE_OUTPUT_BUCKETS],
     // v9 threat features
     pub threat_weights: AlignedVec<i8>,  // [num_threat_features × hidden_size] i8 weights, 64-B rows, hugepage-backed
     pub num_threat_features: usize,
@@ -3096,6 +3105,7 @@ impl NNUENet {
         let mut bucketed_hidden = false; // bit 3: output buckets baked into L1/L2 dims
         let mut dual_l1 = false; // bit 4: dual L1 activation (CReLU+SCReLU, v8)
         let mut signed_square = false; // arch_flags2 bit 2 (v11)
+        let mut has_skip = false; // arch_flags2 bit 3 (v11)
         // bit 5 is context-dependent:
         //   - extended_kb=0: consensus_buckets (legacy 16-bucket encoding)
         //   - extended_kb=1: hl_crelu (hidden-layer CReLU, vs default SCReLU)
@@ -3237,11 +3247,13 @@ impl NNUENet {
                 //   bit 0: has_pawn_pair — a u32 feature count follows
                 //   bit 1: reserved (claimed by the unmerged passed-pawn block)
                 //   bit 2: signed-square dual L1 (see `signed_square`)
+                //   bit 3: L1 skip readout (see `has_skip`)
                 //   other bits: reserved, must be zero
                 if version >= 11 {
                     let arch_flags2 = read_u8(reader)?;
                     signed_square = arch_flags2 & 4 != 0;
-                    if arch_flags2 & !(1 | 4) != 0 {
+                    has_skip = arch_flags2 & 8 != 0;
+                    if arch_flags2 & !(1 | 4 | 8) != 0 {
                         return Err(format!(
                             "unknown arch_flags2 bits set (0x{:02x}); this net uses an \
                              architecture feature this build does not implement",
@@ -3403,6 +3415,22 @@ impl NNUENet {
         let mut output_bias = [0i32; NNUE_OUTPUT_BUCKETS];
         for i in 0..NNUE_OUTPUT_BUCKETS {
             output_bias[i] = read_i32(reader)?;
+        }
+
+        // L1 skip readout (arch_flags2 bit 3): per bucket, an unclamped linear
+        // read of the pairwise FT output added straight to the output. Stored
+        // [BUCKETS][hidden_size] i8 at the L1 weight scale, then BUCKETS f32
+        // biases. Only defined on the pairwise path, where the L1 input is
+        // exactly `hidden_size` wide.
+        let mut skip_w: Vec<i8> = Vec::new();
+        let mut skip_b = [0.0f32; NNUE_OUTPUT_BUCKETS];
+        if has_skip {
+            if !use_pairwise {
+                return Err("L1 skip readout requires a pairwise net".to_string());
+            }
+            skip_w = vec![0i8; NNUE_OUTPUT_BUCKETS * hidden_size];
+            for w in skip_w.iter_mut() { *w = read_u8(reader)? as i8; }
+            for b in skip_b.iter_mut() { *b = f32::from_bits(read_u32(reader)?); }
         }
 
         // Compute king bucket tables for this net's layout. Stored on the
@@ -3649,6 +3677,9 @@ impl NNUENet {
             out_bias_f,
             dual_l1,
             signed_square,
+            has_skip,
+            skip_w,
+            skip_b,
             threat_weights,
             num_threat_features,
             has_threats,
@@ -3932,6 +3963,19 @@ impl NNUENet {
 
         let stm_pw = scratch_slice!(stm_pw_ptr, pw);
         let ntm_pw = scratch_slice!(ntm_pw_ptr, pw);
+
+        // L1 skip readout, in the same units the L1 pre-activation dequantises
+        // to: the u8 inputs are at PW_SCALE and the i8 weights at the L1 weight
+        // scale, so dividing the integer dot by their product recovers W.x.
+        let skip_f = if self.has_skip {
+            let row = &self.skip_w[bucket * h..bucket * h + h];
+            let mut dot: i32 = 0;
+            for j in 0..pw { dot += stm_pw[j] as i32 * row[j] as i32; }
+            for j in 0..pw { dot += ntm_pw[j] as i32 * row[pw + j] as i32; }
+            dot as f32 / (PW_SCALE as f32 * qa_l1 as f32) + self.skip_b[bucket]
+        } else {
+            0.0
+        };
 
         // L1 int8 matmul — only compute l1 neurons starting at l1_off
         // Pairwise: input = (a*b)>>FT_SHIFT, u8 at scale QA²>>FT_SHIFT ≈ PW_SCALE.
@@ -4439,13 +4483,13 @@ impl NNUENet {
             };
             #[cfg(not(target_arch = "x86_64"))]
             let out_f = dot_out_canonical(&h2[..l2], &out_w[..l2], bias);
-            return (out_f * EVAL_SCALE as f32) as i32;
+            return ((out_f + skip_f) * EVAL_SCALE as f32) as i32;
         }
 
         let out_w = &self.out_weights_f[bucket * l1_pb..bucket * l1_pb + l1_pb];
         let mut out_f = self.out_bias_f[bucket];
         for i in 0..l1 { out_f += l1_out[i] * out_w[i]; }
-        (out_f * EVAL_SCALE as f32) as i32
+        ((out_f + skip_f) * EVAL_SCALE as f32) as i32
     }
 
     /// v7 hidden layer forward pass (SCReLU).

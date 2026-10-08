@@ -238,6 +238,7 @@ pub fn convert_v7(
     hl_crelu: bool,
     pawn_pairs: bool,
     signed_square: bool,
+    l1_skip: bool,
 ) -> Result<(), String> {
     // Pawn-pair features extend the THREAT feature space (see nnue.rs), so they
     // occupy l0 columns immediately after the threat block and cannot exist
@@ -495,7 +496,24 @@ pub fn convert_v7(
         }
     }
 
+    // L1 skip readout (trainer --l1-skip): skw [l1_input][BUCKETS] i8 (already
+    // quantised at the L1 weight scale), then skb [BUCKETS] f32. Transposed to
+    // [BUCKETS][l1_input] so the engine reads one contiguous row per bucket.
+    let mut skip_w = Vec::new();
+    let mut skip_b = Vec::new();
+    if l1_skip {
+        if !use_pairwise { return Err("--l1-skip requires a pairwise net".to_string()); }
+        let mut raw = vec![0i8; l1_input * NNUE_OUTPUT_BUCKETS];
+        for w in raw.iter_mut() { *w = data[offset] as i8; offset += 1; }
+        skip_w = vec![0i8; NNUE_OUTPUT_BUCKETS * l1_input];
+        for i in 0..l1_input { for b in 0..NNUE_OUTPUT_BUCKETS {
+            skip_w[b * l1_input + i] = raw[i * NNUE_OUTPUT_BUCKETS + b];
+        } }
+        for _ in 0..NNUE_OUTPUT_BUCKETS { skip_b.push(read_f32_le(&data, offset)); offset += 4; }
+    }
+
     println!("Parsed {} bytes of {} (FT={})", offset, data.len(), h);
+
 
     // Write .nnue — v10 for threats (adds training_flags byte), v8 for dual L1, v7 otherwise.
     // v10 vs v9: v10 adds a training_flags byte after the kb_layout byte, recording
@@ -577,6 +595,7 @@ pub fn convert_v7(
         let mut arch_flags2 = 0u8;
         if num_pawn_pairs > 0 { arch_flags2 |= 1; }
         if signed_square { arch_flags2 |= 4; }
+        if l1_skip { arch_flags2 |= 8; }
         buf.push(arch_flags2);
         if num_pawn_pairs > 0 {
             write_u32_le(&mut buf, num_pawn_pairs as u32);
@@ -603,6 +622,10 @@ pub fn convert_v7(
     }
     for &w in &output_weights { write_i16_le(&mut buf, w); } // [BUCKETS][L2]
     for &b in &output_bias { write_i32_le(&mut buf, b); }     // [BUCKETS]
+    if l1_skip {
+        for &w in &skip_w { buf.push(w as u8); }                 // [BUCKETS][l1_input]
+        for &b in &skip_b { buf.extend_from_slice(&b.to_le_bytes()); }
+    }
 
     std::fs::File::create(output_path)
         .and_then(|mut f| f.write_all(&buf))
