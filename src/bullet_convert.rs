@@ -239,6 +239,7 @@ pub fn convert_v7(
     pawn_pairs: bool,
     signed_square: bool,
     l1_skip: bool,
+    l1_skip_shared: bool,
 ) -> Result<(), String> {
     // Pawn-pair features extend the THREAT feature space (see nnue.rs), so they
     // occupy l0 columns immediately after the threat block and cannot exist
@@ -299,7 +300,8 @@ pub fn convert_v7(
     let expected = total_ft_inputs * h * 2 + h * 2 + l1_input * bl1 * l1w_bytes_per
         + l1b_bytes + l2_bytes + out_bytes
         // L1 skip readout: [l1_input][BUCKETS] i8, appended after the output bias.
-        + if l1_skip { l1_input * NNUE_OUTPUT_BUCKETS } else { 0 };
+        // Shared variant (trainer --l1-skip-shared): one [l1_input] row for all buckets.
+        + if l1_skip_shared { l1_input } else if l1_skip { l1_input * NNUE_OUTPUT_BUCKETS } else { 0 };
     if expected != data_len {
         return Err(format!(
             "Size mismatch: expected {} bytes for FT={}, got {} (total_ft_inputs={}). \
@@ -504,11 +506,14 @@ pub fn convert_v7(
     let mut skip_w = Vec::new();
     if l1_skip {
         if !use_pairwise { return Err("--l1-skip requires a pairwise net".to_string()); }
-        let mut raw = vec![0i8; l1_input * NNUE_OUTPUT_BUCKETS];
+        let rows = if l1_skip_shared { 1 } else { NNUE_OUTPUT_BUCKETS };
+        let mut raw = vec![0i8; l1_input * rows];
         for w in raw.iter_mut() { *w = data[offset] as i8; offset += 1; }
+        // A shared row is written into every bucket, so the .nnue (and the
+        // engine's per-bucket read) is the same as for the per-bucket skip.
         skip_w = vec![0i8; NNUE_OUTPUT_BUCKETS * l1_input];
         for i in 0..l1_input { for b in 0..NNUE_OUTPUT_BUCKETS {
-            skip_w[b * l1_input + i] = raw[i * NNUE_OUTPUT_BUCKETS + b];
+            skip_w[b * l1_input + i] = raw[i * rows + if l1_skip_shared { 0 } else { b }];
         } }
     }
 
