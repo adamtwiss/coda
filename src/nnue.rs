@@ -3419,18 +3419,17 @@ impl NNUENet {
 
         // L1 skip readout (arch_flags2 bit 3): per bucket, an unclamped linear
         // read of the pairwise FT output added straight to the output. Stored
-        // [BUCKETS][hidden_size] i8 at the L1 weight scale, then BUCKETS f32
-        // biases. Only defined on the pairwise path, where the L1 input is
+        // [BUCKETS][hidden_size] i8 at the L1 weight scale. No bias: the output
+        // layer's per-bucket bias already covers it. Only defined on the pairwise path, where the L1 input is
         // exactly `hidden_size` wide.
         let mut skip_w: Vec<i8> = Vec::new();
-        let mut skip_b = [0.0f32; NNUE_OUTPUT_BUCKETS];
+        let skip_b = [0.0f32; NNUE_OUTPUT_BUCKETS];
         if has_skip {
             if !use_pairwise {
                 return Err("L1 skip readout requires a pairwise net".to_string());
             }
             skip_w = vec![0i8; NNUE_OUTPUT_BUCKETS * hidden_size];
             for w in skip_w.iter_mut() { *w = read_u8(reader)? as i8; }
-            for b in skip_b.iter_mut() { *b = f32::from_bits(read_u32(reader)?); }
         }
 
         // Compute king bucket tables for this net's layout. Stored on the

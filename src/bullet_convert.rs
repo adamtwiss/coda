@@ -497,10 +497,9 @@ pub fn convert_v7(
     }
 
     // L1 skip readout (trainer --l1-skip): skw [l1_input][BUCKETS] i8 (already
-    // quantised at the L1 weight scale), then skb [BUCKETS] f32. Transposed to
+    // quantised at the L1 weight scale); no bias. Transposed to
     // [BUCKETS][l1_input] so the engine reads one contiguous row per bucket.
     let mut skip_w = Vec::new();
-    let mut skip_b = Vec::new();
     if l1_skip {
         if !use_pairwise { return Err("--l1-skip requires a pairwise net".to_string()); }
         let mut raw = vec![0i8; l1_input * NNUE_OUTPUT_BUCKETS];
@@ -509,7 +508,6 @@ pub fn convert_v7(
         for i in 0..l1_input { for b in 0..NNUE_OUTPUT_BUCKETS {
             skip_w[b * l1_input + i] = raw[i * NNUE_OUTPUT_BUCKETS + b];
         } }
-        for _ in 0..NNUE_OUTPUT_BUCKETS { skip_b.push(read_f32_le(&data, offset)); offset += 4; }
     }
 
     println!("Parsed {} bytes of {} (FT={})", offset, data.len(), h);
@@ -624,7 +622,6 @@ pub fn convert_v7(
     for &b in &output_bias { write_i32_le(&mut buf, b); }     // [BUCKETS]
     if l1_skip {
         for &w in &skip_w { buf.push(w as u8); }                 // [BUCKETS][l1_input]
-        for &b in &skip_b { buf.extend_from_slice(&b.to_le_bytes()); }
     }
 
     std::fs::File::create(output_path)
