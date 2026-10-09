@@ -3034,6 +3034,17 @@ impl NNUENet {
         halfka_index_with(&self.king_bucket, &self.king_mirror, perspective, king_sq, pc_color, pc_type, pc_sq)
     }
 
+    /// L1 skip readout dot: u8 pairwise input x i8 skip row.
+    #[inline]
+    fn skip_dot(packed: &[u8], row: &[i8]) -> i32 {
+        let n = packed.len();
+        #[cfg(target_arch = "x86_64")]
+        if n % 32 == 0 && std::arch::is_x86_feature_detected!("avx2") {
+            return unsafe { simd_l1_int8_dot(packed, row, n) };
+        }
+        packed.iter().zip(row).map(|(&a, &b)| a as i32 * b as i32).sum()
+    }
+
     /// Output bucket for this net (uniform `(piece_count-2)/4`). Hot path — inline.
     #[inline]
     pub fn output_bucket(&self, piece_count: u32) -> usize {
@@ -3968,9 +3979,9 @@ impl NNUENet {
         // scale, so dividing the integer dot by their product recovers W.x.
         let skip_f = if self.has_skip {
             let row = &self.skip_w[bucket * h..bucket * h + h];
-            let mut dot: i32 = 0;
-            for j in 0..pw { dot += stm_pw[j] as i32 * row[j] as i32; }
-            for j in 0..pw { dot += ntm_pw[j] as i32 * row[pw + j] as i32; }
+            // Same u8 x i8 dot (and same input) as an L1 neuron, so it reuses the
+            // L1 kernel; the scalar loop cost ~7% of eval throughput.
+            let dot: i32 = Self::skip_dot(&stm_pw[..pw], &row[..pw]) + Self::skip_dot(&ntm_pw[..pw], &row[pw..]);
             dot as f32 / (PW_SCALE as f32 * qa_l1 as f32) + self.skip_b[bucket]
         } else {
             0.0
