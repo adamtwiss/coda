@@ -2981,6 +2981,12 @@ pub struct NNUENet {
     pub has_skip: bool,
     pub skip_w: Vec<i8>,
     pub skip_b: [f32; NNUE_OUTPUT_BUCKETS],
+    /// Raw L1 readout: a learned linear read of the UNCLAMPED L1 pre-activations
+    /// (one weight per L1 unit, shared by all buckets), added to the output. The
+    /// same unclamped route to the output as `has_skip`, but from values L1 already
+    /// computes, so it costs `l1` multiply-adds instead of a full FT-wide dot.
+    pub has_l1_raw: bool,
+    pub l1_raw_w: Vec<f32>,
     // v9 threat features
     pub threat_weights: AlignedVec<i8>,  // [num_threat_features × hidden_size] i8 weights, 64-B rows, hugepage-backed
     pub num_threat_features: usize,
@@ -3117,6 +3123,7 @@ impl NNUENet {
         let mut dual_l1 = false; // bit 4: dual L1 activation (CReLU+SCReLU, v8)
         let mut signed_square = false; // arch_flags2 bit 2 (v11)
         let mut has_skip = false; // arch_flags2 bit 3 (v11)
+        let mut has_l1_raw = false; // arch_flags2 bit 4 (v11)
         // bit 5 is context-dependent:
         //   - extended_kb=0: consensus_buckets (legacy 16-bucket encoding)
         //   - extended_kb=1: hl_crelu (hidden-layer CReLU, vs default SCReLU)
@@ -3259,12 +3266,14 @@ impl NNUENet {
                 //   bit 1: reserved (claimed by the unmerged passed-pawn block)
                 //   bit 2: signed-square dual L1 (see `signed_square`)
                 //   bit 3: L1 skip readout (see `has_skip`)
+                //   bit 4: raw L1 readout (see `has_l1_raw`)
                 //   other bits: reserved, must be zero
                 if version >= 11 {
                     let arch_flags2 = read_u8(reader)?;
                     signed_square = arch_flags2 & 4 != 0;
                     has_skip = arch_flags2 & 8 != 0;
-                    if arch_flags2 & !(1 | 4 | 8) != 0 {
+                    has_l1_raw = arch_flags2 & 16 != 0;
+                    if arch_flags2 & !(1 | 4 | 8 | 16) != 0 {
                         return Err(format!(
                             "unknown arch_flags2 bits set (0x{:02x}); this net uses an \
                              architecture feature this build does not implement",
@@ -3441,6 +3450,16 @@ impl NNUENet {
             }
             skip_w = vec![0i8; NNUE_OUTPUT_BUCKETS * hidden_size];
             for w in skip_w.iter_mut() { *w = read_u8(reader)? as i8; }
+        }
+        // Raw L1 readout (arch_flags2 bit 4): one f32 per L1 unit, after the skip
+        // block if any. Shared L1 only: a bucketed L1 would need one row per bucket.
+        let mut l1_raw_w: Vec<f32> = Vec::new();
+        if has_l1_raw {
+            if !use_pairwise || bucketed_hidden {
+                return Err("raw L1 readout requires a pairwise net with a shared L1".to_string());
+            }
+            l1_raw_w = vec![0.0f32; l1_size];
+            for w in l1_raw_w.iter_mut() { *w = f32::from_bits(read_u32(reader)?); }
         }
 
         // Compute king bucket tables for this net's layout. Stored on the
@@ -3690,6 +3709,8 @@ impl NNUENet {
             has_skip,
             skip_w,
             skip_b,
+            has_l1_raw,
+            l1_raw_w,
             threat_weights,
             num_threat_features,
             has_threats,
@@ -4316,6 +4337,16 @@ impl NNUENet {
         }
         let _ = hidden32_seeded;
         let hidden32 = scratch_slice!(hidden32_ptr, l1);
+        // Raw L1 readout: pre-activation x at the same dequant as the CReLU half
+        // (hidden32 / pw_scale / qa_l1), but read before any clamp.
+        let raw_f = if self.has_l1_raw {
+            let mut acc = 0.0f32;
+            for i in 0..l1 { acc += hidden32[i] as f32 * self.l1_raw_w[i]; }
+            acc / (pw_scale as f32 * qa_l1 as f32)
+        } else {
+            0.0
+        };
+        let skip_f = skip_f + raw_f;
 
         // Dequantize + activation
         let qa_l1_f = qa_l1 as f32;
