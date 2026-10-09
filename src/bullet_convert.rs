@@ -240,6 +240,7 @@ pub fn convert_v7(
     signed_square: bool,
     l1_skip: bool,
     l1_skip_shared: bool,
+    l1_raw: bool,
 ) -> Result<(), String> {
     // Pawn-pair features extend the THREAT feature space (see nnue.rs), so they
     // occupy l0 columns immediately after the threat block and cannot exist
@@ -301,7 +302,9 @@ pub fn convert_v7(
         + l1b_bytes + l2_bytes + out_bytes
         // L1 skip readout: [l1_input][BUCKETS] i8, appended after the output bias.
         // Shared variant (trainer --l1-skip-shared): one [l1_input] row for all buckets.
-        + if l1_skip_shared { l1_input } else if l1_skip { l1_input * NNUE_OUTPUT_BUCKETS } else { 0 };
+        + if l1_skip_shared { l1_input } else if l1_skip { l1_input * NNUE_OUTPUT_BUCKETS } else { 0 }
+        // Raw L1 readout (trainer --l1-raw-readout): [l1_size] f32, after the skip.
+        + if l1_raw { l1_size * 4 } else { 0 };
     if expected != data_len {
         return Err(format!(
             "Size mismatch: expected {} bytes for FT={}, got {} (total_ft_inputs={}). \
@@ -517,6 +520,15 @@ pub fn convert_v7(
         } }
     }
 
+    // Raw L1 readout: one f32 per L1 unit, read of the unclamped pre-activation.
+    let mut l1_raw_w = Vec::new();
+    if l1_raw {
+        if !use_pairwise || bucketed_hidden {
+            return Err("--l1-raw requires a pairwise net with a shared L1".to_string());
+        }
+        for _ in 0..l1_size { l1_raw_w.push(read_f32_le(&data, offset)); offset += 4; }
+    }
+
     println!("Parsed {} bytes of {} (FT={})", offset, data.len(), h);
 
 
@@ -601,6 +613,7 @@ pub fn convert_v7(
         if num_pawn_pairs > 0 { arch_flags2 |= 1; }
         if signed_square { arch_flags2 |= 4; }
         if l1_skip { arch_flags2 |= 8; }
+        if l1_raw { arch_flags2 |= 16; }
         buf.push(arch_flags2);
         if num_pawn_pairs > 0 {
             write_u32_le(&mut buf, num_pawn_pairs as u32);
@@ -629,6 +642,9 @@ pub fn convert_v7(
     for &b in &output_bias { write_i32_le(&mut buf, b); }     // [BUCKETS]
     if l1_skip {
         for &w in &skip_w { buf.push(w as u8); }                 // [BUCKETS][l1_input]
+    }
+    if l1_raw {
+        for &w in &l1_raw_w { buf.extend_from_slice(&w.to_le_bytes()); } // [l1_size] f32
     }
 
     std::fs::File::create(output_path)
