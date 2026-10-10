@@ -241,6 +241,7 @@ pub fn convert_v7(
     l1_skip: bool,
     l1_skip_shared: bool,
     l1_raw: bool,
+    l1_raw_bucketed: bool,
 ) -> Result<(), String> {
     // Pawn-pair features extend the THREAT feature space (see nnue.rs), so they
     // occupy l0 columns immediately after the threat block and cannot exist
@@ -303,8 +304,9 @@ pub fn convert_v7(
         // L1 skip readout: [l1_input][BUCKETS] i8, appended after the output bias.
         // Shared variant (trainer --l1-skip-shared): one [l1_input] row for all buckets.
         + if l1_skip_shared { l1_input } else if l1_skip { l1_input * NNUE_OUTPUT_BUCKETS } else { 0 }
-        // Raw L1 readout (trainer --l1-raw-readout): [l1_size] f32, after the skip.
-        + if l1_raw { l1_size * 4 } else { 0 };
+        // Raw L1 readout (trainer --l1-raw-readout): [l1_size] f32, after the skip;
+        // per-bucket variant (--l1-raw-readout-bucketed): [l1_size][BUCKETS] f32.
+        + if l1_raw { l1_size * 4 * if l1_raw_bucketed { NNUE_OUTPUT_BUCKETS } else { 1 } } else { 0 };
     if expected != data_len {
         return Err(format!(
             "Size mismatch: expected {} bytes for FT={}, got {} (total_ft_inputs={}). \
@@ -526,7 +528,14 @@ pub fn convert_v7(
         if !use_pairwise || bucketed_hidden {
             return Err("--l1-raw requires a pairwise net with a shared L1".to_string());
         }
-        for _ in 0..l1_size { l1_raw_w.push(read_f32_le(&data, offset)); offset += 4; }
+        // Same storage order as the skip: unit-major, buckets innermost. Written
+        // out bucket-major ([BUCKETS][l1_size]) so the engine reads one row.
+        let rows = if l1_raw_bucketed { NNUE_OUTPUT_BUCKETS } else { 1 };
+        let mut raw = Vec::with_capacity(rows * l1_size);
+        for _ in 0..rows * l1_size { raw.push(read_f32_le(&data, offset)); offset += 4; }
+        for b in 0..rows {
+            for i in 0..l1_size { l1_raw_w.push(raw[i * rows + b]); }
+        }
     }
 
     println!("Parsed {} bytes of {} (FT={})", offset, data.len(), h);
@@ -614,6 +623,7 @@ pub fn convert_v7(
         if signed_square { arch_flags2 |= 4; }
         if l1_skip { arch_flags2 |= 8; }
         if l1_raw { arch_flags2 |= 16; }
+        if l1_raw_bucketed { arch_flags2 |= 32; }
         buf.push(arch_flags2);
         if num_pawn_pairs > 0 {
             write_u32_le(&mut buf, num_pawn_pairs as u32);
@@ -644,7 +654,7 @@ pub fn convert_v7(
         for &w in &skip_w { buf.push(w as u8); }                 // [BUCKETS][l1_input]
     }
     if l1_raw {
-        for &w in &l1_raw_w { buf.extend_from_slice(&w.to_le_bytes()); } // [l1_size] f32
+        for &w in &l1_raw_w { buf.extend_from_slice(&w.to_le_bytes()); } // [l1_size] f32, or [BUCKETS][l1_size] if bucketed
     }
 
     std::fs::File::create(output_path)

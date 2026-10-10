@@ -2985,6 +2985,9 @@ pub struct NNUENet {
     /// (one weight per L1 unit, shared by all buckets), added to the output. The
     /// same unclamped route to the output as `has_skip`, but from values L1 already
     /// computes, so it costs `l1` multiply-adds instead of a full FT-wide dot.
+    /// Stored as one row per output bucket ([bucket][l1]); a shared readout
+    /// (bit 4 alone) is replicated into every row at load, so inference always
+    /// reads the active bucket's row and costs the same either way.
     pub has_l1_raw: bool,
     pub l1_raw_w: Vec<f32>,
     // v9 threat features
@@ -3124,6 +3127,7 @@ impl NNUENet {
         let mut signed_square = false; // arch_flags2 bit 2 (v11)
         let mut has_skip = false; // arch_flags2 bit 3 (v11)
         let mut has_l1_raw = false; // arch_flags2 bit 4 (v11)
+        let mut l1_raw_bucketed = false; // arch_flags2 bit 5 (v11)
         // bit 5 is context-dependent:
         //   - extended_kb=0: consensus_buckets (legacy 16-bucket encoding)
         //   - extended_kb=1: hl_crelu (hidden-layer CReLU, vs default SCReLU)
@@ -3267,13 +3271,18 @@ impl NNUENet {
                 //   bit 2: signed-square dual L1 (see `signed_square`)
                 //   bit 3: L1 skip readout (see `has_skip`)
                 //   bit 4: raw L1 readout (see `has_l1_raw`)
+                //   bit 5: the raw L1 readout has one row per output bucket
                 //   other bits: reserved, must be zero
                 if version >= 11 {
                     let arch_flags2 = read_u8(reader)?;
                     signed_square = arch_flags2 & 4 != 0;
                     has_skip = arch_flags2 & 8 != 0;
                     has_l1_raw = arch_flags2 & 16 != 0;
-                    if arch_flags2 & !(1 | 4 | 8 | 16) != 0 {
+                    l1_raw_bucketed = arch_flags2 & 32 != 0;
+                    if l1_raw_bucketed && !has_l1_raw {
+                        return Err("arch_flags2 bit 5 (per-bucket raw readout) needs bit 4".to_string());
+                    }
+                    if arch_flags2 & !(1 | 4 | 8 | 16 | 32) != 0 {
                         return Err(format!(
                             "unknown arch_flags2 bits set (0x{:02x}); this net uses an \
                              architecture feature this build does not implement",
@@ -3452,14 +3461,19 @@ impl NNUENet {
             for w in skip_w.iter_mut() { *w = read_u8(reader)? as i8; }
         }
         // Raw L1 readout (arch_flags2 bit 4): one f32 per L1 unit, after the skip
-        // block if any. Shared L1 only: a bucketed L1 would need one row per bucket.
+        // block if any; with bit 5, one such row per output bucket. Shared L1
+        // only: a bucketed L1 would need its own readout per L1 section.
         let mut l1_raw_w: Vec<f32> = Vec::new();
         if has_l1_raw {
             if !use_pairwise || bucketed_hidden {
                 return Err("raw L1 readout requires a pairwise net with a shared L1".to_string());
             }
-            l1_raw_w = vec![0.0f32; l1_size];
-            for w in l1_raw_w.iter_mut() { *w = f32::from_bits(read_u32(reader)?); }
+            let rows = if l1_raw_bucketed { NNUE_OUTPUT_BUCKETS } else { 1 };
+            let mut stored = vec![0.0f32; rows * l1_size];
+            for w in stored.iter_mut() { *w = f32::from_bits(read_u32(reader)?); }
+            l1_raw_w = (0..NNUE_OUTPUT_BUCKETS)
+                .flat_map(|b| stored[(b % rows) * l1_size..(b % rows + 1) * l1_size].to_vec())
+                .collect();
         }
 
         // Compute king bucket tables for this net's layout. Stored on the
@@ -4340,8 +4354,9 @@ impl NNUENet {
         // Raw L1 readout: pre-activation x at the same dequant as the CReLU half
         // (hidden32 / pw_scale / qa_l1), but read before any clamp.
         let raw_f = if self.has_l1_raw {
+            let row = &self.l1_raw_w[bucket * l1..bucket * l1 + l1];
             let mut acc = 0.0f32;
-            for i in 0..l1 { acc += hidden32[i] as f32 * self.l1_raw_w[i]; }
+            for i in 0..l1 { acc += hidden32[i] as f32 * row[i]; }
             acc / (pw_scale as f32 * qa_l1 as f32)
         } else {
             0.0
