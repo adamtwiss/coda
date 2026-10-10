@@ -941,7 +941,7 @@ pub static FEAT_TT_STATIC_EVAL: AtomicBool = AtomicBool::new(true);
 /// `disable_all_features()`: it is an eval-correctness term, not a search
 /// heuristic, and letting DISABLE_ALL switch it off would fold an eval change
 /// into every pruning ablation.
-pub static FEAT_SAT_TIEBREAK: AtomicBool = AtomicBool::new(true);
+pub static FEAT_SAT_TIEBREAK: AtomicBool = AtomicBool::new(false); // A2 test: net readout replaces the tiebreak
 pub static FEAT_QS_CAPTURES: AtomicBool = AtomicBool::new(true); // false = QS returns eval immediately
 pub static FEAT_SINGULAR: AtomicBool = AtomicBool::new(true); // singular extensions specifically
 pub static FEAT_CUCKOO: AtomicBool = AtomicBool::new(true);
