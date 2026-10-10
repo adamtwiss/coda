@@ -5933,7 +5933,6 @@ fn negamax(
         && ply >= info.nmp_min_ply  // Ply barrier: verification subtree cannot re-trigger NMP (audit B1)
         && beta.abs() < MATE_IN_MAX_PLY  // Skip NMP for mate/TB scores
         && info.excluded_move[ply_u] == NO_MOVE  // Skip NMP during SE verification
-        && cut_node  // cut-node gate: only attempt NMP at expected fail-high nodes (closes 30%->57% NMP cutoff-rate gap)
         && FEAT_NMP.load(Ordering::Relaxed)
     {
         info.stats.nmp_attempts += 1;
