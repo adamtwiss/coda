@@ -560,6 +560,25 @@ tunables!(
     // Fixed-point /10.
     (CORR_BONUS_CAP_DIV_10X, 38, 10, 160, 15.0, false),
     (CORR_HIST_GRAIN_T, 13, 1, 32, 1.55, false),
+    // Game-phase keying of the pawn and non-pawn correction tables (idea from
+    // Triumviratus's design notes): the phase is the NNUE output bucket,
+    // grouped as `output_bucket >> CORR_PHASE_SHIFT`. See `corr_phase`.
+    //
+    // Default 1 = four phase groups, each a pair of adjacent output buckets
+    // (8 pieces wide). Derivation: (a) the output bucket is the partition along
+    // which the net's own final layer, and so its systematic bias, changes, so
+    // group boundaries should be bucket boundaries; (b) the index is a 14-bit
+    // window (CORR_HIST_SIZE = 2^14) of a 64-bit Zobrist key, and 64/14 gives
+    // exactly four DISJOINT windows, so four groups is the most for which each
+    // phase indexes the table with bits no other phase uses; (c) a single
+    // exchange removes two pieces, half an output bucket, so per-bucket keying
+    // (shift 0) splits an entry's training across a boundary on routine
+    // captures inside one search tree, while pairs are four exchanges wide.
+    //
+    // Range [0, 2]: 0 = one phase per output bucket (8), 2 = two phases. 3
+    // would collapse to a single phase, i.e. disable the feature, so it is
+    // excluded.
+    (CORR_PHASE_SHIFT, 1, 0, 2, 0.5, false),
     // Correction-history output scaling — the output is scaled rather than the
     // input pre-clamped:
     //   bonus = err * (depth+1).min(W) / CORR_ERR_DIV
@@ -976,10 +995,17 @@ const CORR_HIST_SIZE: usize = 16384;
 /// other state, so `Relaxed` is the correct ordering on every target,
 /// aarch64 included. Two threads updating one entry at once can lose a
 /// gravity step; they can never produce an out-of-range value.
+///
+/// The pawn and non-pawn tables are keyed by game phase as well as by their
+/// Zobrist key (`corr_idx(key, corr_phase(board))`). That changes only WHICH
+/// entry a position maps to, computed from the reading thread's own board, so
+/// the ordering argument above is unchanged. CORR_PHASE_SHIFT is read per
+/// access; a setoption that changes it mid-search only re-maps entries (stale
+/// slots decay under gravity), it cannot make any entry invalid.
 pub struct CorrTables {
-    /// Pawn correction history: [stm][pawn_hash % size]
+    /// Pawn correction history: [stm][corr_idx(pawn_hash, phase)]
     pawn: Box<[[std::sync::atomic::AtomicI32; CORR_HIST_SIZE]; 2]>,
-    /// Non-pawn correction history: [stm][color][nonpawn_hash % size]
+    /// Non-pawn correction history: [stm][color][corr_idx(nonpawn_hash, phase)]
     np: Box<[[[std::sync::atomic::AtomicI32; CORR_HIST_SIZE]; 2]; 2]>,
     /// Paired continuation correction: [prev_piece][prev_to][cur_piece][cur_to],
     /// go_piece 1-12 (slot 0 unused). Read/updated at ply-2 and ply-4 offsets.
@@ -1015,6 +1041,31 @@ impl CorrTables {
     }
 }
 const CORR_HIST_LIMIT: i32 = 1024;    // Consensus (SF, Obsidian)
+
+/// log2(CORR_HIST_SIZE): width of the key window that indexes a table.
+const CORR_HIST_BITS: u32 = CORR_HIST_SIZE.trailing_zeros();
+
+/// Game phase for the pawn / non-pawn correction tables: the NNUE output
+/// bucket (`nnue::output_bucket`, the net's own piece-count partition),
+/// grouped by CORR_PHASE_SHIFT. Every reader, writer and prefetch of those
+/// tables must derive its index through this and `corr_idx`, or reads and
+/// writes land in different slots.
+#[inline]
+fn corr_phase(board: &Board) -> usize {
+    crate::nnue::output_bucket(popcount(board.occupied())) >> tp(&CORR_PHASE_SHIFT)
+}
+
+/// Table index for a Zobrist key in a given phase. The table size is
+/// unchanged; phases share it. Each phase reads a different 14-bit window of
+/// the key (rotate by CORR_HIST_BITS per phase), so a collision between two
+/// keys in one phase does not repeat in the others; with up to four phase
+/// groups the windows are disjoint. The `^ phase` separates the all-zero key
+/// (a side with no non-pawn pieces, or no pawns on the board), which every
+/// rotation leaves at zero.
+#[inline]
+fn corr_idx(key: u64, phase: usize) -> usize {
+    ((key.rotate_right(CORR_HIST_BITS * phase as u32) as usize) ^ phase) & (CORR_HIST_SIZE - 1)
+}
 
 
 /// Search limits.
@@ -2524,11 +2575,12 @@ fn cont_corr_value(info: &SearchInfo, ply: usize) -> i64 {
 /// so uncertain (drifting) evals extend MORE readily, not less.
 fn correction_value(info: &SearchInfo, board: &Board, ply: usize) -> i32 {
     let stm = board.side_to_move as usize;
-    let pawn_idx = (board.pawn_hash as usize) & (CORR_HIST_SIZE - 1);
+    let phase = corr_phase(board);
+    let pawn_idx = corr_idx(board.pawn_hash, phase);
     let pawn_corr = info.corr.pawn[stm][pawn_idx].load(Ordering::Relaxed) as i64;
-    let white_np_idx = (board.non_pawn_key[WHITE as usize] as usize) & (CORR_HIST_SIZE - 1);
+    let white_np_idx = corr_idx(board.non_pawn_key[WHITE as usize], phase);
     let white_np_corr = info.corr.np[stm][WHITE as usize][white_np_idx].load(Ordering::Relaxed) as i64;
-    let black_np_idx = (board.non_pawn_key[BLACK as usize] as usize) & (CORR_HIST_SIZE - 1);
+    let black_np_idx = corr_idx(board.non_pawn_key[BLACK as usize], phase);
     let black_np_corr = info.corr.np[stm][BLACK as usize][black_np_idx].load(Ordering::Relaxed) as i64;
     let cont_corr = cont_corr_value(info, ply);
     let trans_corr = if !board.undo_stack.is_empty() {
@@ -2598,14 +2650,16 @@ fn update_correction_history(info: &mut SearchInfo, board: &Board, search_score:
     let cap_div = CORR_BONUS_CAP_DIV_10X.load(Ordering::Relaxed);
     let stm = board.side_to_move as usize;
 
+    let phase = corr_phase(board);
+
     // Pawn correction
-    let pawn_idx = (board.pawn_hash as usize) & (CORR_HIST_SIZE - 1);
+    let pawn_idx = corr_idx(board.pawn_hash, phase);
     update_corr_entry(&info.corr.pawn[stm][pawn_idx], scaled_err, cap_div);
 
     // Non-pawn corrections (per color)
-    let white_np_idx = (board.non_pawn_key[WHITE as usize] as usize) & (CORR_HIST_SIZE - 1);
+    let white_np_idx = corr_idx(board.non_pawn_key[WHITE as usize], phase);
     update_corr_entry(&info.corr.np[stm][WHITE as usize][white_np_idx], scaled_err, cap_div);
-    let black_np_idx = (board.non_pawn_key[BLACK as usize] as usize) & (CORR_HIST_SIZE - 1);
+    let black_np_idx = corr_idx(board.non_pawn_key[BLACK as usize], phase);
     update_corr_entry(&info.corr.np[stm][BLACK as usize][black_np_idx], scaled_err, cap_div);
 
     // Continuation correction — paired 2-ply/4-ply (H1). Index by the LAST move
@@ -5308,12 +5362,15 @@ fn negamax(
     {
         use std::arch::x86_64::{_mm_prefetch, _MM_HINT_T0};
         let stm = board.side_to_move as usize;
+        // Same phase-mixed index as correction_value, or the prefetch warms
+        // the wrong line.
+        let phase = corr_phase(board);
         unsafe {
-            let pawn_idx = (board.pawn_hash as usize) & (CORR_HIST_SIZE - 1);
+            let pawn_idx = corr_idx(board.pawn_hash, phase);
             _mm_prefetch(&info.corr.pawn[stm][pawn_idx] as *const std::sync::atomic::AtomicI32 as *const i8, _MM_HINT_T0);
-            let wnp_idx = (board.non_pawn_key[WHITE as usize] as usize) & (CORR_HIST_SIZE - 1);
+            let wnp_idx = corr_idx(board.non_pawn_key[WHITE as usize], phase);
             _mm_prefetch(&info.corr.np[stm][WHITE as usize][wnp_idx] as *const std::sync::atomic::AtomicI32 as *const i8, _MM_HINT_T0);
-            let bnp_idx = (board.non_pawn_key[BLACK as usize] as usize) & (CORR_HIST_SIZE - 1);
+            let bnp_idx = corr_idx(board.non_pawn_key[BLACK as usize], phase);
             _mm_prefetch(&info.corr.np[stm][BLACK as usize][bnp_idx] as *const std::sync::atomic::AtomicI32 as *const i8, _MM_HINT_T0);
             if let Some(last) = board.undo_stack.last() {
                 if last.mv != NO_MOVE {
@@ -5843,11 +5900,12 @@ fn negamax(
                         let div = tp(&CORR_HIST_DIV) as i64;
                         let grain = tp(&CORR_HIST_GRAIN_T) as i64;
                         let scale = (div * grain).max(1);
-                        let pawn_idx = (board.pawn_hash as usize) & (CORR_HIST_SIZE - 1);
+                        let phase = corr_phase(board);
+                        let pawn_idx = corr_idx(board.pawn_hash, phase);
                         let c1 = info.corr.pawn[stm][pawn_idx].load(Ordering::Relaxed) as i64 * tp(&CORR_W_PAWN) as i64 / scale;
-                        let wnp = (board.non_pawn_key[WHITE as usize] as usize) & (CORR_HIST_SIZE - 1);
+                        let wnp = corr_idx(board.non_pawn_key[WHITE as usize], phase);
                         let c2 = info.corr.np[stm][WHITE as usize][wnp].load(Ordering::Relaxed) as i64 * tp(&CORR_W_NP) as i64 / scale;
-                        let bnp = (board.non_pawn_key[BLACK as usize] as usize) & (CORR_HIST_SIZE - 1);
+                        let bnp = corr_idx(board.non_pawn_key[BLACK as usize], phase);
                         let c3 = info.corr.np[stm][BLACK as usize][bnp].load(Ordering::Relaxed) as i64 * tp(&CORR_W_NP) as i64 / scale;
                         let c4 = cont_corr_value(info, ply_u) * tp(&CORR_W_CONT) as i64 / scale;
                         let c5 = if let Some(last) = board.undo_stack.last() {
@@ -8741,6 +8799,18 @@ mod tests {
     }
 
     #[test]
+    fn corr_idx_phase_zero_is_plain_mask_and_phases_separate() {
+        let key = 0x0123_4567_89ab_cdefu64;
+        // Phase 0 keeps the pre-phase indexing exactly.
+        assert_eq!(corr_idx(key, 0), (key as usize) & (CORR_HIST_SIZE - 1));
+        // The all-zero key (no pawns / no non-pawn pieces) must still land in
+        // a different slot per phase.
+        let zero: Vec<usize> = (0..8).map(|p| corr_idx(0, p)).collect();
+        for i in 0..8 { for j in i + 1..8 { assert_ne!(zero[i], zero[j]); } }
+        for p in 0..8 { assert!(corr_idx(key, p) < CORR_HIST_SIZE); }
+    }
+
+    #[test]
     fn competitive_se_relaxes_only_boundary_fail_highs() {
         assert_eq!(competitive_se_reduction(-3, 20, 20), -2);
         assert_eq!(competitive_se_reduction(-2, 20, 20), -1);
@@ -9292,9 +9362,10 @@ mod tests {
         update_correction_history(&mut info, &board, raw + 400, raw, 20, 0);
 
         let stm = board.side_to_move as usize;
-        let pawn_idx = (board.pawn_hash as usize) & (CORR_HIST_SIZE - 1);
-        let white_np_idx = (board.non_pawn_key[WHITE as usize] as usize) & (CORR_HIST_SIZE - 1);
-        let black_np_idx = (board.non_pawn_key[BLACK as usize] as usize) & (CORR_HIST_SIZE - 1);
+        let phase = corr_phase(&board);
+        let pawn_idx = corr_idx(board.pawn_hash, phase);
+        let white_np_idx = corr_idx(board.non_pawn_key[WHITE as usize], phase);
+        let black_np_idx = corr_idx(board.non_pawn_key[BLACK as usize], phase);
 
         // The slot indexed by the test position's hash must be non-zero
         // in every per-position table. cont_corr is excluded — needs a
