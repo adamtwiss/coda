@@ -327,6 +327,21 @@ tunables!(
     // above. The >2 threshold is fixed, not a knob.
     (LMR_CUTOFF_CNT_CENTI, 60, 0, 250, 12.0, true),
     (LMR_CUTOFF_ALLNODE_CENTI, 21, 0, 150, 8.0, true),
+    // Refutation-squares LMR term, centi-ply (idea from Triumviratus's design
+    // notes). When one of our quiets fails low at a non-PV node, the child's
+    // best move (read back from the TT) is the opponent's refutation of it;
+    // its from-square, to-square and what it attacks from the to-square form a
+    // mask. A later quiet sibling with neither from nor to in that mask does
+    // nothing about the refutation, so it is reduced this much MORE. Never a
+    // prune; the normal fail-high re-search stands.
+    //
+    // Default = LMR_CUTOFF_CNT_CENTI (60). That term carries the same meaning,
+    // "the child ply is refuting our moves easily, so late moves need less
+    // depth to be refuted", from a coarser signal (a count of child cutoffs);
+    // this one is per-move evidence of the same thing, so it starts at the
+    // same magnitude. Range floor 20 rather than 0 so SPSA cannot switch the
+    // feature off by drifting; ceiling 250 matches LMR_CUTOFF_CNT_CENTI's.
+    (LMR_REFUTE_CENTI, 60, 20, 250, 12.0, false),
     // Minimum depth at which singular extension is attempted. Too low and
     // singular_depth is itself too shallow to judge singularity reliably.
     (SE_DEPTH_10X, 40, 40, 200, 20.0, true),
@@ -1183,6 +1198,12 @@ prune_stats! {
     singular_ext: u64,
     double_ext: u64,
     negative_ext: u64,
+    // Refutation-squares LMR: masks recorded (failed-low quiets with a
+    // readable child refutation), quiets given the extra reduction, and how
+    // many of those reduced probes still failed high (re-searched).
+    refute_masks: u64,
+    refute_reduced: u64,
+    refute_failhigh: u64,
     multicut: u64,
     qnodes: u64,
     beta_cutoffs: u64,
@@ -6221,6 +6242,10 @@ fn negamax(
     // this count — more fail-highs at this node = stronger signal that the
     // cutoff move is genuinely good.
     let mut num_fail_highs: i32 = 0;
+    // Refutation-squares mask (see LMR_REFUTE_CENTI): squares touched by the
+    // opponent's refutation of our most recent failed-low quiet at this node.
+    // 0 = no refutation recorded yet.
+    let mut refute_mask: Bitboard = 0;
     // Track quiet moves searched before beta cutoff for history penalty
     let mut quiets_tried = [NO_MOVE; 64];
     let mut quiets_count = 0usize;
@@ -6638,6 +6663,9 @@ let singular_beta = tt_score_local - depth;
 
         // Late Move Reductions (LMR) + Principal Variation Search (PVS)
         let mut reduction = 0i32;
+        // Set when the refutation-squares term added to this move's reduction
+        // (instrumentation only: lets bench count how often it re-searches).
+        let mut refute_extra = false;
         // Explicit `move_count > 1 && mv != tt_move` guards (defensive,
         // bench-neutral). Currently safe via LMR_TABLE zero-init at
         // depth<3 / move<3, but if the table is ever populated differently
@@ -6761,6 +6789,19 @@ let singular_beta = tt_score_local - depth;
                     if !is_pv && !cut_node {
                         reduction += tp(&LMR_CUTOFF_ALLNODE_CENTI);
                     }
+                }
+
+                // Refutation squares: an earlier quiet failed low here and
+                // this one neither moves from nor to a square the refutation
+                // touches. Non-PV only (the mask is only recorded there), and
+                // not for checks or evasions, which interact with the
+                // opponent whatever their squares.
+                if refute_mask != 0 && !in_check && !gives_check
+                    && refute_mask & ((1u64 << from) | (1u64 << to)) == 0
+                {
+                    reduction += tp(&LMR_REFUTE_CENTI);
+                    info.stats.refute_reduced += 1;
+                    refute_extra = true;
                 }
 
                 // Continuous history adjustment: good history reduces less, bad more
@@ -6963,6 +7004,7 @@ let singular_beta = tt_score_local - depth;
             info.reductions[ply_u] = 0;
 
             if lmr_score > alpha { info.stats.ts_lmr_failhigh += 1; }
+            if refute_extra && lmr_score > alpha { info.stats.refute_failhigh += 1; }
             if lmr_score > alpha && !info.stop.load(Ordering::Relaxed) {
                 // LMR failed high: doDeeper/doShallower before re-search.
                 //
@@ -7065,6 +7107,30 @@ let singular_beta = tt_score_local - depth;
             // along that whole spine.
             let child_cut = if is_pv { false } else { !cut_node };
             score = -negamax(board, info, -beta, -alpha, new_depth, ply + 1, child_cut);
+        }
+
+        // Record the refutation of a failed-low quiet, while the board is
+        // still the child position. The child's best move is read back from
+        // the TT: it is the move the child's search just stored (the one that
+        // cut off), or, where the child returned before its move loop, the
+        // TT move it would have tried first. Only the squares are used, so a
+        // collided entry costs at most a wrong mask; the piece on the from
+        // square must belong to the side to move or the move is ignored.
+        if !is_pv && !in_check && !is_cap && !is_promo && score <= alpha
+            && !info.stop.load(Ordering::Relaxed)
+        {
+            let e = info.tt.probe(board.hash);
+            if e.hit && e.best_move != NO_MOVE {
+                let rf = move_from(e.best_move);
+                let rt = move_to(e.best_move);
+                let rpt = board.piece_type_at(rf);
+                if rpt != NO_PIECE_TYPE && board.color_at(rf) == board.side_to_move {
+                    let occ = (board.occupied() & !(1u64 << rf)) | (1u64 << rt);
+                    refute_mask = (1u64 << rf) | (1u64 << rt)
+                        | crate::threats::piece_attacks_occ(rpt, board.side_to_move, rt as u32, occ);
+                    info.stats.refute_masks += 1;
+                }
+            }
         }
 
         board.unmake_move();
@@ -8306,6 +8372,10 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
     eprintln!("Singular ext:   {:>8}  (single +1 ply)", s.singular_ext);
     eprintln!("Double ext:     {:>8}  (additional +1 on top of singular)", s.double_ext);
     eprintln!("Negative ext:   {:>8}  (-1/-2/-3 fail-high reduce)", s.negative_ext);
+    eprintln!("Refute-sq LMR:  {:>8}  masks; extra-reduced {} ({:.1}% of LMR searches), of which failed high {} ({:.1}%)",
+        s.refute_masks, s.refute_reduced,
+        100.0 * s.refute_reduced as f64 / s.lmr_searches.max(1) as f64,
+        s.refute_failhigh, 100.0 * s.refute_failhigh as f64 / s.refute_reduced.max(1) as f64);
     eprintln!("Multi-cut:      {:>8}  (return singular_score; singular_beta if decisive)", s.multicut);
     eprintln!("QS nodes:       {:>8}  ({:.1}% of total)", s.qnodes, s.qnodes as f64 / total_nodes as f64 * 100.0);
     if s.beta_cutoffs > 0 {
