@@ -288,6 +288,27 @@ tunables!(
     (TM_SUBTREE_MULT_100, 140, 90, 200, 4.0, false),      // (base-frac) * N/100
     (TM_FORCED_MARGIN_WEAK, 170, 80, 320, 8.0, false),    // weak-forced cp margin
     (TM_FORCED_MARGIN_STRONG, 400, 200, 620, 12.0, false),// strong-forced cp margin
+    // Defending-window TM factor (idea from another engine's public design
+    // notes; window and multiplier are Coda's own). When the running root
+    // score says we are DEFENDING but not LOST, i.e.
+    //     -TM_DEFEND_LO < score <= -TM_DEFEND_HI     (internal units)
+    // multiply the soft budget by 1 + TM_DEFEND_BONUS_1000/1000. Inside the
+    // product, so every existing cap still binds (no-inc clamp, low-inc
+    // ceiling, max_time) and the forfeit guard is untouched. Derivations:
+    //   * HI 256 = one DISPLAYED pawn in internal units: format_uci_score
+    //     shows internal * REPORT_SCALE_PCT/100 (39), so 100 / 0.39 ~= 256.
+    //     Less than a pawn down is ordinary middlegame noise, not defence.
+    //   * LO 716 = the SE_ROOT_DECIDED_CP default, Coda's own root-score test
+    //     for "this game is decided" (~280 displayed). Past it, extra time
+    //     buys nothing the search can convert.
+    //   * BONUS 350 = the TM_FAIL_LOW_BONUS_1000 default: a root that stays
+    //     in the defending band is treated like one standing aspiration
+    //     fail-low — the same "our position is worse than we would like"
+    //     signal, priced at the same rate.
+    // Bench-invariant (TM is never consulted at fixed depth).
+    (TM_DEFEND_HI, 256, 100, 600, 20.0, false),
+    (TM_DEFEND_LO, 716, 400, 2000, 50.0, false),
+    (TM_DEFEND_BONUS_1000, 350, 0, 800, 25.0, false),
     (LMR_HIST_DIV, 23496, 2000, 100000, 4900.0, true),
     // Capture-LMR history divisor. Separate from the quiet divisor above:
     // capture history is single-source, so it needs a smaller divisor than
@@ -1266,6 +1287,7 @@ struct TmDbg {
     forced: f64,
     subtree: f64,
     trend: f64,
+    defend: f64,
     /// Best-move node fraction feeding the subtree factor; -1 when not computed.
     frac: f64,
     /// Post-ceiling factor product applied to soft_limit.
@@ -4758,6 +4780,24 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                     .clamp(1.00, 1.55)
             };
 
+            // Factor 7: defending window. More time when the running root
+            // score says we are DEFENDING (at least a displayed pawn down) but
+            // not LOST (above Coda's "game is decided" root threshold) — see
+            // the TM_DEFEND_* tunables for the derivations. The is_decisive
+            // guard is belt-and-braces: TB/mate scores sit far below -LO.
+            // Distinct from Factor 5, which reacts to the score MOVING; this
+            // one reacts to the score's LEVEL, so it also covers a position
+            // that has been steadily bad for several moves (trend ~0).
+            let defend_multiplier = {
+                let hi = tp(&TM_DEFEND_HI).max(0);
+                let lo = tp(&TM_DEFEND_LO).max(hi + 1);
+                if !is_decisive(prev_score) && prev_score <= -hi && prev_score > -lo {
+                    1.0 + tp(&TM_DEFEND_BONUS_1000).max(0) as f64 / 1000.0
+                } else {
+                    1.0
+                }
+            };
+
             // Combined multiplier — the standard factors + score-trend + cross-thread.
             // Max product ~ 2.50 × 1.68 × 1.0 × 2.27 × 1.45 = 13.8×
             // Min product ~ 0.75 × 1.0  × 0.386 × 0.87 × 0.80 = 0.20×
@@ -4771,7 +4811,8 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                 * forced_move_multiplier
                 * subtree_size_multiplier
                 * score_trend_multiplier
-                * cross_thread_instability;
+                * cross_thread_instability
+                * defend_multiplier;
             // No-inc clamp: factor product up to 6.5× at no-inc TCs blows
             // adjusted_soft past hard_time via iteration-overflow even with
             // the smaller no-inc opt baseline — observed at 3+0 as a run of a
@@ -4814,6 +4855,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                     forced: forced_move_multiplier,
                     subtree: subtree_size_multiplier,
                     trend: score_trend_multiplier,
+                    defend: defend_multiplier,
                     frac: subtree_frac,
                     product: multiplier,
                     adjusted_soft,
@@ -4967,7 +5009,8 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                  tm_baseline={} stab={} bmc={} asp_fl={} asp_fh={} forced={:?} \
                  cross_prev={} \
                  stabf={:.2} flf={:.2} forcedf={:.3} subf={:.2} subfrac={:.3} \
-                 trendf={:.2} mult={:.2} adjsoft={} overshoot={}",
+                 trendf={:.2} mult={:.2} adjsoft={} overshoot={} \
+                 defendf={:.2}",
                 info.completed_depth,
                 move_to_uci(best_move),
                 info.last_score,
@@ -4993,6 +5036,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                 info.tm_dbg.product,
                 info.tm_dbg.adjusted_soft,
                 overshoot,
+                info.tm_dbg.defend,
             );
         }
     }
