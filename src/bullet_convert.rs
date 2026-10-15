@@ -238,6 +238,7 @@ pub fn convert_v7(
     hl_crelu: bool,
     pawn_pairs: bool,
     l1_raw: bool,
+    band_edges: &[u8],
 ) -> Result<(), String> {
     // Pawn-pair features extend the THREAT feature space (see nnue.rs), so they
     // occupy l0 columns immediately after the threat block and cannot exist
@@ -247,7 +248,16 @@ pub fn convert_v7(
         return Err("--pawn-pairs requires --threats: pawn-pair features extend the \
                     threat feature space and cannot stand alone".to_string());
     }
-    let psq_input_size = kb_count * PSQ_INPUTS_PER_BUCKET;
+    // Material bands (trainer --material-bands): the PSQ block holds one
+    // king-bucketed copy per band, band-major.
+    if band_edges.len() >= crate::nnue::NNUE_MAX_MATERIAL_BANDS {
+        return Err(format!("{} material-band edges; at most {} supported",
+            band_edges.len(), crate::nnue::NNUE_MAX_MATERIAL_BANDS - 1));
+    }
+    if !band_edges.windows(2).all(|w| w[0] < w[1]) || !band_edges.iter().all(|&e| (3..=32).contains(&e)) {
+        return Err(format!("--material-bands {:?} must be ascending within 3..=32", band_edges));
+    }
+    let psq_input_size = (band_edges.len() + 1) * kb_count * PSQ_INPUTS_PER_BUCKET;
     let data = std::fs::read(input_path).map_err(|e| format!("read {}: {}", input_path, e))?;
     let data_len = strip_footer(&data);
 
@@ -515,7 +525,7 @@ pub fn convert_v7(
     // is the intended fail-loud behavior for format mismatch.
     // v11 adds an arch_flags2 byte (pawn-pair block). See nnue.rs for why it is
     // a new byte rather than a ninth meaning for a bit in the first flags byte.
-    let version = if num_pawn_pairs > 0 || l1_raw { 11u32 }
+    let version = if num_pawn_pairs > 0 || l1_raw || !band_edges.is_empty() { 11u32 }
         else if num_threats > 0 { 10u32 } else if dual_l1 { 8u32 } else { 7u32 };
     let mut buf = Vec::new();
     write_u32_le(&mut buf, NNUE_MAGIC);
@@ -580,14 +590,20 @@ pub fn convert_v7(
     //   bit 0: has_pawn_pair, followed by a u32 feature count
     //   bits 1-3: reserved (must be 0)
     //   bit 4: raw L1 readout, [l1_size] f32 after the output bias
-    //   bits 5-7: reserved (must be 0)
+    //   bit 5: material bands, a u8 edge count and the edges after the pawn-pair count
+    //   bits 6-7: reserved (must be 0)
     if version >= 11 {
         let mut arch_flags2 = 0u8;
         if num_pawn_pairs > 0 { arch_flags2 |= 1; }
         if l1_raw { arch_flags2 |= 16; }
+        if !band_edges.is_empty() { arch_flags2 |= 32; }
         buf.push(arch_flags2);
         if num_pawn_pairs > 0 {
             write_u32_le(&mut buf, num_pawn_pairs as u32);
+        }
+        if !band_edges.is_empty() {
+            buf.push(band_edges.len() as u8);
+            buf.extend_from_slice(band_edges);
         }
     }
 

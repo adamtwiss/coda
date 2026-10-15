@@ -367,6 +367,8 @@ pub const NNUE_OUTPUT_BUCKETS: usize = 8;
 /// Maximum king bucket count we allocate static tables for
 /// (uniform/consensus = 16).
 pub const NNUE_MAX_KING_BUCKETS: usize = 16;
+/// Most material bands a net may split its PSQ block into (arch_flags2 bit 5).
+pub const NNUE_MAX_MATERIAL_BANDS: usize = 4;
 /// Pairwise SIMD pack buffer size (bytes per perspective). Bounds the largest
 /// loadable net: pw = hidden_size/2 must be ≤ this, i.e. hidden_size ≤ 2×this.
 /// Enforced at net load (see Net::read) and asserted at the buffer.
@@ -2985,6 +2987,14 @@ pub struct NNUENet {
     /// Number of king buckets in this net (16 for uniform/consensus).
     /// PSQ weight block is sized `num_king_buckets * 768 * hidden_size`.
     pub num_king_buckets: usize,
+    /// Material bands (arch_flags2 bit 5): the PSQ block holds `num_bands`
+    /// copies of the king-bucketed block, band-major, and a position uses the
+    /// copy for its total piece count (kings and pawns included). Band `b`
+    /// covers piece counts from `band_edges[b-1]` up to `band_edges[b]` - 1.
+    /// One band (no edges) is the plain king-bucketed net.
+    /// Material-band input buckets: idea from Triumviratus's Consilium.
+    pub num_bands: usize,
+    pub band_edges: [u8; NNUE_MAX_MATERIAL_BANDS - 1],
     /// King bucket layout identifier — drives which lookup tables are used.
     pub kb_layout: KbLayout,
     /// Per-net king-bucket lookup table: square (0-63) → bucket (0..num_king_buckets).
@@ -3021,9 +3031,36 @@ impl NNUENet {
     /// Use this everywhere that computes a feature index to avoid the
     /// race-prone global tables. See also `halfka_index_with` for the
     /// equivalent free function.
+    /// `band` is the position's material band (`material_band`); 0 on a net
+    /// without bands.
     #[inline]
-    pub fn halfka_index(&self, perspective: u8, king_sq: u8, pc_color: u8, pc_type: u8, pc_sq: u8) -> usize {
-        halfka_index_with(&self.king_bucket, &self.king_mirror, perspective, king_sq, pc_color, pc_type, pc_sq)
+    pub fn halfka_index(&self, band: usize, perspective: u8, king_sq: u8, pc_color: u8, pc_type: u8, pc_sq: u8) -> usize {
+        band * self.num_king_buckets * PSQ_INPUTS_PER_BUCKET
+            + halfka_index_with(&self.king_bucket, &self.king_mirror, perspective, king_sq, pc_color, pc_type, pc_sq)
+    }
+
+    /// Material band for a position with `piece_count` pieces on the board.
+    #[inline]
+    pub fn material_band(&self, piece_count: u32) -> usize {
+        let mut band = 0;
+        for &e in &self.band_edges[..self.num_bands - 1] {
+            band += (piece_count >= e as u32) as usize;
+        }
+        band
+    }
+
+    /// Material band of `board`.
+    #[inline]
+    pub fn board_band(&self, board: &Board) -> usize {
+        if self.num_bands == 1 { 0 } else { self.material_band(board.occupied().count_ones()) }
+    }
+
+    /// Whether a capture from a position with `piece_count` pieces moves it
+    /// into a lower band. A capture removes exactly one piece, so it crosses
+    /// only when the count before it sits exactly on an edge.
+    #[inline]
+    pub fn capture_crosses_band(&self, piece_count: u32) -> bool {
+        self.band_edges[..self.num_bands - 1].iter().any(|&e| e as u32 == piece_count)
     }
 
     /// Output bucket for this net (uniform `(piece_count-2)/4`). Hot path — inline.
@@ -3097,6 +3134,8 @@ impl NNUENet {
         let mut bucketed_hidden = false; // bit 3: output buckets baked into L1/L2 dims
         let mut dual_l1 = false; // bit 4: dual L1 activation (CReLU+SCReLU, v8)
         let mut has_l1_raw = false; // arch_flags2 bit 4 (v11)
+        let mut num_bands = 1usize; // arch_flags2 bit 5 (v11)
+        let mut band_edges = [0u8; NNUE_MAX_MATERIAL_BANDS - 1];
         // bit 5 is context-dependent:
         //   - extended_kb=0: consensus_buckets (legacy 16-bucket encoding)
         //   - extended_kb=1: hl_crelu (hidden-layer CReLU, vs default SCReLU)
@@ -3240,11 +3279,13 @@ impl NNUENet {
                 //             research nets that never shipped; leaving them
                 //             reserved keeps those nets refused, not misread)
                 //   bit 4: raw L1 readout (see `has_l1_raw`)
-                //   bits 5-7: reserved, must be zero
+                //   bit 5: material bands — a u8 edge count and the edges follow
+                //          the pawn-pair count (see `num_bands`)
+                //   bits 6-7: reserved, must be zero
                 if version >= 11 {
                     let arch_flags2 = read_u8(reader)?;
                     has_l1_raw = arch_flags2 & 16 != 0;
-                    if arch_flags2 & !(1 | 16) != 0 {
+                    if arch_flags2 & !(1 | 16 | 32) != 0 {
                         return Err(format!(
                             "unknown arch_flags2 bits set (0x{:02x}); this net uses an \
                              architecture feature this build does not implement",
@@ -3272,6 +3313,19 @@ impl NNUENet {
                                         features; pawn-pair extends the threat feature \
                                         space and cannot stand alone".to_string());
                         }
+                    }
+                    if arch_flags2 & 32 != 0 {
+                        let n_edges = read_u8(reader)? as usize;
+                        if n_edges == 0 || n_edges >= NNUE_MAX_MATERIAL_BANDS {
+                            return Err(format!("net declares {} material-band edges; this build \
+                                                supports 1..={}", n_edges, NNUE_MAX_MATERIAL_BANDS - 1));
+                        }
+                        for e in band_edges.iter_mut().take(n_edges) { *e = read_u8(reader)?; }
+                        let edges = &band_edges[..n_edges];
+                        if !edges.windows(2).all(|w| w[0] < w[1]) || !edges.iter().all(|&e| (3..=32).contains(&e)) {
+                            return Err(format!("material-band edges {:?} must be ascending within 3..=32", edges));
+                        }
+                        num_bands = n_edges + 1;
                     }
                 }
                 hidden_size = ft_size;
@@ -3312,7 +3366,7 @@ impl NNUENet {
         // Hugepage-backed (2 MiB pages): weight rows are indexed effectively
         // at random per node; on 4 KiB pages the two big matrices cost real
         // dTLB/STLB pressure on small-cache hosts.
-        let psq_input_size = num_king_buckets * PSQ_INPUTS_PER_BUCKET;
+        let psq_input_size = num_bands * num_king_buckets * PSQ_INPUTS_PER_BUCKET;
         let mut input_weights: AlignedVec<i16> = AlignedVec::hugepage_zeros(psq_input_size * hidden_size);
         read_i16_slice(reader, &mut input_weights)?;
         input_weights.advise_collapse();
@@ -3668,6 +3722,8 @@ impl NNUENet {
             num_threat_features,
             has_threats,
             num_king_buckets,
+            num_bands,
+            band_edges,
             kb_layout,
             king_bucket: king_bucket_tbl,
             king_mirror: king_mirror_tbl,
@@ -5399,8 +5455,10 @@ struct FinnyEntry {
 // Finny slots sized for the maximum supported bucket count. Nets with fewer
 // buckets (e.g. Reckless 10) use the low indices only; remaining slots sit
 // unused but cost nothing significant (~1KB per slot × 12 unused ≈ 12KB).
-const FINNY_STRIDE_PER_PERSPECTIVE: usize = NNUE_MAX_KING_BUCKETS * 2; // [bucket][mirror]
-const FINNY_SIZE: usize = 2 * FINNY_STRIDE_PER_PERSPECTIVE; // [perspective][bucket][mirror]
+// Material-band nets cache each band separately: a band's accumulator is built
+// from that band's weights, so it cannot seed a refresh in another band.
+const FINNY_STRIDE_PER_PERSPECTIVE: usize = NNUE_MAX_MATERIAL_BANDS * NNUE_MAX_KING_BUCKETS * 2; // [band][bucket][mirror]
+const FINNY_SIZE: usize = 2 * FINNY_STRIDE_PER_PERSPECTIVE; // [perspective][band][bucket][mirror]
 
 /// Accumulator stack with lazy materialization and Finny table.
 pub struct NNUEAccumulator {
@@ -5554,6 +5612,7 @@ impl NNUEAccumulator {
     /// Force a full recompute of both perspectives (for debugging).
     pub fn force_recompute(&mut self, net: &NNUENet, board: &Board) {
         let h = self.hidden_size;
+        let band = net.board_band(board);
         // White perspective
         {
             let dst = self.psq.view_mut(self.top, WHITE as usize);
@@ -5563,7 +5622,7 @@ impl NNUEAccumulator {
                     let mut bb = board.pieces[pt as usize] & board.colors[color as usize];
                     while bb != 0 {
                         let sq = pop_lsb(&mut bb) as u8;
-                        let idx = net.halfka_index(WHITE, board.king_sq(WHITE), color, pt, sq);
+                        let idx = net.halfka_index(band, WHITE, board.king_sq(WHITE), color, pt, sq);
                         let row = net.input_weight_row(idx);
                         for j in 0..h { dst[j] += row[j]; }
                     }
@@ -5579,7 +5638,7 @@ impl NNUEAccumulator {
                     let mut bb = board.pieces[pt as usize] & board.colors[color as usize];
                     while bb != 0 {
                         let sq = pop_lsb(&mut bb) as u8;
-                        let idx = net.halfka_index(BLACK, board.king_sq(BLACK), color, pt, sq);
+                        let idx = net.halfka_index(band, BLACK, board.king_sq(BLACK), color, pt, sq);
                         let row = net.input_weight_row(idx);
                         for j in 0..h { dst[j] += row[j]; }
                     }
@@ -5847,6 +5906,9 @@ impl NNUEAccumulator {
 
         let w_king_sq = board.king_sq(WHITE);
         let b_king_sq = board.king_sq(BLACK);
+        // A band change is a refresh barrier (build_dirty_piece), so every ply
+        // replayed here shares the current board's band.
+        let band = net.board_band(board);
 
         let n = dirty.n_changes as usize;
         let mut w_adds: [&[i16]; 8] = [&[]; 8];
@@ -5860,9 +5922,9 @@ impl NNUEAccumulator {
 
         for i in 0..n {
             let (add, color, pt, sq) = dirty.changes[i];
-            let w_idx = net.halfka_index(WHITE, w_king_sq, color, pt, sq);
+            let w_idx = net.halfka_index(band, WHITE, w_king_sq, color, pt, sq);
             let w_row = net.input_weight_row(w_idx);
-            let b_idx = net.halfka_index(BLACK, b_king_sq, color, pt, sq);
+            let b_idx = net.halfka_index(band, BLACK, b_king_sq, color, pt, sq);
             let b_row = net.input_weight_row(b_idx);
             if add {
                 w_adds[nwa] = w_row; nwa += 1;
@@ -5932,6 +5994,8 @@ impl NNUEAccumulator {
         debug_assert!(!self.stack[top].dirty.refreshes_perspective(perspective));
 
         let dirty = self.stack[top].dirty;
+        // Same band as every replayed ply: see apply_incremental_both_from_parent.
+        let band = net.board_band(board);
 
         // Incremental update: gather all deltas for this move, then apply them
         // in a SINGLE fused pass per perspective. Replaces the previous
@@ -5957,7 +6021,7 @@ impl NNUEAccumulator {
 
         for i in 0..n {
             let (add, color, pt, sq) = dirty.changes[i];
-            let idx = net.halfka_index(perspective, king_sq, color, pt, sq);
+            let idx = net.halfka_index(band, perspective, king_sq, color, pt, sq);
             let row = net.input_weight_row(idx);
             if add {
                 adds[na] = row; na += 1;
@@ -6151,7 +6215,8 @@ impl NNUEAccumulator {
         let mut ks = king_sq as usize;
         if perspective == BLACK { ks ^= 56; }
 
-        let bucket = net.king_bucket(ks);
+        let band = net.board_band(board);
+        let bucket = band * NNUE_MAX_KING_BUCKETS + net.king_bucket(ks);
         let mirror_idx = if net.king_mirror(ks) { 1 } else { 0 };
 
         let entry = &mut self.finny[perspective as usize * FINNY_STRIDE_PER_PERSPECTIVE + bucket * 2 + mirror_idx];
@@ -6171,7 +6236,7 @@ impl NNUEAccumulator {
                     let mut bb = board.pieces[pt as usize] & board.colors[color as usize];
                     while bb != 0 {
                         let sq = pop_lsb(&mut bb) as u8;
-                        let idx = net.halfka_index(perspective, king_sq, color, pt, sq);
+                        let idx = net.halfka_index(band, perspective, king_sq, color, pt, sq);
                         if n_pieces < 32 {
                             unsafe { piece_indices_ptr.add(n_pieces).write(idx); }
                             n_pieces += 1;
@@ -6213,7 +6278,7 @@ impl NNUEAccumulator {
                 let mut removed = prev & !curr;
                 while removed != 0 {
                     let sq = pop_lsb(&mut removed) as u8;
-                    let idx = net.halfka_index(perspective, king_sq, color, pt, sq);
+                    let idx = net.halfka_index(band, perspective, king_sq, color, pt, sq);
                     if n_subs < 32 {
                         unsafe { sub_rows_ptr.add(n_subs).write(idx); }
                         n_subs += 1;
@@ -6223,7 +6288,7 @@ impl NNUEAccumulator {
                 let mut added = curr & !prev;
                 while added != 0 {
                     let sq = pop_lsb(&mut added) as u8;
-                    let idx = net.halfka_index(perspective, king_sq, color, pt, sq);
+                    let idx = net.halfka_index(band, perspective, king_sq, color, pt, sq);
                     if n_adds < 32 {
                         unsafe { add_rows_ptr.add(n_adds).write(idx); }
                         n_adds += 1;
@@ -8766,6 +8831,98 @@ mod tests {
     ///
     /// Counterpart to the threat_accum fuzzer — same approach, for the
     /// PSQ (king-piece-square) half of the net.
+    /// Lazy variant of `fuzz_psq_accumulator`: materialises only on some
+    /// plies and unmakes moves at random, so incremental replays span several
+    /// plies and refresh barriers (king-bucket changes and, on a material-band
+    /// net, band-crossing captures) sit inside a replay chain. Every
+    /// materialised accumulator must equal a full recompute of its board.
+    /// Needs `CODA_TEST_NET`; skipped otherwise.
+    #[test]
+    fn fuzz_psq_accumulator_lazy() {
+        let _space = crate::threats::FEATURE_SPACE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        use crate::board::Board;
+        use crate::movegen::generate_legal_moves;
+        use crate::search::build_dirty_piece;
+        use crate::types::{flip_color, move_from, move_to, move_flags, FLAG_EN_PASSANT};
+
+        crate::init();
+        let net_path = match std::env::var("CODA_TEST_NET").ok().filter(|p| std::path::Path::new(p).exists()) {
+            Some(p) => p,
+            None => { eprintln!("Skipping lazy PSQ fuzzer: set CODA_TEST_NET"); return; }
+        };
+        let net = NNUENet::load(&net_path).expect("load CODA_TEST_NET");
+        let h = net.hidden_size;
+
+        const START_FENS: &[&str] = &[
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+            "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+            "r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 w - - 0 10",
+            "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",
+        ];
+        fn next_u32(state: &mut u32) -> u32 {
+            let mut x = *state;
+            x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+            *state = x; x
+        }
+        let mut band_crossings = 0usize;
+        let mut checks = 0usize;
+        for (fen_idx, fen) in START_FENS.iter().enumerate() {
+            for game in 0..20u32 {
+                let mut rng = 0x5EED_0001u32.wrapping_add(fen_idx as u32 * 1_000_003).wrapping_add(game * 7919) | 1;
+                let mut board = Board::from_fen(fen);
+                let mut acc = NNUEAccumulator::new(h);
+                acc.force_recompute(&net, &board);
+                let mut depth = 0usize;
+                for step in 0..200 {
+                    // Unmake with probability 1/4 (when above the root).
+                    if depth > 0 && next_u32(&mut rng) % 4 == 0 {
+                        board.unmake_move();
+                        acc.pop();
+                        depth -= 1;
+                    } else {
+                        let legal = generate_legal_moves(&board);
+                        if legal.len == 0 || depth >= 120 { continue; }
+                        // Prefer captures half the time so games reach the band edges.
+                        let mv = {
+                            let caps: Vec<_> = (0..legal.len).map(|i| legal.get(i))
+                                .filter(|&m| board.piece_type_at(move_to(m)) != NO_PIECE_TYPE).collect();
+                            if !caps.is_empty() && next_u32(&mut rng) % 2 == 0 {
+                                caps[(next_u32(&mut rng) as usize) % caps.len()]
+                            } else {
+                                legal.get((next_u32(&mut rng) as usize) % legal.len)
+                            }
+                        };
+                        let us = board.side_to_move;
+                        let moved_pt = board.piece_type_at(move_from(mv));
+                        let captured_pt = if move_flags(mv) == FLAG_EN_PASSANT { PAWN } else { board.piece_type_at(move_to(mv)) };
+                        let pc = board.occupied().count_ones();
+                        let dirty = build_dirty_piece(mv, us, flip_color(us), moved_pt, captured_pt, &net, pc);
+                        if net.num_bands > 1 && net.material_band(pc) != net.material_band(pc - (captured_pt != NO_PIECE_TYPE) as u32) {
+                            band_crossings += 1;
+                        }
+                        assert!(board.make_move(mv));
+                        acc.push(dirty);
+                        depth += 1;
+                    }
+                    // Materialise on roughly a third of the steps.
+                    if next_u32(&mut rng) % 3 != 0 { continue; }
+                    acc.materialize(&net, &board);
+                    let mut ref_acc = NNUEAccumulator::new(h);
+                    ref_acc.force_recompute(&net, &board);
+                    for p in [WHITE as usize, BLACK as usize] {
+                        let got = acc.psq.view(acc.top, p);
+                        let want = ref_acc.psq.view(ref_acc.top, p);
+                        assert!(got == want, "lazy psq fuzz divergence: fen {} game {} step {} pov {} band {}",
+                            fen_idx, game, step, p, net.board_band(&board));
+                    }
+                    checks += 1;
+                }
+            }
+        }
+        eprintln!("lazy PSQ fuzz: {} checks, {} band crossings (bands {})", checks, band_crossings, net.num_bands);
+        if net.num_bands > 1 { assert!(band_crossings > 0, "no band crossings exercised"); }
+    }
+
     #[test]
     fn fuzz_psq_accumulator() {
         let _space = crate::threats::FEATURE_SPACE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -8836,7 +8993,7 @@ mod tests {
                     let them = flip_color(us);
                     let moved_pt = board.piece_type_at(move_from(mv));
                     let captured_pt = board.piece_type_at(move_to(mv));
-                    let dirty = build_dirty_piece(mv, us, them, moved_pt, captured_pt, &net);
+                    let dirty = build_dirty_piece(mv, us, them, moved_pt, captured_pt, &net, board.occupied().count_ones());
 
                     let ok = board.make_move(mv);
                     assert!(ok, "psq fuzz {} game {} ply {}: move {} illegal?",
@@ -9012,7 +9169,7 @@ mod tests {
             let moved_pt = board.piece_type_at(from);
             let captured_pt = board.piece_type_at(to);
             assert_eq!(captured_pt, NO_PIECE_TYPE, "king march: no captures expected");
-            let dirty = build_dirty_piece(mv, us, them, moved_pt, captured_pt, &net);
+            let dirty = build_dirty_piece(mv, us, them, moved_pt, captured_pt, &net, board.occupied().count_ones());
 
             let ok = board.make_move(mv);
             assert!(ok, "king march step {}: move illegal {}→{}", i, from, to);

@@ -577,6 +577,10 @@ enum Commands {
         /// learned read of the unclamped L1 pre-activations. Sets arch_flags2 bit 4.
         #[arg(long)]
         l1_raw: bool,
+        /// Net was trained with material-band PSQ inputs (trainer --material-bands):
+        /// the same comma-separated piece-count edges, e.g. 14,20,26. Sets arch_flags2 bit 5.
+        #[arg(long, default_value = "")]
+        material_bands: String,
         /// Source output bucket count (default 8, set to 2 for 2-bucket nets)
         #[arg(long, default_value_t = 8)]
         output_buckets: usize,
@@ -880,7 +884,7 @@ fn main() {
                         let them = flip_color(us);
                         let moved_pt = board.piece_type_at(move_from(mv));
                         let captured_pt = board.piece_type_at(move_to(mv));
-                        let dirty = build_dirty_piece(mv, us, them, moved_pt, captured_pt, &net);
+                        let dirty = build_dirty_piece(mv, us, them, moved_pt, captured_pt, &net, board.occupied().count_ones());
                         if !board.make_move(mv) { break; }
                         acc.push(dirty);
                         let s = evaluate_nnue(&board, &net, &mut acc, &tstack);
@@ -1391,7 +1395,7 @@ fn main() {
             run_binpack_material(&input, max);
         }
 
-        Some(Commands::ConvertBullet { input, output, screlu, pairwise, hidden, hidden2, int8l1, bucketed_hidden, ft_size, int16_hidden, dual, consensus_buckets, kb_layout, kb_count, threats, output_buckets, hl_crelu, pawn_pairs, l1_raw }) => {
+        Some(Commands::ConvertBullet { input, output, screlu, pairwise, hidden, hidden2, int8l1, bucketed_hidden, ft_size, int16_hidden, dual, consensus_buckets, kb_layout, kb_count, threats, output_buckets, hl_crelu, pawn_pairs, l1_raw, material_bands }) => {
             // Resolve king bucket layout and count. Explicit --kb-layout wins;
             // --consensus-buckets is the legacy path for 16-bucket consensus.
             let layout = if !kb_layout.is_empty() {
@@ -1406,8 +1410,14 @@ fn main() {
             };
             let count = if kb_count > 0 { kb_count } else { layout.default_count() };
 
+            let band_edges: Vec<u8> = if material_bands.is_empty() { Vec::new() } else {
+                match material_bands.split(',').map(|e| e.trim().parse::<u8>()).collect::<Result<Vec<_>, _>>() {
+                    Ok(v) => v,
+                    Err(_) => { eprintln!("--material-bands: expected comma-separated piece counts"); std::process::exit(1); }
+                }
+            };
             let result = if hidden > 0 {
-                bullet_convert::convert_v7(&input, &output, screlu, pairwise, hidden, hidden2, int8l1, bucketed_hidden, ft_size, int16_hidden, dual, layout, count, threats, hl_crelu, pawn_pairs, l1_raw)
+                bullet_convert::convert_v7(&input, &output, screlu, pairwise, hidden, hidden2, int8l1, bucketed_hidden, ft_size, int16_hidden, dual, layout, count, threats, hl_crelu, pawn_pairs, l1_raw, &band_edges)
             } else {
                 bullet_convert::convert_v5(&input, &output, screlu, pairwise, output_buckets, layout, count)
             };
