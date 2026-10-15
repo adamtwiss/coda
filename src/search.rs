@@ -494,6 +494,24 @@ tunables!(
     // The cap binds on 0.02-0.15% of double-extension decisions. It is a
     // safety valve against extension runaway; keep the value, don't tune it.
     (DEXT_CAP, 11, 4, 32, 2.0, false),
+    // Per-line cap on NEGATIVE-LMR extensions (idea from Triumviratus's
+    // design notes). Quiet LMR may come out at -1 ply (see the clamp in the
+    // LMR block), searching the zero-window probe one ply deeper than nominal;
+    // along one line those can stack. Once NEGEXT_CAP of them are already on
+    // the line, further quiet reductions are floored at 0 instead.
+    //
+    // Default derived from DEXT_CAP, the analogous per-line cap on the other
+    // stackable one-ply extension. Measured on `bench 16` (this net, same
+    // binary), DEXT_CAP=11 binds on 66 of 89,251 double-extension decisions
+    // (0.074%: the per-line count is >= 11 that often). The same tail for
+    // negative-LMR extensions: of 54,615 fired, 469 had 2 already on the line,
+    // 31 had 3, 6 had 4, so a cap of 3 binds on 37 (0.068%), matching
+    // DEXT_CAP's tail; a cap of 2 would bind 13x as often (0.87%). Hence 3:
+    // same role as DEXT_CAP, a safety valve on runaway stacking.
+    //
+    // Range [1, 4]: 0 would remove negative reductions outright (a different
+    // feature), and above 4 the cap never binds on bench up to depth 18.
+    (NEGEXT_CAP, 3, 1, 4, 0.5, false),
     // How large a TT score has to be before the 50-move clock is allowed to
     // veto a cutoff on it. See `tt_halfmove_ok`.
     //
@@ -1183,6 +1201,13 @@ prune_stats! {
     singular_ext: u64,
     double_ext: u64,
     negative_ext: u64,
+    // Negative-LMR extensions (quiet reduction == -1 ply): fired count,
+    // a histogram of how many such extensions were already on the line when
+    // one fired (index = prior count, 15 = 15+), and the number the
+    // NEGEXT_CAP floored back to zero.
+    negext_fired: u64,
+    negext_by_prior: [u64; 16],
+    negext_capped: u64,
     multicut: u64,
     qnodes: u64,
     beta_cutoffs: u64,
@@ -1547,6 +1572,11 @@ pub struct SearchInfo {
     pub excluded_move: [Move; MAX_PLY + 1],
     /// Double extension counter — propagated from parent, capped to prevent search explosion
     double_ext_count: [i32; MAX_PLY + 1],
+    /// Negative-LMR extensions accumulated along the current line: the number
+    /// of ancestors whose quiet-LMR reduction came out at -1 ply, i.e. whose
+    /// zero-window probe searched one ply DEEPER than nominal. Same propagate-
+    /// from-parent shape as `double_ext_count`; read against NEGEXT_CAP.
+    negext_count: [i32; MAX_PLY + 1],
     /// Per-ply beta-cutoff counter (SF cutoffCnt). Incremented at the fail-high
     /// site; each node clears its GRANDCHILD slot on entry so
     /// `cutoff_count[ply+1]` reflects only fail-highs under this node's own
@@ -1674,6 +1704,7 @@ impl SearchInfo {
             reductions: [0; MAX_PLY + 1],
             excluded_move: [NO_MOVE; MAX_PLY + 1],
             double_ext_count: [0; MAX_PLY + 1],
+            negext_count: [0; MAX_PLY + 1],
             cutoff_count: [0; MAX_PLY + 4],
             moved_piece_stack: [0; MAX_PLY + 1],
             moved_to_stack: [0; MAX_PLY + 1],
@@ -3430,6 +3461,7 @@ pub(crate) fn search_helper(board: &mut Board, info: &mut SearchInfo, _limits: &
     info.excluded_move = [NO_MOVE; MAX_PLY + 1];
     info.moved_piece_stack = [0; MAX_PLY + 1];
     info.double_ext_count = [0; MAX_PLY + 1];
+    info.negext_count = [0; MAX_PLY + 1];
     info.cutoff_count = [0; MAX_PLY + 4];
     info.moved_to_stack = [0; MAX_PLY + 1];
     info.pv_table = [[NO_MOVE; MAX_PLY + 1]; MAX_PLY + 1];
@@ -3799,6 +3831,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     info.excluded_move = [NO_MOVE; MAX_PLY + 1];
     info.moved_piece_stack = [0; MAX_PLY + 1];
     info.double_ext_count = [0; MAX_PLY + 1];
+    info.negext_count = [0; MAX_PLY + 1];
     info.cutoff_count = [0; MAX_PLY + 4];
     info.moved_to_stack = [0; MAX_PLY + 1];
     info.pv_table = [[NO_MOVE; MAX_PLY + 1]; MAX_PLY + 1];
@@ -5124,6 +5157,12 @@ fn negamax(
     if ply_u <= MAX_PLY {
         info.reductions[ply_u] = 0;
     }
+
+    // Default the child's negative-LMR extension count to this node's, so
+    // every child search (NMP, ProbCut, PVS, re-searches) inherits the line's
+    // count; only the negatively-reduced zero-window probe below bumps it.
+    // (ply_u < MAX_PLY here: the MAX_PLY guard above has already returned.)
+    info.negext_count[ply_u + 1] = info.negext_count[ply_u];
 
     // Mate distance pruning — applies to all nodes (standard form)
     let is_pv = beta - alpha > 1;
@@ -6833,6 +6872,15 @@ let singular_beta = tt_score_local - depth;
                 if reduction < -LMR_SCALE {
                     reduction = -LMR_SCALE;
                 }
+                // Per-line cap on the extension above: once NEGEXT_CAP
+                // negative-LMR extensions are already on this line, a further
+                // one is floored to an unreduced search instead. Only a FULL
+                // ply below zero is an extension (partial plies floor to 0 at
+                // the /LMR_SCALE step), so test that, not `< 0`.
+                if reduction <= -LMR_SCALE && info.negext_count[ply_u] >= tp(&NEGEXT_CAP) {
+                    reduction = 0;
+                    info.stats.negext_capped += 1;
+                }
             }
         }
 
@@ -6953,7 +7001,18 @@ let singular_beta = tt_score_local - depth;
             // LMR: reduced depth, zero window
             trace_gate!(info, board.hash, ply, mv, "lmr_reduced", reduction, move_count);
             let lmr_depth = new_depth - reduction;
+            // A negative reduction extends this probe by one ply: charge it to
+            // the line for the child subtree only, then restore the parent's
+            // count so re-searches at new_depth (which are not extended)
+            // inherit the un-bumped value.
+            if reduction < 0 {
+                let prior = info.negext_count[ply_u];
+                info.stats.negext_fired += 1;
+                info.stats.negext_by_prior[(prior as usize).min(15)] += 1;
+                info.negext_count[ply_u + 1] = prior + 1;
+            }
             let mut lmr_score = -negamax(board, info, -alpha - 1, -alpha, lmr_depth, ply + 1, true);
+            info.negext_count[ply_u + 1] = info.negext_count[ply_u];
 
             // The reduction applies to the reduced search ONLY: zero the slot
             // before any re-search so children of the (near-)full-depth
@@ -8306,6 +8365,13 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
     eprintln!("Singular ext:   {:>8}  (single +1 ply)", s.singular_ext);
     eprintln!("Double ext:     {:>8}  (additional +1 on top of singular)", s.double_ext);
     eprintln!("Negative ext:   {:>8}  (-1/-2/-3 fail-high reduce)", s.negative_ext);
+    {
+        let hist: Vec<String> = s.negext_by_prior.iter().enumerate()
+            .filter(|(_, &c)| c > 0).map(|(i, c)| format!("{}:{}", i, c)).collect();
+        eprintln!("Neg-LMR ext:    {:>8}  ({:.2}% of LMR searches) capped: {}  by prior-on-line [{}]",
+            s.negext_fired, 100.0 * s.negext_fired as f64 / s.lmr_searches.max(1) as f64,
+            s.negext_capped, hist.join(" "));
+    }
     eprintln!("Multi-cut:      {:>8}  (return singular_score; singular_beta if decisive)", s.multicut);
     eprintln!("QS nodes:       {:>8}  ({:.1}% of total)", s.qnodes, s.qnodes as f64 / total_nodes as f64 * 100.0);
     if s.beta_cutoffs > 0 {
