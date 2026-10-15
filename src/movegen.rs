@@ -386,6 +386,31 @@ fn generate_castling(board: &Board, list: &mut MoveList, us: Color) {
     // its start square, empty paths, king's path unattacked with king and
     // castling rook lifted), so these are fully legal, not just pseudo-legal.
     // Kingside first, then queenside — the order movegen always used.
+    if board.std_castling {
+        // Standard geometry: fixed squares and masks, the same code as before
+        // Chess960 support, so standard chess pays nothing for the generic path.
+        let occ = board.occupied();
+        if us == WHITE {
+            if rights & 0b01 != 0 && occ & 0x60 == 0
+                && !is_attacked(board, 4, BLACK) && !is_attacked(board, 5, BLACK) && !is_attacked(board, 6, BLACK) {
+                list.push(make_move(4, 6, FLAG_CASTLE));
+            }
+            if rights & 0b10 != 0 && occ & 0x0E == 0
+                && !is_attacked(board, 4, BLACK) && !is_attacked(board, 3, BLACK) && !is_attacked(board, 2, BLACK) {
+                list.push(make_move(4, 2, FLAG_CASTLE));
+            }
+        } else {
+            if rights & 0b01 != 0 && occ & (0x60u64 << 56) == 0
+                && !is_attacked(board, 60, WHITE) && !is_attacked(board, 61, WHITE) && !is_attacked(board, 62, WHITE) {
+                list.push(make_move(60, 62, FLAG_CASTLE));
+            }
+            if rights & 0b10 != 0 && occ & (0x0Eu64 << 56) == 0
+                && !is_attacked(board, 60, WHITE) && !is_attacked(board, 59, WHITE) && !is_attacked(board, 58, WHITE) {
+                list.push(make_move(60, 58, FLAG_CASTLE));
+            }
+        }
+        return;
+    }
     let ksq = board.king_sq(us);
     let back_rank: u8 = if us == WHITE { 0 } else { 56 };
     if rights & 0b01 != 0 && board.castle_is_legal(us, ksq, back_rank + 6) {

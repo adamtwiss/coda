@@ -61,6 +61,10 @@ pub struct Board {
     /// FEN parse, never changed by make/unmake. Standard chess: h1, a1, h8, a8.
     /// Chess960 puts the rooks (and king) elsewhere on the back rank.
     pub castle_rooks: [u8; 4],
+    /// True when every castling right uses the standard geometry (king e1/e8,
+    /// rooks on the a/h corners). Movegen then takes the fixed-square castling
+    /// path, so standard chess runs the same code as before Chess960 support.
+    pub std_castling: bool,
     /// Castling-rights mask per square: `castling &= mask[from] & mask[to]`
     /// on every move. Derived from the king's and castling rooks' start
     /// squares at FEN parse (see `build_castle_mask`).
@@ -180,6 +184,7 @@ impl Board {
             side_to_move: WHITE,
             castling: 0,
             castle_rooks: STANDARD_CASTLE_ROOKS,
+            std_castling: true,
             castle_mask: standard_castle_mask(),
             castle_path: [0; 4],
             castle_king_path: [0; 4],
@@ -586,6 +591,7 @@ impl Board {
         }
         self.castle_mask = build_castle_mask(king_start, &self.castle_rooks);
         self.rebuild_castle_paths(king_start);
+        self.std_castling = king_start == [4, 60] && self.castle_rooks == STANDARD_CASTLE_ROOKS;
 
         // En passant. Bounds-check f and r to avoid wrapping into a
         // huge ep_square that later overflows `1u64 << ep_square`
