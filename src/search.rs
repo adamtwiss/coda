@@ -2425,6 +2425,33 @@ pub fn build_dirty_piece(
     captured_pt: u8,
     castle_rooks: &[u8; 4],
     net: &crate::nnue::NNUENet,
+    piece_count: u32,
+) -> DirtyPiece {
+    let d = build_dirty_piece_inner(mv, us, them, moved_pt, captured_pt, castle_rooks, net);
+    // Material bands: a capture that moves the position into another band
+    // changes the weights of EVERY PSQ feature, for both perspectives, so it
+    // is a refresh barrier for both (served from that band's Finny entry).
+    // `piece_count` is the count before the move.
+    // Castling never captures, even when a 960 king lands on its own rook's square.
+    let is_capture = move_flags(mv) != FLAG_CASTLE
+        && (captured_pt != NO_PIECE_TYPE || move_flags(mv) == FLAG_EN_PASSANT);
+    if net.num_bands > 1 && is_capture && net.capture_crosses_band(piece_count) {
+        let mut d = d;
+        d.kind = 4;
+        return d;
+    }
+    d
+}
+
+#[inline(always)]
+fn build_dirty_piece_inner(
+    mv: Move,
+    us: u8,
+    them: u8,
+    moved_pt: u8,
+    captured_pt: u8,
+    castle_rooks: &[u8; 4],
+    net: &crate::nnue::NNUENet,
 ) -> DirtyPiece {
     let from = move_from(mv);
     let to = move_to(mv);
@@ -6073,7 +6100,7 @@ fn negamax(
             let pc_moved_piece = board.piece_at(move_from(mv));
             let pc_captured_pt = board.captured_piece_type(mv);
             let pc_dirty = if let Some(net) = info.nnue_net.as_deref() {
-                build_dirty_piece(mv, board.side_to_move, flip_color(board.side_to_move), pc_moved_pt, pc_captured_pt, &board.castle_rooks, net)
+                build_dirty_piece(mv, board.side_to_move, flip_color(board.side_to_move), pc_moved_pt, pc_captured_pt, &board.castle_rooks, net, board.occupied().count_ones())
             } else { DirtyPiece::recompute() };
 
             if let Some(acc) = &mut info.nnue_acc { acc.push(pc_dirty); }
@@ -6535,7 +6562,7 @@ let singular_beta = tt_score_local - depth;
 
         // Build NNUE dirty piece info BEFORE make_move
         let dirty = if let Some(net) = info.nnue_net.as_deref() {
-            build_dirty_piece(mv, us, flip_color(us), moved_pt, captured_pt, &board.castle_rooks, net)
+            build_dirty_piece(mv, us, flip_color(us), moved_pt, captured_pt, &board.castle_rooks, net, board.occupied().count_ones())
         } else { DirtyPiece::recompute() };
 
         // Push NNUE accumulator
@@ -7739,7 +7766,7 @@ fn quiescence_with_depth(
             let qs_moved_pt = board.piece_type_at(move_from(mv));
             let qs_captured_pt = board.captured_piece_type(mv);
             let qs_dirty = if let Some(net) = info.nnue_net.as_deref() {
-                build_dirty_piece(mv, board.side_to_move, flip_color(board.side_to_move), qs_moved_pt, qs_captured_pt, &board.castle_rooks, net)
+                build_dirty_piece(mv, board.side_to_move, flip_color(board.side_to_move), qs_moved_pt, qs_captured_pt, &board.castle_rooks, net, board.occupied().count_ones())
             } else { DirtyPiece::recompute() };
 
             // Record on search stack so deeper QS evasion's MovePicker::new_evasion
@@ -7986,7 +8013,7 @@ fn quiescence_with_depth(
         let qs_moved_pt = board.piece_type_at(move_from(mv));
         let qs_captured_pt = board.captured_piece_type(mv);
         let qs_dirty = if let Some(net) = info.nnue_net.as_deref() {
-            build_dirty_piece(mv, board.side_to_move, flip_color(board.side_to_move), qs_moved_pt, qs_captured_pt, &board.castle_rooks, net)
+            build_dirty_piece(mv, board.side_to_move, flip_color(board.side_to_move), qs_moved_pt, qs_captured_pt, &board.castle_rooks, net, board.occupied().count_ones())
         } else { DirtyPiece::recompute() };
 
         // Record on search stack — same reason as the evasion path above.
