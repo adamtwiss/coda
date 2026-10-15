@@ -577,6 +577,10 @@ enum Commands {
         /// learned read of the unclamped L1 pre-activations. Sets arch_flags2 bit 4.
         #[arg(long)]
         l1_raw: bool,
+        /// Raw L1 readout with one row per output bucket (trainer
+        /// --l1-raw-readout-bucketed). Implies --l1-raw; sets arch_flags2 bit 6.
+        #[arg(long)]
+        l1_raw_bucketed: bool,
         /// Net was trained with material-band PSQ inputs (trainer --material-bands):
         /// the same comma-separated piece-count edges, e.g. 14,20,26. Sets arch_flags2 bit 5.
         #[arg(long, default_value = "")]
@@ -1395,7 +1399,7 @@ fn main() {
             run_binpack_material(&input, max);
         }
 
-        Some(Commands::ConvertBullet { input, output, screlu, pairwise, hidden, hidden2, int8l1, bucketed_hidden, ft_size, int16_hidden, dual, consensus_buckets, kb_layout, kb_count, threats, output_buckets, hl_crelu, pawn_pairs, l1_raw, material_bands }) => {
+        Some(Commands::ConvertBullet { input, output, screlu, pairwise, hidden, hidden2, int8l1, bucketed_hidden, ft_size, int16_hidden, dual, consensus_buckets, kb_layout, kb_count, threats, output_buckets, hl_crelu, pawn_pairs, l1_raw, l1_raw_bucketed, material_bands }) => {
             // Resolve king bucket layout and count. Explicit --kb-layout wins;
             // --consensus-buckets is the legacy path for 16-bucket consensus.
             let layout = if !kb_layout.is_empty() {
@@ -1417,7 +1421,7 @@ fn main() {
                 }
             };
             let result = if hidden > 0 {
-                bullet_convert::convert_v7(&input, &output, screlu, pairwise, hidden, hidden2, int8l1, bucketed_hidden, ft_size, int16_hidden, dual, layout, count, threats, hl_crelu, pawn_pairs, l1_raw, &band_edges)
+                bullet_convert::convert_v7(&input, &output, screlu, pairwise, hidden, hidden2, int8l1, bucketed_hidden, ft_size, int16_hidden, dual, layout, count, threats, hl_crelu, pawn_pairs, l1_raw || l1_raw_bucketed, l1_raw_bucketed, &band_edges)
             } else {
                 bullet_convert::convert_v5(&input, &output, screlu, pairwise, output_buckets, layout, count)
             };

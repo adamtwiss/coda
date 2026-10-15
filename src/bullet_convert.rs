@@ -238,6 +238,7 @@ pub fn convert_v7(
     hl_crelu: bool,
     pawn_pairs: bool,
     l1_raw: bool,
+    l1_raw_bucketed: bool,
     band_edges: &[u8],
 ) -> Result<(), String> {
     // Pawn-pair features extend the THREAT feature space (see nnue.rs), so they
@@ -308,7 +309,8 @@ pub fn convert_v7(
     let expected = total_ft_inputs * h * 2 + h * 2 + l1_input * bl1 * l1w_bytes_per
         + l1b_bytes + l2_bytes + out_bytes
         // Raw L1 readout (trainer --l1-raw-readout): [l1_size] f32 after the output.
-        + if l1_raw { l1_size * 4 } else { 0 };
+        // Per-bucket readout (--l1-raw-readout-bucketed): one row per output bucket.
+        + if l1_raw { l1_size * 4 * if l1_raw_bucketed { NNUE_OUTPUT_BUCKETS } else { 1 } } else { 0 };
     if expected != data_len {
         return Err(format!(
             "Size mismatch: expected {} bytes for FT={}, got {} (total_ft_inputs={}). \
@@ -508,12 +510,24 @@ pub fn convert_v7(
     }
 
     // Raw L1 readout: one f32 per L1 unit, a read of the unclamped pre-activation.
+    // Per-bucket: Bullet stores the (buckets x l1) readout column-major,
+    // [l1][BUCKETS] like l3; transposed here to [BUCKETS][l1].
+    // With a bucketed L1 each row reads its own bucket's L1 section, so a
+    // bucketed L1 needs a per-bucket readout.
     let mut l1_raw_w = Vec::new();
     if l1_raw {
-        if !use_pairwise || bucketed_hidden {
-            return Err("--l1-raw requires a pairwise net with a shared L1".to_string());
+        if !use_pairwise || (bucketed_hidden && !l1_raw_bucketed) {
+            return Err("--l1-raw requires a pairwise net; with --bucketed-hidden use --l1-raw-bucketed".to_string());
         }
-        for _ in 0..l1_size { l1_raw_w.push(read_f32_le(&data, offset)); offset += 4; }
+        if l1_raw_bucketed {
+            let mut raw = vec![0.0f32; l1_size * NNUE_OUTPUT_BUCKETS];
+            for v in raw.iter_mut() { *v = read_f32_le(&data, offset); offset += 4; }
+            for b in 0..NNUE_OUTPUT_BUCKETS {
+                for i in 0..l1_size { l1_raw_w.push(raw[i * NNUE_OUTPUT_BUCKETS + b]); }
+            }
+        } else {
+            for _ in 0..l1_size { l1_raw_w.push(read_f32_le(&data, offset)); offset += 4; }
+        }
     }
 
     println!("Parsed {} bytes of {} (FT={})", offset, data.len(), h);
@@ -591,11 +605,13 @@ pub fn convert_v7(
     //   bits 1-3: reserved (must be 0)
     //   bit 4: raw L1 readout, [l1_size] f32 after the output bias
     //   bit 5: material bands, a u8 edge count and the edges after the pawn-pair count
-    //   bits 6-7: reserved (must be 0)
+    //   bit 6: the raw readout has one row per output bucket ([BUCKETS][l1_size])
+    //   bit 7: reserved (must be 0)
     if version >= 11 {
         let mut arch_flags2 = 0u8;
         if num_pawn_pairs > 0 { arch_flags2 |= 1; }
         if l1_raw { arch_flags2 |= 16; }
+        if l1_raw && l1_raw_bucketed { arch_flags2 |= 64; }
         if !band_edges.is_empty() { arch_flags2 |= 32; }
         buf.push(arch_flags2);
         if num_pawn_pairs > 0 {
@@ -628,7 +644,7 @@ pub fn convert_v7(
     for &w in &output_weights { write_i16_le(&mut buf, w); } // [BUCKETS][L2]
     for &b in &output_bias { write_i32_le(&mut buf, b); }     // [BUCKETS]
     if l1_raw {
-        for &w in &l1_raw_w { buf.extend_from_slice(&w.to_le_bytes()); } // [l1_size] f32
+        for &w in &l1_raw_w { buf.extend_from_slice(&w.to_le_bytes()); } // [rows][l1_size] f32
     }
 
     std::fs::File::create(output_path)

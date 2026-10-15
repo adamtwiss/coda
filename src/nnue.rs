@@ -2973,6 +2973,10 @@ pub struct NNUENet {
     /// positions leaves most units pinned, so material changes barely reach the
     /// eval (research repo, won-position saturation 2026-10-08). This route reads
     /// values L1 already computes, so it costs `l1` multiply-adds per eval.
+    /// Stored [BUCKETS][l1] (l1 = the per-bucket L1 width). A shared readout
+    /// is replicated into every row at load, so inference reads the active
+    /// bucket's row either way; with a bucketed L1 the row reads that bucket's
+    /// L1 section (arch_flags2 bit 6, required in that case).
     pub has_l1_raw: bool,
     pub l1_raw_w: Vec<f32>,
     // v9 threat features
@@ -3134,6 +3138,7 @@ impl NNUENet {
         let mut bucketed_hidden = false; // bit 3: output buckets baked into L1/L2 dims
         let mut dual_l1 = false; // bit 4: dual L1 activation (CReLU+SCReLU, v8)
         let mut has_l1_raw = false; // arch_flags2 bit 4 (v11)
+        let mut l1_raw_bucketed = false; // arch_flags2 bit 6 (v11)
         let mut num_bands = 1usize; // arch_flags2 bit 5 (v11)
         let mut band_edges = [0u8; NNUE_MAX_MATERIAL_BANDS - 1];
         // bit 5 is context-dependent:
@@ -3281,11 +3286,16 @@ impl NNUENet {
                 //   bit 4: raw L1 readout (see `has_l1_raw`)
                 //   bit 5: material bands — a u8 edge count and the edges follow
                 //          the pawn-pair count (see `num_bands`)
-                //   bits 6-7: reserved, must be zero
+                //   bit 6: the raw readout has one row per output bucket
+                //   bit 7: reserved, must be zero
                 if version >= 11 {
                     let arch_flags2 = read_u8(reader)?;
                     has_l1_raw = arch_flags2 & 16 != 0;
-                    if arch_flags2 & !(1 | 16 | 32) != 0 {
+                    l1_raw_bucketed = arch_flags2 & 64 != 0;
+                    if l1_raw_bucketed && !has_l1_raw {
+                        return Err("arch_flags2 bit 6 (per-bucket raw readout) needs bit 4".to_string());
+                    }
+                    if arch_flags2 & !(1 | 16 | 32 | 64) != 0 {
                         return Err(format!(
                             "unknown arch_flags2 bits set (0x{:02x}); this net uses an \
                              architecture feature this build does not implement",
@@ -3466,11 +3476,16 @@ impl NNUENet {
         // output bias. Shared L1 only: a bucketed L1 would need one row per bucket.
         let mut l1_raw_w: Vec<f32> = Vec::new();
         if has_l1_raw {
-            if !use_pairwise || bucketed_hidden {
-                return Err("raw L1 readout requires a pairwise net with a shared L1".to_string());
+            if !use_pairwise || (bucketed_hidden && !l1_raw_bucketed) {
+                return Err("raw L1 readout requires a pairwise net, and a per-bucket readout \
+                            when L1 is bucketed".to_string());
             }
-            l1_raw_w = vec![0.0f32; l1_size];
-            for w in l1_raw_w.iter_mut() { *w = f32::from_bits(read_u32(reader)?); }
+            let rows = if l1_raw_bucketed { NNUE_OUTPUT_BUCKETS } else { 1 };
+            let mut stored = vec![0.0f32; rows * l1_size];
+            for w in stored.iter_mut() { *w = f32::from_bits(read_u32(reader)?); }
+            l1_raw_w = (0..NNUE_OUTPUT_BUCKETS)
+                .flat_map(|b| stored[(b % rows) * l1_size..(b % rows + 1) * l1_size].to_vec())
+                .collect();
         }
 
         // Compute king bucket tables for this net's layout. Stored on the
@@ -4337,7 +4352,8 @@ impl NNUENet {
         // (hidden32 / pw_scale / qa_l1), but read before any clamp.
         let raw_f = if self.has_l1_raw {
             let mut acc = 0.0f32;
-            for i in 0..l1 { acc += hidden32[i] as f32 * self.l1_raw_w[i]; }
+            let row = &self.l1_raw_w[bucket * l1..bucket * l1 + l1];
+            for i in 0..l1 { acc += hidden32[i] as f32 * row[i]; }
             acc / (pw_scale as f32 * qa_l1 as f32)
         } else {
             0.0
