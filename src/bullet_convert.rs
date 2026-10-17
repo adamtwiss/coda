@@ -513,11 +513,14 @@ pub fn convert_v7(
     // Per-bucket: Bullet stores the (buckets x l1) readout column-major,
     // [l1][BUCKETS] like l3; transposed here to [BUCKETS][l1].
     // With a bucketed L1 each row reads its own bucket's L1 section, so a
-    // bucketed L1 needs a per-bucket readout.
+    // bucketed L1 is always written with a per-bucket readout; a shared trainer
+    // row (one row reading whichever bucket's section is selected) is written
+    // once per bucket.
     let mut l1_raw_w = Vec::new();
+    let readout_rows_bucketed = l1_raw_bucketed || bucketed_hidden;
     if l1_raw {
-        if !use_pairwise || (bucketed_hidden && !l1_raw_bucketed) {
-            return Err("--l1-raw requires a pairwise net; with --bucketed-hidden use --l1-raw-bucketed".to_string());
+        if !use_pairwise {
+            return Err("--l1-raw requires a pairwise net".to_string());
         }
         if l1_raw_bucketed {
             let mut raw = vec![0.0f32; l1_size * NNUE_OUTPUT_BUCKETS];
@@ -527,6 +530,10 @@ pub fn convert_v7(
             }
         } else {
             for _ in 0..l1_size { l1_raw_w.push(read_f32_le(&data, offset)); offset += 4; }
+            if bucketed_hidden {
+                let row = l1_raw_w.clone();
+                for _ in 1..NNUE_OUTPUT_BUCKETS { l1_raw_w.extend_from_slice(&row); }
+            }
         }
     }
 
@@ -611,7 +618,7 @@ pub fn convert_v7(
         let mut arch_flags2 = 0u8;
         if num_pawn_pairs > 0 { arch_flags2 |= 1; }
         if l1_raw { arch_flags2 |= 16; }
-        if l1_raw && l1_raw_bucketed { arch_flags2 |= 64; }
+        if l1_raw && readout_rows_bucketed { arch_flags2 |= 64; }
         if !band_edges.is_empty() { arch_flags2 |= 32; }
         buf.push(arch_flags2);
         if num_pawn_pairs > 0 {
