@@ -8912,7 +8912,7 @@ mod tests {
                         let moved_pt = board.piece_type_at(move_from(mv));
                         let captured_pt = if move_flags(mv) == FLAG_EN_PASSANT { PAWN } else { board.piece_type_at(move_to(mv)) };
                         let pc = board.occupied().count_ones();
-                        let dirty = build_dirty_piece(mv, us, flip_color(us), moved_pt, captured_pt, &net, pc);
+                        let dirty = build_dirty_piece(mv, us, flip_color(us), moved_pt, captured_pt, &board.castle_rooks, &net, pc);
                         if net.num_bands > 1 && net.material_band(pc) != net.material_band(pc - (captured_pt != NO_PIECE_TYPE) as u32) {
                             band_crossings += 1;
                         }
