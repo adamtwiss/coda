@@ -3253,17 +3253,11 @@ impl NNUENet {
                     }
                     if arch_flags2 & 1 != 0 {
                         num_pawn_pair_features = read_u32(reader)? as usize;
-                        // The encoding is fixed by pawn_pair.rs, so a mismatch
-                        // means the net was exported by a different encoder —
-                        // reject loudly rather than index a shorter table.
-                        if num_pawn_pair_features != crate::pawn_pair::PAWN_PAIR_FEATURES {
-                            return Err(format!(
-                                "net declares {} pawn-pair features but this build \
-                                 enumerates {}; the encodings disagree",
-                                num_pawn_pair_features,
-                                crate::pawn_pair::PAWN_PAIR_FEATURES
-                            ));
-                        }
+                        // The declared count selects the encoding (1,488 = all
+                        // distances, 608 = touching only); any other count means
+                        // a different encoder and is rejected loudly rather than
+                        // indexing a table of the wrong shape.
+                        crate::pawn_pair::set_encoding_for_count(num_pawn_pair_features)?;
                         // Pawn-pair indices live above the threat block in one
                         // shared space, so the threat block must be present for
                         // the offset to mean anything.

@@ -237,12 +237,15 @@ pub fn convert_v7(
     num_threats: usize,
     hl_crelu: bool,
     pawn_pairs: bool,
+    pawn_pairs_touching: bool,
     l1_raw: bool,
 ) -> Result<(), String> {
     // Pawn-pair features extend the THREAT feature space (see nnue.rs), so they
     // occupy l0 columns immediately after the threat block and cannot exist
     // without it.
-    let num_pawn_pairs = if pawn_pairs { crate::pawn_pair::PAWN_PAIR_FEATURES } else { 0 };
+    let num_pawn_pairs = if !pawn_pairs { 0 }
+        else if pawn_pairs_touching { crate::pawn_pair::PAWN_PAIR_FEATURES_TOUCHING }
+        else { crate::pawn_pair::PAWN_PAIR_FEATURES };
     if pawn_pairs && num_threats == 0 {
         return Err("--pawn-pairs requires --threats: pawn-pair features extend the \
                     threat feature space and cannot stand alone".to_string());
@@ -305,7 +308,7 @@ pub fn convert_v7(
              A difference of {} bytes is exactly one pawn-pair block, so check \
              whether --pawn-pairs matches how the net was trained.",
             expected, h, data_len, total_ft_inputs,
-            crate::pawn_pair::PAWN_PAIR_FEATURES * h * 2));
+            num_pawn_pairs.max(crate::pawn_pair::PAWN_PAIR_FEATURES) * h * 2));
     }
 
     let mut offset = 0;

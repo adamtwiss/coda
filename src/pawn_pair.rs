@@ -42,7 +42,15 @@ pub const PAWN_PAIR_COLOURS: usize = 4;
 ///
 /// Built over ranks 2..7 only, so the table is dense over exactly the legal
 /// pawn placements.
-const PAIR_SLOT: [[i16; 64]; 64] = {
+const PAIR_SLOT: [[i16; 64]; 64] = build_slots(false);
+
+/// Slot table for the TOUCHING encoding: only pawns a king's step apart
+/// (`|dfile| <= 1 && |drank| <= 1`), ranks 2..7. Same lower-square-first
+/// ordering as `PAIR_SLOT`, so the two encodings differ only in which pairs
+/// exist.
+const PAIR_SLOT_TOUCH: [[i16; 64]; 64] = build_slots(true);
+
+const fn build_slots(touching: bool) -> [[i16; 64]; 64] {
     let mut t = [[-1i16; 64]; 64];
     let mut n = 0i16;
     let mut a = 8usize;
@@ -51,8 +59,9 @@ const PAIR_SLOT: [[i16; 64]; 64] = {
         while b < 56 {
             let fa = (a % 8) as i32;
             let fb = (b % 8) as i32;
-            let d = if fa > fb { fa - fb } else { fb - fa };
-            if d <= 1 {
+            let df = if fa > fb { fa - fb } else { fb - fa };
+            let dr = (b / 8) as i32 - (a / 8) as i32; // b > a, so >= 0
+            if df <= 1 && (!touching || dr <= 1) {
                 t[a][b] = n;
                 t[b][a] = n;
                 n += 1;
@@ -62,13 +71,60 @@ const PAIR_SLOT: [[i16; 64]; 64] = {
         a += 1;
     }
     t
-};
+}
 
 /// Distinct square pairs within one file, over ranks 2..7.
 pub const PAWN_PAIR_SQUARE_PAIRS: usize = 372;
 
-/// Total pawn-pair input features.
+/// Total pawn-pair input features (the default, all-distances encoding).
 pub const PAWN_PAIR_FEATURES: usize = PAWN_PAIR_SQUARE_PAIRS * PAWN_PAIR_COLOURS;
+
+/// Square pairs a king's step apart over ranks 2..7: 42 side by side, 40 one
+/// rank apart on a file, 70 diagonal.
+pub const PAWN_PAIR_SQUARE_PAIRS_TOUCHING: usize = 152;
+
+/// Total pawn-pair input features in the touching encoding.
+pub const PAWN_PAIR_FEATURES_TOUCHING: usize = PAWN_PAIR_SQUARE_PAIRS_TOUCHING * PAWN_PAIR_COLOURS;
+
+/// Which pawn-pair encoding the loaded net uses: 0 = all distances (1,488
+/// features), 1 = touching only (608). Process-wide, like the threat feature
+/// space: set once by the net loader from the feature count the net declares,
+/// so the count is the single source of truth and no header flag is needed.
+#[cfg(not(test))]
+static ENCODING_TOUCHING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+// Tests run on parallel threads, and a process-wide switch would let a
+// touching-encoding test change the encoding under every other pawn-pair test.
+// Each test thread gets its own copy instead (default: all distances).
+#[cfg(test)]
+thread_local! {
+    static ENCODING_TOUCHING_TL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Select the encoding for a net that declares `n` pawn-pair features.
+/// Errors on a count that matches neither encoding.
+pub fn set_encoding_for_count(n: usize) -> Result<(), String> {
+    let touching = match n {
+        PAWN_PAIR_FEATURES => false,
+        PAWN_PAIR_FEATURES_TOUCHING => true,
+        _ => return Err(format!(
+            "net declares {} pawn-pair features; this build implements {} (all distances) \
+             or {} (touching)", n, PAWN_PAIR_FEATURES, PAWN_PAIR_FEATURES_TOUCHING)),
+    };
+    #[cfg(not(test))]
+    ENCODING_TOUCHING.store(touching, std::sync::atomic::Ordering::Relaxed);
+    #[cfg(test)]
+    ENCODING_TOUCHING_TL.with(|c| c.set(touching));
+    Ok(())
+}
+
+#[inline]
+fn touching() -> bool {
+    #[cfg(not(test))]
+    { ENCODING_TOUCHING.load(std::sync::atomic::Ordering::Relaxed) }
+    #[cfg(test)]
+    { ENCODING_TOUCHING_TL.with(|c| c.get()) }
+}
 
 /// Feature index in `0..PAWN_PAIR_FEATURES` for one pawn pair, or `None` when
 /// the pair is more than one file apart.
@@ -86,12 +142,18 @@ pub const PAWN_PAIR_FEATURES: usize = PAWN_PAIR_SQUARE_PAIRS * PAWN_PAIR_COLOURS
 /// is naturally distinct from one leaning the other.
 #[inline]
 fn pair_feature(sq_a: u8, a_mine: bool, sq_b: u8, b_mine: bool) -> Option<usize> {
+    pair_feature_in(touching(), sq_a, a_mine, sq_b, b_mine)
+}
+
+#[inline]
+fn pair_feature_in(touching: bool, sq_a: u8, a_mine: bool, sq_b: u8, b_mine: bool) -> Option<usize> {
     let (lo, hi, lo_mine, hi_mine) = if sq_a < sq_b {
         (sq_a, sq_b, a_mine, b_mine)
     } else {
         (sq_b, sq_a, b_mine, a_mine)
     };
-    let slot = PAIR_SLOT[lo as usize][hi as usize];
+    let table = if touching { &PAIR_SLOT_TOUCH } else { &PAIR_SLOT };
+    let slot = table[lo as usize][hi as usize];
     if slot < 0 {
         return None;
     }
@@ -205,6 +267,41 @@ const FILE3: [Bitboard; 8] = {
     t
 };
 
+/// King-step neighbourhood of each square, as a bitboard. The touching
+/// encoding generates candidates from this instead of `FILE3`, so a changed
+/// pawn is paired with at most 8 others rather than up to 17 -- the row
+/// saving is the point of the encoding, so it must not be spent re-filtering.
+const NEIGHBOURS: [Bitboard; 64] = {
+    let mut t = [0u64; 64];
+    let mut sq = 0usize;
+    while sq < 64 {
+        let f = (sq % 8) as i32;
+        let r = (sq / 8) as i32;
+        let mut m = 0u64;
+        let mut dr = -1i32;
+        while dr <= 1 {
+            let mut df = -1i32;
+            while df <= 1 {
+                let (nf, nr) = (f + df, r + dr);
+                if (dr != 0 || df != 0) && nf >= 0 && nf < 8 && nr >= 0 && nr < 8 {
+                    m |= 1u64 << (nr * 8 + nf);
+                }
+                df += 1;
+            }
+            dr += 1;
+        }
+        t[sq] = m;
+        sq += 1;
+    }
+    t
+};
+
+/// Candidate partners of a pawn on `sq` under the active encoding.
+#[inline]
+fn partner_mask(sq: u8) -> Bitboard {
+    if touching() { NEIGHBOURS[sq as usize] } else { FILE3[(sq % 8) as usize] }
+}
+
 /// Emit the pawn-pair deltas for `mv`, given the pawn state BEFORE it.
 ///
 /// Called from two places that must agree byte-for-byte: eagerly in
@@ -262,7 +359,7 @@ pub fn push_pawn_pair_deltas(
     for k in 0..n_removed {
         let (rs, rc) = removed[k];
         pawns &= !(1u64 << rs);
-        let mut cand = pawns & FILE3[(rs % 8) as usize];
+        let mut cand = pawns & partner_mask(rs);
         while cand != 0 {
             let s = cand.trailing_zeros() as u8;
             cand &= cand - 1;
@@ -272,7 +369,7 @@ pub fn push_pawn_pair_deltas(
     }
 
     if let Some((a_sq, a_col)) = added {
-        let mut cand = pawns & FILE3[(a_sq % 8) as usize];
+        let mut cand = pawns & partner_mask(a_sq);
         while cand != 0 {
             let s = cand.trailing_zeros() as u8;
             cand &= cand - 1;
@@ -596,5 +693,128 @@ mod tests {
         let w = feats("8/8/8/8/8/8/PP6/8 w - - 0 1", WHITE, false);
         let b = feats("8/pp6/8/8/8/8/8/8 w - - 0 1", BLACK, false);
         assert_eq!(w, b, "colour-and-rank-flipped position from BLACK must match WHITE's");
+    }
+
+    /// The touching table holds exactly the 152 king-step square pairs over
+    /// ranks 2..7, densely numbered, and is a subset of the full table.
+    #[test]
+    fn touching_table_shape() {
+        let mut seen = vec![false; PAWN_PAIR_SQUARE_PAIRS_TOUCHING];
+        let mut count = 0;
+        for a in 0..64usize {
+            for b in (a + 1)..64usize {
+                let t = PAIR_SLOT_TOUCH[a][b];
+                let df = ((a % 8) as i32 - (b % 8) as i32).abs();
+                let dr = ((a / 8) as i32 - (b / 8) as i32).abs();
+                let legal = (8..56).contains(&a) && (8..56).contains(&b);
+                if legal && df <= 1 && dr <= 1 {
+                    assert!(t >= 0, "touching pair {a},{b} missing");
+                    assert!(!seen[t as usize], "slot {t} reused");
+                    seen[t as usize] = true;
+                    count += 1;
+                    assert!(PAIR_SLOT[a][b] >= 0, "touching pair must also be in the full table");
+                } else {
+                    assert_eq!(t, -1, "non-touching pair {a},{b} has a slot");
+                }
+                assert_eq!(PAIR_SLOT_TOUCH[a][b], PAIR_SLOT_TOUCH[b][a]);
+            }
+        }
+        assert_eq!(count, PAWN_PAIR_SQUARE_PAIRS_TOUCHING);
+    }
+
+    #[test]
+    fn encoding_selected_by_feature_count() {
+        assert!(set_encoding_for_count(PAWN_PAIR_FEATURES_TOUCHING).is_ok());
+        assert!(touching());
+        assert!(set_encoding_for_count(PAWN_PAIR_FEATURES).is_ok());
+        assert!(!touching());
+        assert!(set_encoding_for_count(1000).is_err());
+    }
+
+    /// Under the touching encoding, an isolated-file pair two ranks apart is
+    /// not a feature, while a diagonal chain link is.
+    #[test]
+    fn touching_enumeration() {
+        set_encoding_for_count(PAWN_PAIR_FEATURES_TOUCHING).unwrap();
+        // a2 + a4: same file, two ranks apart -> nothing.
+        assert!(feats("8/8/8/8/P7/8/P7/8 w - - 0 1", WHITE, false).is_empty());
+        // a2 + b3: diagonal -> one feature, in range.
+        let f = feats("8/8/8/8/8/1P6/P7/8 w - - 0 1", WHITE, false);
+        assert_eq!(f.len(), 1);
+        assert!(f[0] < PAWN_PAIR_FEATURES_TOUCHING);
+        for fen in [
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+            "8/1p1p1p1p/p1p1p1p1/8/8/P1P1P1P1/1P1P1P1P/8 w - - 0 1",
+        ] {
+            for pov in [WHITE, BLACK] {
+                for m in [false, true] {
+                    for i in feats(fen, pov, m) {
+                        assert!(i < PAWN_PAIR_FEATURES_TOUCHING);
+                    }
+                }
+            }
+        }
+        set_encoding_for_count(PAWN_PAIR_FEATURES).unwrap();
+    }
+
+    /// Incremental deltas must reproduce a full enumeration after every move,
+    /// for both encodings, including captures, en passant and promotion.
+    #[test]
+    fn deltas_match_enumeration_both_encodings() {
+        use crate::movegen::generate_legal_moves;
+        crate::init();
+        for &count in &[PAWN_PAIR_FEATURES, PAWN_PAIR_FEATURES_TOUCHING] {
+            set_encoding_for_count(count).unwrap();
+            for fen in [
+                "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+                "r3k2r/1pp2ppp/p1np4/3Pp3/2P1P3/1P3N2/P4PPP/R3K2R w KQkq e6 0 12",
+                "8/1P1p1p2/2p1p3/pP1P1Pp1/P5P1/2P1P3/3p4/K6k w - a6 0 40",
+            ] {
+                let mut b = Board::new();
+                b.set_fen(fen);
+                let moves = generate_legal_moves(&b);
+                for &mv in moves.as_slice() {
+                    let us = b.side_to_move;
+                    let from = crate::types::move_from(mv);
+                    let to = crate::types::move_to(mv);
+                    let pt = b.piece_type_at(from);
+                    let captured = if crate::types::move_flags(mv) == FLAG_EN_PASSANT { PAWN }
+                                   else { b.piece_type_at(to) };
+                    let mut deltas = Vec::new();
+                    push_pawn_pair_deltas(&mut deltas, b.pieces[PAWN as usize], &b.colors,
+                                          us, mv, captured, pt);
+                    for pov in [WHITE, BLACK] {
+                        for m in [false, true] {
+                            let mut before: Vec<i64> = Vec::new();
+                            enumerate_pawn_pairs(b.pieces[PAWN as usize], &b.colors, pov, m,
+                                                 |x| before.push(x as i64));
+                            let mut after_b = b.clone();
+                            after_b.make_move(mv);
+                            let mut after: Vec<usize> = Vec::new();
+                            enumerate_pawn_pairs(after_b.pieces[PAWN as usize], &after_b.colors, pov, m,
+                                                 |x| after.push(x));
+                            // Apply deltas to the `before` multiset.
+                            let mut cur = before.clone();
+                            for d in &deltas {
+                                if let Some(ix) = pp_index_for(*d, pov, m) {
+                                    if d.add() { cur.push(ix as i64); }
+                                    else {
+                                        let pos = cur.iter().position(|&y| y == ix as i64)
+                                            .unwrap_or_else(|| panic!("removed absent feature {ix} ({fen}, enc {count})"));
+                                        cur.swap_remove(pos);
+                                    }
+                                }
+                            }
+                            cur.sort_unstable();
+                            let mut want: Vec<i64> = after.iter().map(|&x| x as i64).collect();
+                            want.sort_unstable();
+                            assert_eq!(cur, want, "delta mismatch: {fen} move {} enc {count}",
+                                       crate::types::move_to_uci(mv));
+                        }
+                    }
+                }
+            }
+        }
+        set_encoding_for_count(PAWN_PAIR_FEATURES).unwrap();
     }
 }
