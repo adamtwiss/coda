@@ -7761,6 +7761,9 @@ fn quiescence_with_depth(
 ) -> i32 {
     info.stats.qnodes += 1;
     info.stats.nodes_by_depth[0] += 1; // TREESTATS: qsearch = bucket 0
+    // PV window at entry (qsearch has no node-type flag; same width test the
+    // TT cutoff uses). Read before any alpha adjustment below.
+    let qs_is_pv = beta - alpha > 1;
 
     // Triangular PV maintenance, mirroring negamax. QS is where a mate line
     // ends: once negamax runs out of depth the rest of the mate is proved by
@@ -7924,8 +7927,14 @@ fn quiescence_with_depth(
             // Obsidian breaks after one quiet. Capture evasions always searched. The gate is
             // only satisfiable after at least one legal move scored, so
             // checkmate detection (move_count == 0) is unaffected.
+            // At PV nodes, keep searching quiet evasions while every result so
+            // far has failed low: a non-losing but sub-alpha score (e.g. -1000)
+            // is not yet a defence the PV can stand on. Non-PV nodes keep the
+            // original gate.
             let ev_is_cap = board.is_capture(mv);
-            if !ev_is_cap && !is_promotion(mv) && !is_loss(best_score) {
+            if !ev_is_cap && !is_promotion(mv) && !is_loss(best_score)
+                && !(qs_is_pv && best_score <= alpha)
+            {
                 continue;
             }
 
