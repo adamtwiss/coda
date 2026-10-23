@@ -2464,7 +2464,20 @@ fn tt_cutoff_child_disagrees(
     if is_decisive(child_score) {
         return false; // skip mate-distance comparisons across plies
     }
-    (tt_score >= beta) != (-child_score >= beta)
+    // A child bound only proves a contradiction in one direction. The parent's
+    // value through `tt_move` is the negated child value, so a child LOWER bound
+    // (child >= c) caps the parent at <= -c and can refute a parent fail-high;
+    // a child UPPER bound (child <= c) floors the parent at >= -c and can refute
+    // a parent fail-low. An exact child does both. Comparing bounds as if they
+    // were exact refused cutoffs the child is in fact consistent with.
+    let parent_value_from_child = -child_score;
+    if tt_score >= beta {
+        (child.flag == TT_FLAG_LOWER || child.flag == TT_FLAG_EXACT)
+            && parent_value_from_child < beta
+    } else {
+        (child.flag == TT_FLAG_UPPER || child.flag == TT_FLAG_EXACT)
+            && parent_value_from_child >= beta
+    }
 }
 
 /// Build a DirtyPiece for lazy NNUE accumulator update.
