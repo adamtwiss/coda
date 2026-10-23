@@ -245,14 +245,26 @@ enum Stage {
     EvasionTTMove = 4,
     GenerateEvasions = 5,
 
-    // Picking stages — contiguous range [PICK_BASE..PICK_BASE+4)
-    GoodCaptures = 16,
+    // Picking stages served by plain `pick_best` — contiguous range
+    // [PICK_BASE..PICK_BASE+4), taken by the `next` fast path.
+    QCaptures = 16,
     Quiets = 17,
     BadCaptures = 18,
     Evasions = 19,
+
+    // Main-search good captures: picked by `pick_good_capture`, which
+    // classifies SEE lazily, so it stays off the plain fast path.
+    GoodCaptures = 20,
 }
 
-const PICK_BASE: u8 = Stage::GoodCaptures as u8;
+const PICK_BASE: u8 = Stage::QCaptures as u8;
+
+// Lazy capture classification states (`MovePicker::cap_state`). Values
+// >= CAP_BAD are dead: never pickable in the good-capture stage.
+const CAP_UNKNOWN: u8 = 0;
+const CAP_GOOD: u8 = 1;
+const CAP_BAD: u8 = 2;
+const CAP_GONE: u8 = 3;
 
 pub struct MovePicker {
     stage: Stage,
@@ -275,12 +287,19 @@ pub struct MovePicker {
     scores: [std::mem::MaybeUninit<i32>; 256],
     index: usize,
     /// Bad captures saved from the good/bad partition. Same
-    /// writes-before-reads invariant: `generate_and_score_captures`
-    /// writes slot `bad_len` of both arrays before incrementing
-    /// `bad_len`, and `restore_bad_captures` only reads `[0..bad_len)`.
+    /// writes-before-reads invariant: `collect_bad_captures` writes slot
+    /// `bad_len` of both arrays before incrementing `bad_len` (and
+    /// `classify_capture` parks a bad score at its own slot first; before
+    /// classification each capture slot holds its SEE threshold), and
+    /// `restore_bad_captures` only reads `[0..bad_len)`.
     bad_moves: [std::mem::MaybeUninit<Move>; 256],
     bad_scores: [std::mem::MaybeUninit<i32>; 256],
     bad_len: usize,
+    /// Lazy SEE classification state of each slot of `moves` during
+    /// `Stage::GoodCaptures` (CAP_UNKNOWN / CAP_GOOD / CAP_BAD / CAP_GONE).
+    /// Written for every pushed capture in `generate_and_score_captures`;
+    /// only `[0..moves.len)` is ever read.
+    cap_state: [std::mem::MaybeUninit<u8>; 256],
     pub skip_quiet: bool,
     /// QS mode (SF QCAPTURE shape): skip the SEE partition entirely — every
     /// capture goes to the single picking stage ordered by MVV+captHist, and
@@ -356,6 +375,7 @@ impl MovePicker {
             bad_moves: unsafe { std::mem::MaybeUninit::uninit().assume_init() },
             bad_scores: unsafe { std::mem::MaybeUninit::uninit().assume_init() },
             bad_len: 0,
+            cap_state: unsafe { std::mem::MaybeUninit::uninit().assume_init() },
             skip_quiet: false,
             no_see_partition: false,
             threats,
@@ -394,6 +414,7 @@ impl MovePicker {
             bad_moves: unsafe { std::mem::MaybeUninit::uninit().assume_init() },
             bad_scores: unsafe { std::mem::MaybeUninit::uninit().assume_init() },
             bad_len: 0,
+            cap_state: unsafe { std::mem::MaybeUninit::uninit().assume_init() },
             skip_quiet: true,
             no_see_partition: true,
             threats: 0,
@@ -455,6 +476,7 @@ impl MovePicker {
             bad_moves: unsafe { std::mem::MaybeUninit::uninit().assume_init() },
             bad_scores: unsafe { std::mem::MaybeUninit::uninit().assume_init() },
             bad_len: 0,
+            cap_state: unsafe { std::mem::MaybeUninit::uninit().assume_init() },
             skip_quiet: false,
             no_see_partition: false,
             // Evasion history READS must use the same enemy_attacks key as
@@ -475,7 +497,7 @@ impl MovePicker {
     /// Get next move in staged order.
     ///
     /// Fast path: when we're in one of the four picking stages
-    /// (GoodCaptures/Quiets/BadCaptures/Evasions) AND there are moves left,
+    /// (QCaptures/Quiets/BadCaptures/Evasions) AND there are moves left,
     /// return pick_best directly. Steady-state move iteration sits here for
     /// most calls; bypassing the 13-arm Stage match saves the bounds-check +
     /// indirect-jump pair on every call.
@@ -512,11 +534,32 @@ impl MovePicker {
 
                 Stage::GenerateCaptures => {
                     self.generate_and_score_captures(board);
-                    self.stage = Stage::GoodCaptures;
+                    self.stage = if self.no_see_partition {
+                        Stage::QCaptures
+                    } else {
+                        Stage::GoodCaptures
+                    };
                     self.index = 0;
                 }
 
                 Stage::GoodCaptures => {
+                    // TT move already filtered during scoring
+                    let m = self.pick_good_capture(board);
+                    if m != NO_MOVE {
+                        return m;
+                    }
+                    // Every capture is now classified; hand the losing ones
+                    // to the bad-capture stage.
+                    self.collect_bad_captures();
+                    if self.skip_quiet {
+                        self.stage = Stage::BadCaptures;
+                        self.restore_bad_captures();
+                    } else {
+                        self.stage = Stage::GenerateQuiets;
+                    }
+                }
+
+                Stage::QCaptures => {
                     // TT move already filtered during scoring
                     if self.index < self.moves.len {
                         return self.pick_best();
@@ -580,8 +623,8 @@ impl MovePicker {
         }
     }
 
-    /// Generate all captures, partition into good (SEE >= 0) and bad (SEE < 0).
-    /// Generate and score captures. TT move is filtered out.
+    /// Generate and score all captures; the good/bad SEE partition happens
+    /// lazily in `pick_good_capture`.
     fn generate_and_score_captures(&mut self, board: &Board) {
         let caps = generate_captures(board);
         self.moves = MoveList::new();
@@ -594,8 +637,6 @@ impl MovePicker {
             if m == self.tt_move {
                 continue;
             }
-            // Dynamic SEE threshold: captures with strong history get a more
-            // forgiving threshold. Use captHist only (not MVV) to avoid inflation.
             let capt_hist = capt_hist_score_static(board, history, m);
             // In flat QS ordering, history also helps decide which captures
             // survive the searched-move budget. Give it 1.25x weight here as
@@ -615,26 +656,138 @@ impl MovePicker {
                 self.scores[idx].write(cap_score);
                 continue;
             }
-            let see_threshold = -capt_hist / 18;
-            if !see_ge(board, m, see_threshold) {
-                // Bad capture. The 256 cap must stay generous: a smaller one
-                // silently drops moves in pathological tactical positions
-                // (multiple queens and rooks with many captures available).
-                if self.bad_len < 256 {
-                    // Write slot bad_len before incrementing — upholds the
-                    // [0..bad_len) initialized invariant.
-                    self.bad_moves[self.bad_len].write(m);
-                    self.bad_scores[self.bad_len].write(cap_score);
-                    self.bad_len += 1;
-                }
-            } else {
-                // Good capture
-                let idx = self.moves.len;
-                self.moves.push(m);
-                self.scores[idx].write(cap_score);
-            }
+            // Good/bad SEE classification is deferred to
+            // `pick_good_capture`: a capture's SEE is computed only when it
+            // is about to be returned (or when the exact good-capture order
+            // needs it), so a node that cuts off on its first capture no
+            // longer pays one SEE per generated capture.
+            let idx = self.moves.len;
+            self.moves.push(m);
+            self.scores[idx].write(cap_score);
+            self.cap_state[idx].write(CAP_UNKNOWN);
+            // Snapshot the SEE threshold now: child searches update captHist
+            // before a later capture is classified, and the partition must
+            // see the same history the eager one did. Parked in this slot's
+            // `bad_scores` entry until classification.
+            self.bad_scores[idx].write(-capt_hist / 18);
         }
         self.index = 0;
+    }
+
+    /// Lazily classify capture slot `i` as good (SEE >= threshold) or bad.
+    /// The dynamic threshold is unchanged from the eager partition and is
+    /// snapshotted at generation in `bad_scores[i]`: captures with strong
+    /// captHist get a more forgiving threshold (captHist only, not MVV, to
+    /// avoid inflation). A bad capture keeps
+    /// its slot (only good captures ever move), with its score parked in
+    /// `bad_scores[i]` and its pick score set to i32::MIN so the max-scan
+    /// never selects it again.
+    #[inline]
+    fn classify_capture(&mut self, board: &Board, i: usize) -> bool {
+        let m = self.moves.get(i);
+        // SAFETY: written at generation for every slot < moves.len.
+        let see_threshold = unsafe { self.bad_scores[i].assume_init() };
+        if see_ge(board, m, see_threshold) {
+            self.cap_state[i].write(CAP_GOOD);
+            true
+        } else {
+            // SAFETY: slot i < moves.len was written at generation.
+            self.bad_scores[i].write(unsafe { self.scores[i].assume_init() });
+            self.scores[i].write(i32::MIN);
+            self.cap_state[i].write(CAP_BAD);
+            false
+        }
+    }
+
+    /// Next good capture, in exactly the order the eager partition produced.
+    ///
+    /// The eager scheme ran the swap-based selection sort of `pick_best`
+    /// over the good captures alone, in generation order. With score ties
+    /// that order depends on where each good capture sits, so this emulates
+    /// it on the full list under the invariant: the good captures among the
+    /// live slots (CAP_UNKNOWN/CAP_GOOD), in slot order, are exactly the
+    /// eager good list's remaining entries, in its order. Bad and consumed
+    /// slots never move, so bad captures stay in generation order.
+    ///
+    /// Per pick: take the first max-scored live slot `j`; if it is still
+    /// unknown, classify it (a bad one is dropped and the scan repeats).
+    /// A good `j` is also the eager list's first max (an equal-scored good
+    /// before it would have been found first). The eager pick then swaps it
+    /// with the front good, so classify forward from `index` to the first
+    /// good slot `p` (p <= j), move p's capture into slot j, and retire
+    /// slot p. SEE runs only on the returned capture and the slots in front
+    /// of it — usually one or two captures instead of all of them.
+    fn pick_good_capture(&mut self, board: &Board) -> Move {
+        let n = self.moves.len;
+        loop {
+            // SAFETY (all assume_init below): cap_state/scores [0..n) were
+            // written at generation, and every index used is < n.
+            while self.index < n
+                && unsafe { self.cap_state[self.index].assume_init() } >= CAP_BAD
+            {
+                self.index += 1;
+            }
+            if self.index >= n {
+                return NO_MOVE;
+            }
+
+            // First max among live slots. Dead slots score i32::MIN and the
+            // scan starts on a live slot, so they never win a strict `>`.
+            let mut j = self.index;
+            let mut best = unsafe { self.scores[j].assume_init() };
+            for i in (self.index + 1)..n {
+                let s = unsafe { self.scores[i].assume_init() };
+                if s > best {
+                    best = s;
+                    j = i;
+                }
+            }
+
+            if unsafe { self.cap_state[j].assume_init() } == CAP_UNKNOWN
+                && !self.classify_capture(board, j)
+            {
+                continue;
+            }
+
+            // Front good slot p: classify unknowns from index forward. j is
+            // good, so this stops at or before j.
+            let mut p = self.index;
+            loop {
+                let st = unsafe { self.cap_state[p].assume_init() };
+                if st == CAP_GOOD || (st == CAP_UNKNOWN && self.classify_capture(board, p)) {
+                    break;
+                }
+                p += 1;
+            }
+
+            let mv = self.moves.get(j);
+            if p != j {
+                self.moves.swap(p, j);
+                self.scores.swap(p, j);
+            }
+            self.scores[p].write(i32::MIN);
+            self.cap_state[p].write(CAP_GONE);
+            return mv;
+        }
+    }
+
+    /// After the good-capture stage is exhausted (every slot classified),
+    /// gather the bad captures, in generation order, into
+    /// `bad_moves`/`bad_scores` for `restore_bad_captures`.
+    fn collect_bad_captures(&mut self) {
+        self.bad_len = 0;
+        for i in 0..self.moves.len {
+            // SAFETY: cap_state[i] was written at generation, and a CAP_BAD
+            // slot had bad_scores[i] written by classify_capture. Compaction
+            // writes slot bad_len <= i, and every CAP_BAD slot below i has
+            // already been read, so no unread score is overwritten.
+            if unsafe { self.cap_state[i].assume_init() } == CAP_BAD {
+                let sc = unsafe { self.bad_scores[i].assume_init() };
+                self.bad_moves[self.bad_len].write(self.moves.get(i));
+                self.bad_scores[self.bad_len].write(sc);
+                self.bad_len += 1;
+            }
+        }
     }
 
     /// Generate and score quiets. TT move is filtered out.
