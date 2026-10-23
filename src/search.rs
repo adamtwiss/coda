@@ -5666,10 +5666,17 @@ fn negamax(
                 // threshold the node falls through with an inverted window
                 // (alpha >= beta) and searches + TT-stores a degenerate full-depth
                 // bound.
+                //
+                // The node-type guard above applies here too. At a zero window a
+                // lower bound above alpha always collapses the window, i.e. it IS
+                // a fail-high, so narrowing on it at an expected all-node would
+                // return the very cutoff the guard just refused.
                 if halfmove_ok && !child_disagrees {
                     match tt_entry.flag {
                         TT_FLAG_LOWER => {
-                            if beta - alpha_orig == 1 && tt_score > alpha {
+                            if beta - alpha_orig == 1 && tt_score > alpha
+                                && (cut_node || !score_above_beta)
+                            {
                                 alpha = tt_score;
                             }
                         }
