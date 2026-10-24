@@ -81,6 +81,82 @@ pub const MAX_FT_SIZE: usize = 1024;
 /// both silently agreed on a truncated accumulator).
 pub const MAX_ACTIVE_THREAT_FEATURES: usize = 1024;
 
+/// Write the weight-row indices of every active threat feature (and, when the
+/// net has a pawn-pair block, every active pawn-pair feature, offset by
+/// `num_features`) of `board` for perspective `pov` to `out`. Returns the
+/// count and whether the enumeration overflowed `MAX_ACTIVE_THREAT_FEATURES`.
+///
+/// Shared by `ThreatStack::refresh` and the fused accumulator's refresh
+/// (`NNUEAccumulator`), so the two build the threat part from the same list.
+///
+/// # Safety
+/// `out` must have room for `MAX_ACTIVE_THREAT_FEATURES` entries.
+pub unsafe fn collect_refresh_rows(
+    board: &crate::board::Board,
+    num_features: usize,
+    pp_features: usize,
+    pov: Color,
+    out: *mut usize,
+) -> (usize, bool) {
+    let occ = board.colors[0] | board.colors[1];
+    let king_sq = (board.pieces[KING as usize] & board.colors[pov as usize]).trailing_zeros();
+    let mirrored = (king_sq % 8) >= 4;
+    let mut n_indices = 0usize;
+    // Track whether the enumerator produced more
+    // features than the buffer can hold. Excess features would be dropped
+    // and only `accurate[p]=false` (so children re-refresh) — but THIS
+    // node's eval would still consume the truncated accumulator. With the
+    // buffer at MAX_ACTIVE_THREAT_FEATURES (1024, ~14x the measured max of
+    // 70) this is unreachable; the guard remains as defense-in-depth and
+    // the debug_assert below makes any future breach loud instead of
+    // silently wrong. Note: a full refresh does NOT self-correct a
+    // truncation — the "next full path" is this same refresh — so the cap
+    // must simply be large enough never to trip.
+    let mut overflowed = false;
+
+    crate::threats::enumerate_threats(
+        &board.pieces, &board.colors, &board.mailbox,
+        occ, pov, mirrored,
+        |feat_idx| {
+            if feat_idx < num_features {
+                if n_indices < MAX_ACTIVE_THREAT_FEATURES {
+                    unsafe { out.add(n_indices).write(feat_idx); }
+                    n_indices += 1;
+                } else {
+                    overflowed = true;
+                }
+            }
+        },
+    );
+    debug_assert!(
+        !overflowed,
+        "threat refresh exceeded MAX_ACTIVE_THREAT_FEATURES ({}) — raise the cap",
+        MAX_ACTIVE_THREAT_FEATURES
+    );
+
+    #[cfg(feature = "profile-threats")]
+    crate::threats::refresh_stats::record(n_indices, overflowed);
+
+    // Pawn-pair features occupy the shared feature space above the threat
+    // block, so their rows live in the SAME weight array and can simply be
+    // appended to the index list -- no second weight pass, and pack time
+    // stays untouched.
+    if pp_features > 0 {
+        crate::pawn_pair::enumerate_pawn_pairs(
+            board.pieces[crate::types::PAWN as usize], &board.colors, pov, mirrored,
+            |pp_idx| {
+                if n_indices < MAX_ACTIVE_THREAT_FEATURES {
+                    unsafe { out.add(n_indices).write(num_features + pp_idx); }
+                    n_indices += 1;
+                } else {
+                    overflowed = true;
+                }
+            },
+        );
+    }
+    (n_indices, overflowed)
+}
+
 /// Per-ply pawn-pair deltas. A separate list from `DeltaVec` because
 /// `RawThreatDelta` is attacker/victim-shaped; see pawn_pair.rs.
 #[derive(Clone, Copy)]
@@ -461,73 +537,20 @@ impl ThreatStack {
     pub fn refresh(&mut self, net_weights: &[i8], num_features: usize,
                    board: &crate::board::Board, pov: Color) {
         let h = self.hidden_size;
+        let pp_features = self.pp_features;
         let entry = &mut self.stack[self.index];
         let p = pov as usize;
         entry.values[p][..h].fill(0);
 
-        let occ = board.colors[0] | board.colors[1];
-        let king_sq = (board.pieces[KING as usize] & board.colors[pov as usize]).trailing_zeros();
-        let mirrored = (king_sq % 8) >= 4;
-
         // Collect feature indices, then apply with SIMD. MaybeUninit skips the
-        // 2 KB zero-init per refresh — `indices[..n_indices]` is fully written
-        // by enumerate_threats below; consumers only read that prefix.
+        // 8 KB zero-init per refresh — `indices[..n_indices]` is fully written
+        // by the collector; consumers only read that prefix.
         let mut indices_storage =
             std::mem::MaybeUninit::<[usize; MAX_ACTIVE_THREAT_FEATURES]>::uninit();
         let indices_ptr = scratch_ptr!(indices_storage, usize);
-        let mut n_indices = 0usize;
-        // Track whether the enumerator produced more
-        // features than the buffer can hold. Excess features would be dropped
-        // and only `accurate[p]=false` (so children re-refresh) — but THIS
-        // node's eval would still consume the truncated accumulator. With the
-        // buffer at MAX_ACTIVE_THREAT_FEATURES (1024, ~14x the measured max of
-        // 70) this is unreachable; the guard remains as defense-in-depth and
-        // the debug_assert below makes any future breach loud instead of
-        // silently wrong. Note: a full refresh does NOT self-correct a
-        // truncation — the "next full path" is this same refresh — so the cap
-        // must simply be large enough never to trip.
-        let mut overflowed = false;
-
-        crate::threats::enumerate_threats(
-            &board.pieces, &board.colors, &board.mailbox,
-            occ, pov, mirrored,
-            |feat_idx| {
-                if feat_idx < num_features {
-                    if n_indices < MAX_ACTIVE_THREAT_FEATURES {
-                        unsafe { indices_ptr.add(n_indices).write(feat_idx); }
-                        n_indices += 1;
-                    } else {
-                        overflowed = true;
-                    }
-                }
-            },
-        );
-        debug_assert!(
-            !overflowed,
-            "threat refresh exceeded MAX_ACTIVE_THREAT_FEATURES ({}) — raise the cap",
-            MAX_ACTIVE_THREAT_FEATURES
-        );
-
-        #[cfg(feature = "profile-threats")]
-        crate::threats::refresh_stats::record(n_indices, overflowed);
-
-        // Pawn-pair features occupy the shared feature space above the threat
-        // block, so their rows live in the SAME weight array and can simply be
-        // appended to the index list -- no second weight pass, and pack time
-        // stays untouched.
-        if self.pp_features > 0 {
-            crate::pawn_pair::enumerate_pawn_pairs(
-                board.pieces[crate::types::PAWN as usize], &board.colors, pov, mirrored,
-                |pp_idx| {
-                    if n_indices < MAX_ACTIVE_THREAT_FEATURES {
-                        unsafe { indices_ptr.add(n_indices).write(num_features + pp_idx); }
-                        n_indices += 1;
-                    } else {
-                        overflowed = true;
-                    }
-                },
-            );
-        }
+        let (n_indices, overflowed) = unsafe {
+            collect_refresh_rows(board, num_features, pp_features, pov, indices_ptr)
+        };
 
         // Apply all weight rows with SIMD
         let indices = scratch_slice!(indices_ptr, n_indices);
@@ -536,6 +559,51 @@ impl ThreatStack {
         );
 
         entry.accurate[p] = !overflowed;
+    }
+
+    /// Public form of the lazy delta materialisation for the fused PSQ+threat
+    /// accumulator (`NNUEAccumulator::materialize_with`), which replays this
+    /// stack's per-ply deltas without using its value arrays. Same contract
+    /// as `materialize_deltas`: false means a ply in the span overflowed and
+    /// the caller must refresh instead of replaying.
+    #[inline]
+    pub fn prepare_replay(&mut self, board: &crate::board::Board, from_ply: usize) -> bool {
+        self.materialize_deltas(board, from_ply)
+    }
+
+    /// Whether the move that produced `ply` stops a replay for `pov` — the
+    /// same two barriers `can_update` applies: the perspective's king crossed
+    /// the d/e file (threat mirroring changed), or the ply's deltas overflowed.
+    /// Under lazy generation an absent entry reads as replayable here and is
+    /// re-checked by `prepare_replay`, exactly as in `can_update`.
+    #[inline]
+    pub fn replay_blocked(&self, ply: usize, pov: Color) -> bool {
+        let entry = &self.stack[ply];
+        if entry.mv == NO_MOVE {
+            return false;
+        }
+        if entry.deltas_valid && entry.delta.overflowed() {
+            return true;
+        }
+        entry.moved_pt == KING && entry.moved_color == pov
+            && (move_from(entry.mv) % 8 >= 4) != (move_to(entry.mv) % 8 >= 4)
+    }
+
+    /// The threat and pawn-pair deltas of the move that produced `ply` (both
+    /// empty for a null move). The pawn-pair slice is empty unless the net has
+    /// a pawn-pair block. Valid only after `prepare_replay` covered `ply`.
+    #[inline]
+    pub fn ply_deltas(&self, ply: usize)
+        -> (&[RawThreatDelta], &[crate::pawn_pair::PawnPairDelta])
+    {
+        let entry = &self.stack[ply];
+        if entry.mv == NO_MOVE {
+            return (&[], &[]);
+        }
+        debug_assert!(entry.deltas_valid);
+        let pp: &[crate::pawn_pair::PawnPairDelta] =
+            if self.pp_features > 0 { self.pp_delta[ply].as_slice() } else { &[] };
+        (entry.delta.as_slice(), pp)
     }
 
     /// Check if we can incrementally update this perspective by walking back.

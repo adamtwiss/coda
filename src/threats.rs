@@ -1863,6 +1863,44 @@ unsafe fn apply_threat_deltas_body(
     let mut subs_storage = std::mem::MaybeUninit::<[usize; MAX_THREAT_DELTAS + crate::pawn_pair::MAX_PAWN_PAIR_DELTAS]>::uninit();
     let adds_ptr = scratch_ptr!(adds_storage, usize);
     let subs_ptr = scratch_ptr!(subs_storage, usize);
+    let (n_adds, n_subs) = unsafe {
+        collect_threat_rows(deltas, threat_weights, hidden_size, num_threats, pov, mirrored,
+                            pp_deltas, pp_base, adds_ptr, subs_ptr)
+    };
+    let adds = scratch_slice!(adds_ptr, n_adds);
+    let subs = scratch_slice!(subs_ptr, n_subs);
+
+    #[cfg(feature = "profile-threats")]
+    crate::threats::apply_stats::record_cancel(adds, subs);
+
+    unsafe {
+        apply_threat_indices(dst, src, threat_weights, hidden_size, adds, subs);
+    }
+}
+
+/// Translate one ply's raw threat deltas (plus its pawn-pair deltas) into the
+/// add/sub weight-row index lists of ONE perspective, prefetching each row as
+/// its index is produced. Shared by the threat-only replay
+/// (`apply_threat_deltas`) and the fused PSQ+threat update in `nnue.rs`, so
+/// both hand their kernels identical lists.
+///
+/// # Safety
+/// `adds_ptr` / `subs_ptr` must each have room for
+/// `deltas.len() + pp_deltas.len()` entries.
+#[inline(always)]
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn collect_threat_rows(
+    deltas: &[RawThreatDelta],
+    threat_weights: &[i8],
+    hidden_size: usize,
+    num_threats: usize,
+    pov: Color,
+    mirrored: bool,
+    pp_deltas: &[crate::pawn_pair::PawnPairDelta],
+    pp_base: usize,
+    adds_ptr: *mut usize,
+    subs_ptr: *mut usize,
+) -> (usize, usize) {
     let mut n_adds = 0usize;
     let mut n_subs = 0usize;
     for delta in deltas {
@@ -1894,15 +1932,7 @@ unsafe fn apply_threat_deltas_body(
                                    adds_ptr, subs_ptr, n_adds, n_subs)
         };
     }
-    let adds = scratch_slice!(adds_ptr, n_adds);
-    let subs = scratch_slice!(subs_ptr, n_subs);
-
-    #[cfg(feature = "profile-threats")]
-    crate::threats::apply_stats::record_cancel(adds, subs);
-
-    unsafe {
-        apply_threat_indices(dst, src, threat_weights, hidden_size, adds, subs);
-    }
+    (n_adds, n_subs)
 }
 
 /// Apply raw threat deltas for both perspectives after a shared replay walk.
@@ -2021,6 +2051,55 @@ unsafe fn apply_threat_deltas_dual_body(
     let mut subs_w_storage = std::mem::MaybeUninit::<[usize; MAX_THREAT_DELTAS + crate::pawn_pair::MAX_PAWN_PAIR_DELTAS]>::uninit();
     let mut adds_b_storage = std::mem::MaybeUninit::<[usize; MAX_THREAT_DELTAS + crate::pawn_pair::MAX_PAWN_PAIR_DELTAS]>::uninit();
     let mut subs_b_storage = std::mem::MaybeUninit::<[usize; MAX_THREAT_DELTAS + crate::pawn_pair::MAX_PAWN_PAIR_DELTAS]>::uninit();
+    let adds_w_ptr = scratch_ptr!(adds_w_storage, usize);
+    let subs_w_ptr = scratch_ptr!(subs_w_storage, usize);
+    let adds_b_ptr = scratch_ptr!(adds_b_storage, usize);
+    let subs_b_ptr = scratch_ptr!(subs_b_storage, usize);
+    let [n_adds_w, n_subs_w, n_adds_b, n_subs_b] = unsafe {
+        collect_threat_rows_dual(deltas, threat_weights, hidden_size, num_threats,
+                                 mirrored_w, mirrored_b, pp_deltas, pp_base,
+                                 [adds_w_ptr, subs_w_ptr, adds_b_ptr, subs_b_ptr])
+    };
+    let adds_w = scratch_slice!(adds_w_ptr, n_adds_w);
+    let subs_w = scratch_slice!(subs_w_ptr, n_subs_w);
+    let adds_b = scratch_slice!(adds_b_ptr, n_adds_b);
+    let subs_b = scratch_slice!(subs_b_ptr, n_subs_b);
+
+    #[cfg(feature = "profile-threats")]
+    {
+        crate::threats::apply_stats::record_cancel(adds_w, subs_w);
+        crate::threats::apply_stats::record_cancel(adds_b, subs_b);
+    }
+
+    unsafe {
+        apply_threat_indices(dst_w, src_w, threat_weights, hidden_size, adds_w, subs_w);
+        apply_threat_indices(dst_b, src_b, threat_weights, hidden_size, adds_b, subs_b);
+    }
+}
+
+/// Two-perspective twin of [`collect_threat_rows`]: one walk over the raw
+/// deltas fills the WHITE and BLACK add/sub lists together. `out` is
+/// `[adds_w, subs_w, adds_b, subs_b]`; the returned counts are in the same
+/// order. Shared by the threat-only dual replay and the fused PSQ+threat
+/// update.
+///
+/// # Safety
+/// Every `out` pointer must have room for `deltas.len() + pp_deltas.len()`
+/// entries.
+#[inline(always)]
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn collect_threat_rows_dual(
+    deltas: &[RawThreatDelta],
+    threat_weights: &[i8],
+    hidden_size: usize,
+    num_threats: usize,
+    mirrored_w: bool,
+    mirrored_b: bool,
+    pp_deltas: &[crate::pawn_pair::PawnPairDelta],
+    pp_base: usize,
+    out: [*mut usize; 4],
+) -> [usize; 4] {
+    let [adds_w_ptr, subs_w_ptr, adds_b_ptr, subs_b_ptr] = out;
     // Branch-free compress. Per delta we always compute both perspectives'
     // feature index and store it into the next slot of BOTH the add and the
     // sub list, then advance only the count of the list it belongs to. A slot
@@ -2041,10 +2120,6 @@ unsafe fn apply_threat_deltas_dual_body(
     // piece and square, so it is in-bounds for untracked pairs too, and the
     // store address is bounded by the running count (<= deltas seen so far
     // < MAX_THREAT_DELTAS), never by the computed index.
-    let adds_w_ptr = scratch_ptr!(adds_w_storage, usize);
-    let subs_w_ptr = scratch_ptr!(subs_w_storage, usize);
-    let adds_b_ptr = scratch_ptr!(adds_b_storage, usize);
-    let subs_b_ptr = scratch_ptr!(subs_b_storage, usize);
     let mut n_adds_w = 0usize;
     let mut n_subs_w = 0usize;
     let mut n_adds_b = 0usize;
@@ -2110,21 +2185,7 @@ unsafe fn apply_threat_deltas_dual_body(
                 adds_b_ptr, subs_b_ptr, n_adds_b, n_subs_b);
         }
     }
-    let adds_w = scratch_slice!(adds_w_ptr, n_adds_w);
-    let subs_w = scratch_slice!(subs_w_ptr, n_subs_w);
-    let adds_b = scratch_slice!(adds_b_ptr, n_adds_b);
-    let subs_b = scratch_slice!(subs_b_ptr, n_subs_b);
-
-    #[cfg(feature = "profile-threats")]
-    {
-        crate::threats::apply_stats::record_cancel(adds_w, subs_w);
-        crate::threats::apply_stats::record_cancel(adds_b, subs_b);
-    }
-
-    unsafe {
-        apply_threat_indices(dst_w, src_w, threat_weights, hidden_size, adds_w, subs_w);
-        apply_threat_indices(dst_b, src_b, threat_weights, hidden_size, adds_b, subs_b);
-    }
+    [n_adds_w, n_subs_w, n_adds_b, n_subs_b]
 }
 
 /// No `target_feature` (see [`apply_threat_deltas`]): the heavy SIMD work is

@@ -785,6 +785,359 @@ unsafe fn simd_acc_fused_neon(
     }
 }
 
+// ---------------------------------------------------------------------------
+// Fused PSQ + threat accumulator update.
+//
+// When threat fusion is on (see `NNUEAccumulator::set_threat_fusion`) each
+// perspective keeps ONE i16 accumulator holding psq + threat. A child is
+// produced from its parent in a single pass: load a chunk of the parent, apply
+// the PSQ rows (i16) and the threat / pawn-pair rows (i8, widened in
+// register), store the chunk once. These kernels are the two existing ones
+// (`simd_acc_fused_*` for PSQ, `threats::apply_deltas_*` for threats) merged
+// into one tiling loop, so the accumulator is read and written once per
+// update instead of twice and the eval no longer has to add the two halves.
+//
+// Integer adds are exact modulo 2^16, so the result is the same as the two
+// separate passes whatever the row order. The only place the split ever
+// mattered is the eval-time combine, which saturates; with one accumulator the
+// sum wraps instead. The two agree while |psq + threat| <= i16::MAX: the
+// largest value measured over `bench 16` is ~2.1k, a 16x margin.
+// ---------------------------------------------------------------------------
+
+/// AVX-512 fused PSQ+threat update. 16 ZMM accumulators (512 i16) per tile:
+/// the threat-only kernel's budget, because the i8 rows need a widening temp
+/// each; the PSQ rows add straight from memory and cost no register.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f,avx512bw")]
+#[allow(clippy::too_many_arguments)]
+unsafe fn simd_acc_fused_threat_avx512(
+    dst: &mut [i16],
+    src: &[i16],
+    psq_adds: &[&[i16]],
+    psq_subs: &[&[i16]],
+    threat_weights: &[i8],
+    t_adds: &[usize],
+    t_subs: &[usize],
+    h: usize,
+) {
+    const REGS: usize = 16;
+    const LANE: usize = 32;
+    const CHUNK: usize = REGS * LANE;
+
+    let dst_ptr = dst.as_mut_ptr();
+    let src_ptr = src.as_ptr();
+    let tw = threat_weights.as_ptr();
+
+    prefetch_acc_rows(psq_adds, psq_subs, CHUNK * 2);
+
+    let mut offset = 0;
+
+    macro_rules! apply_chunk {
+        ($nregs:expr) => {{
+            let nregs: usize = $nregs;
+            let mut regs: [__m512i; REGS] = [_mm512_setzero_si512(); REGS];
+            for i in 0..nregs {
+                regs[i] = _mm512_loadu_si512(src_ptr.add(offset + i * LANE) as *const __m512i);
+            }
+            // Next tile of each row is pulled in while this one is summed
+            // (row heads were prefetched up front / when the indices were
+            // built). `bytes` is the tile's byte length in that row.
+            let pf = offset + CHUNK < h;
+            macro_rules! pf_row {
+                ($row:expr, $bytes:expr) => {
+                    if pf {
+                        let next = ($row as *const i8).add($bytes);
+                        let mut l = 0;
+                        while l < $bytes {
+                            _mm_prefetch(next.add(l), _MM_HINT_T0);
+                            l += 64;
+                        }
+                    }
+                };
+            }
+            for row in psq_adds {
+                let p = row.as_ptr().add(offset);
+                pf_row!(p, CHUNK * 2);
+                for i in 0..nregs {
+                    regs[i] = _mm512_add_epi16(regs[i], _mm512_loadu_si512(p.add(i * LANE) as *const __m512i));
+                }
+            }
+            for row in psq_subs {
+                let p = row.as_ptr().add(offset);
+                pf_row!(p, CHUNK * 2);
+                for i in 0..nregs {
+                    regs[i] = _mm512_sub_epi16(regs[i], _mm512_loadu_si512(p.add(i * LANE) as *const __m512i));
+                }
+            }
+            for &idx in t_adds {
+                let w = tw.add(idx * h + offset);
+                pf_row!(w, CHUNK);
+                for i in 0..nregs {
+                    let x = _mm512_cvtepi8_epi16(_mm256_loadu_si256(w.add(i * LANE) as *const __m256i));
+                    regs[i] = _mm512_add_epi16(regs[i], x);
+                }
+            }
+            for &idx in t_subs {
+                let w = tw.add(idx * h + offset);
+                pf_row!(w, CHUNK);
+                for i in 0..nregs {
+                    let x = _mm512_cvtepi8_epi16(_mm256_loadu_si256(w.add(i * LANE) as *const __m256i));
+                    regs[i] = _mm512_sub_epi16(regs[i], x);
+                }
+            }
+            for i in 0..nregs {
+                _mm512_storeu_si512(dst_ptr.add(offset + i * LANE) as *mut __m512i, regs[i]);
+            }
+        }};
+    }
+
+    while offset + CHUNK <= h {
+        apply_chunk!(REGS);
+        offset += CHUNK;
+    }
+    while offset + 8 * LANE <= h {
+        apply_chunk!(8);
+        offset += 8 * LANE;
+    }
+    if offset < h {
+        apply_chunk!((h - offset).div_ceil(LANE));
+    }
+}
+
+/// AVX2 fused PSQ+threat update. 8 YMM accumulators (128 i16) per tile, the
+/// threat-only AVX2 kernel's budget (see `threats::apply_deltas_avx2` for why
+/// more registers lose on cores that crack 256-bit ops).
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+#[allow(clippy::too_many_arguments)]
+unsafe fn simd_acc_fused_threat_avx2(
+    dst: &mut [i16],
+    src: &[i16],
+    psq_adds: &[&[i16]],
+    psq_subs: &[&[i16]],
+    threat_weights: &[i8],
+    t_adds: &[usize],
+    t_subs: &[usize],
+    h: usize,
+) {
+    const REGS: usize = 8;
+    const LANE: usize = 16;
+    const CHUNK: usize = REGS * LANE;
+
+    let dst_ptr = dst.as_mut_ptr();
+    let src_ptr = src.as_ptr();
+    let tw = threat_weights.as_ptr();
+
+    prefetch_acc_rows(psq_adds, psq_subs, CHUNK * 2);
+
+    let mut offset = 0;
+
+    macro_rules! apply_chunk {
+        ($nregs:expr) => {{
+            let nregs: usize = $nregs;
+            let mut regs: [__m256i; REGS] = [_mm256_setzero_si256(); REGS];
+            for i in 0..nregs {
+                regs[i] = _mm256_loadu_si256(src_ptr.add(offset + i * LANE) as *const __m256i);
+            }
+            let pf = offset + CHUNK < h;
+            for row in psq_adds {
+                let p = row.as_ptr().add(offset);
+                if pf {
+                    let q = p.add(CHUNK) as *const i8;
+                    let mut l = 0;
+                    while l < CHUNK * 2 { _mm_prefetch(q.add(l), _MM_HINT_T0); l += 64; }
+                }
+                for i in 0..nregs {
+                    regs[i] = _mm256_add_epi16(regs[i], _mm256_loadu_si256(p.add(i * LANE) as *const __m256i));
+                }
+            }
+            for row in psq_subs {
+                let p = row.as_ptr().add(offset);
+                if pf {
+                    let q = p.add(CHUNK) as *const i8;
+                    let mut l = 0;
+                    while l < CHUNK * 2 { _mm_prefetch(q.add(l), _MM_HINT_T0); l += 64; }
+                }
+                for i in 0..nregs {
+                    regs[i] = _mm256_sub_epi16(regs[i], _mm256_loadu_si256(p.add(i * LANE) as *const __m256i));
+                }
+            }
+            for &idx in t_adds {
+                let w = tw.add(idx * h + offset);
+                if pf {
+                    _mm_prefetch(w.add(CHUNK) as *const i8, _MM_HINT_T0);
+                    _mm_prefetch(w.add(CHUNK + 64) as *const i8, _MM_HINT_T0);
+                }
+                for i in 0..nregs {
+                    let x = _mm256_cvtepi8_epi16(_mm_loadu_si128(w.add(i * LANE) as *const __m128i));
+                    regs[i] = _mm256_add_epi16(regs[i], x);
+                }
+            }
+            for &idx in t_subs {
+                let w = tw.add(idx * h + offset);
+                if pf {
+                    _mm_prefetch(w.add(CHUNK) as *const i8, _MM_HINT_T0);
+                    _mm_prefetch(w.add(CHUNK + 64) as *const i8, _MM_HINT_T0);
+                }
+                for i in 0..nregs {
+                    let x = _mm256_cvtepi8_epi16(_mm_loadu_si128(w.add(i * LANE) as *const __m128i));
+                    regs[i] = _mm256_sub_epi16(regs[i], x);
+                }
+            }
+            for i in 0..nregs {
+                _mm256_storeu_si256(dst_ptr.add(offset + i * LANE) as *mut __m256i, regs[i]);
+            }
+        }};
+    }
+
+    while offset + CHUNK <= h {
+        apply_chunk!(REGS);
+        offset += CHUNK;
+    }
+    if offset < h {
+        apply_chunk!((h - offset).div_ceil(LANE));
+    }
+}
+
+/// NEON fused PSQ+threat update: 16 Q registers (128 i16) per tile, i8 rows
+/// widened two registers per 16-byte load as in `threats::apply_deltas_neon`.
+#[cfg(target_arch = "aarch64")]
+#[allow(clippy::too_many_arguments)]
+unsafe fn simd_acc_fused_threat_neon(
+    dst: &mut [i16],
+    src: &[i16],
+    psq_adds: &[&[i16]],
+    psq_subs: &[&[i16]],
+    threat_weights: &[i8],
+    t_adds: &[usize],
+    t_subs: &[usize],
+    h: usize,
+) {
+    const REGS: usize = 16;
+    const CHUNK: usize = REGS * 8;
+
+    let dst_ptr = dst.as_mut_ptr();
+    let src_ptr = src.as_ptr();
+    let tw = threat_weights.as_ptr();
+
+    let mut offset = 0;
+
+    macro_rules! apply_chunk {
+        ($nregs:expr) => {{
+            let nregs: usize = $nregs;
+            let pairs = nregs / 2;
+            let odd = nregs % 2 == 1;
+            let mut regs: [int16x8_t; REGS] = [vdupq_n_s16(0); REGS];
+            for i in 0..nregs {
+                regs[i] = vld1q_s16(src_ptr.add(offset + i * 8));
+            }
+            for row in psq_adds {
+                let p = row.as_ptr().add(offset);
+                for i in 0..nregs {
+                    regs[i] = vaddq_s16(regs[i], vld1q_s16(p.add(i * 8)));
+                }
+            }
+            for row in psq_subs {
+                let p = row.as_ptr().add(offset);
+                for i in 0..nregs {
+                    regs[i] = vsubq_s16(regs[i], vld1q_s16(p.add(i * 8)));
+                }
+            }
+            for &idx in t_adds {
+                let w = tw.add(idx * h + offset);
+                for q in 0..pairs {
+                    let a = vld1q_s8(w.add(q * 16));
+                    regs[2 * q] = vaddw_s8(regs[2 * q], vget_low_s8(a));
+                    regs[2 * q + 1] = vaddw_high_s8(regs[2 * q + 1], a);
+                }
+                if odd {
+                    let i = nregs - 1;
+                    regs[i] = vaddw_s8(regs[i], vld1_s8(w.add(i * 8)));
+                }
+            }
+            for &idx in t_subs {
+                let w = tw.add(idx * h + offset);
+                for q in 0..pairs {
+                    let s = vld1q_s8(w.add(q * 16));
+                    regs[2 * q] = vsubw_s8(regs[2 * q], vget_low_s8(s));
+                    regs[2 * q + 1] = vsubw_high_s8(regs[2 * q + 1], s);
+                }
+                if odd {
+                    let i = nregs - 1;
+                    regs[i] = vsubw_s8(regs[i], vld1_s8(w.add(i * 8)));
+                }
+            }
+            for i in 0..nregs {
+                vst1q_s16(dst_ptr.add(offset + i * 8), regs[i]);
+            }
+        }};
+    }
+
+    while offset + CHUNK <= h {
+        apply_chunk!(REGS);
+        offset += CHUNK;
+    }
+    if offset < h {
+        apply_chunk!((h - offset) / 8);
+    }
+}
+
+/// Scalar reference / fallback for the fused PSQ+threat update. Also the
+/// oracle the SIMD kernels are tested against.
+#[allow(clippy::too_many_arguments)]
+fn acc_fused_threat_scalar(
+    dst: &mut [i16],
+    src: &[i16],
+    psq_adds: &[&[i16]],
+    psq_subs: &[&[i16]],
+    threat_weights: &[i8],
+    t_adds: &[usize],
+    t_subs: &[usize],
+    h: usize,
+) {
+    for j in 0..h {
+        let mut v = src[j];
+        for row in psq_adds { v = v.wrapping_add(row[j]); }
+        for row in psq_subs { v = v.wrapping_sub(row[j]); }
+        for &idx in t_adds { v = v.wrapping_add(threat_weights[idx * h + j] as i16); }
+        for &idx in t_subs { v = v.wrapping_sub(threat_weights[idx * h + j] as i16); }
+        dst[j] = v;
+    }
+}
+
+/// Dispatch the fused PSQ+threat update to the widest kernel the host and
+/// `h` allow. Every path computes the same exact integer result.
+#[allow(clippy::too_many_arguments)]
+#[inline]
+fn acc_fused_threat_apply(
+    net: &NNUENet,
+    dst: &mut [i16],
+    src: &[i16],
+    psq_adds: &[&[i16]],
+    psq_subs: &[&[i16]],
+    t_adds: &[usize],
+    t_subs: &[usize],
+    h: usize,
+) {
+    let tw = &net.threat_weights[..];
+    #[cfg(target_arch = "x86_64")]
+    if net.has_avx512 && h.is_multiple_of(32) {
+        unsafe { simd_acc_fused_threat_avx512(dst, src, psq_adds, psq_subs, tw, t_adds, t_subs, h); }
+        return;
+    }
+    #[cfg(target_arch = "x86_64")]
+    if net.has_avx2 && h.is_multiple_of(16) {
+        unsafe { simd_acc_fused_threat_avx2(dst, src, psq_adds, psq_subs, tw, t_adds, t_subs, h); }
+        return;
+    }
+    #[cfg(target_arch = "aarch64")]
+    if net.has_neon && h % 8 == 0 {
+        unsafe { simd_acc_fused_threat_neon(dst, src, psq_adds, psq_subs, tw, t_adds, t_subs, h); }
+        return;
+    }
+    acc_fused_threat_scalar(dst, src, psq_adds, psq_subs, tw, t_adds, t_subs, h);
+}
+
 /// Register-blocked batch apply for Finny table refresh.
 /// Loads 8 SIMD registers from acc, applies ALL adds then ALL subs, stores once.
 /// Much faster than per-piece acc_add/acc_sub which loads/stores each time.
@@ -3688,6 +4041,20 @@ impl NNUENet {
     /// Wraps `load_from_bytes_raw` with `validate_compat`. All normal code
     /// paths should use this; bypass is only via `--load-anyway` / UCI
     /// option `LoadAnyway` for diagnostics on deliberately-mismatched nets.
+    /// Whether a search with this net may run the fused PSQ+threat
+    /// accumulator (`NNUEAccumulator::set_threat_fusion`): the net must have
+    /// threat inputs and hidden layers, and the CODA_NO_THREAT_ACC diagnostic
+    /// (which zeroes the threat half at eval time, impossible once the halves
+    /// share one accumulator) must be off. The caller additionally needs an
+    /// active `ThreatStack` and delta generation (not refresh mode).
+    pub fn threat_fusion_ok(&self) -> bool {
+        static NO_THREAT_ACC: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let no_threats = *NO_THREAT_ACC.get_or_init(|| std::env::var("CODA_NO_THREAT_ACC").is_ok());
+        static NO_FUSE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let no_fuse = *NO_FUSE.get_or_init(|| std::env::var("CODA_NO_FUSED_ACC").is_ok());
+        self.has_threats && self.l1_size > 0 && !no_threats && !no_fuse
+    }
+
     fn validate_compat(&self) -> Result<(), String> {
         if !self.has_threats {
             return Ok(());
@@ -4919,6 +5286,22 @@ impl NNUENet {
         // gameplay flag — produces a degraded eval; for relative A/B probing only.
         static NO_THREAT_ACC: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         let no_threats = *NO_THREAT_ACC.get_or_init(|| std::env::var("CODA_NO_THREAT_ACC").is_ok());
+        if acc.threat_fused() {
+            // The accumulator already holds psq + threat (see
+            // `NNUEAccumulator::set_threat_fusion`): no combine needed.
+            // Fusion is only enabled for nets with hidden layers.
+            let bucket = self.output_bucket(piece_count);
+            let (stm_acc, ntm_acc) = if stm == WHITE {
+                (acc.white(), acc.black())
+            } else {
+                (acc.black(), acc.white())
+            };
+            debug_assert!(self.l1_size > 0);
+            if self.use_pairwise {
+                return self.forward_with_l1_pairwise(stm_acc, ntm_acc, bucket);
+            }
+            return self.forward_with_l1(stm_acc, ntm_acc, bucket);
+        }
         if threat_stack.active && self.has_threats && !no_threats {
             let bucket = self.output_bucket(piece_count);
             let h = self.hidden_size;
@@ -5428,6 +5811,11 @@ pub struct NNUEAccumulator {
     pub stats_rebuild_chain: u64,
     pub stats_incremental_updates: u64,
     pub stats_cached_skips: u64,
+    /// Threat fusion: when set, `psq` holds psq + threat per perspective (one
+    /// combined accumulator, updated in one pass by `acc_fused_threat_apply`)
+    /// and the eval reads it without a threat combine. See
+    /// `set_threat_fusion`.
+    threat_fused: bool,
 }
 
 impl NNUEAccumulator {
@@ -5466,8 +5854,28 @@ impl NNUEAccumulator {
             stats_rebuild_chain: 0,
             stats_incremental_updates: 0,
             stats_cached_skips: 0,
+            threat_fused: false,
         }
     }
+
+    /// Switch threat fusion on or off. Changing the mode invalidates the
+    /// whole stack and the Finny table, because a ply computed in one mode is
+    /// not a valid ancestor in the other (fused plies include the threat part,
+    /// plain ones do not).
+    ///
+    /// Fusion needs the threat replay to be available (a `ThreatStack` with
+    /// delta generation, i.e. not the per-search refresh mode) and a net with
+    /// hidden layers; callers decide that, see `NNUENet::threat_fusion_ok`.
+    pub fn set_threat_fusion(&mut self, on: bool) {
+        if self.threat_fused != on {
+            self.threat_fused = on;
+            self.reset();
+        }
+    }
+
+    /// Whether `psq` currently holds the combined psq + threat accumulator.
+    #[inline]
+    pub fn threat_fused(&self) -> bool { self.threat_fused }
 
     /// Reset eval-path counters. Call before a measurement window.
     pub fn reset_stats(&mut self) {
@@ -5585,6 +5993,10 @@ impl NNUEAccumulator {
                     }
                 }
             }
+        }
+        if self.threat_fused {
+            self.add_threat_part(net, board, WHITE);
+            self.add_threat_part(net, board, BLACK);
         }
         self.stack[self.top].psq_accurate = [true; 2];
     }
@@ -6006,7 +6418,245 @@ impl NNUEAccumulator {
     }
 
     /// Materialize: ensure current accumulator is computed.
+    ///
+    /// Under threat fusion this can only refresh (it has no threat deltas to
+    /// replay); search passes its `ThreatStack` through `materialize_with`.
+    /// The two give identical accumulators — this one is merely slower away
+    /// from the root.
+    #[inline]
     pub fn materialize(&mut self, net: &NNUENet, board: &Board) {
+        self.materialize_with(net, board, None);
+    }
+
+    /// Materialize, replaying threat deltas from `ts` when threat fusion is
+    /// on. `ts` must be the threat stack pushed in lockstep with this
+    /// accumulator; one at a different ply is ignored (refresh instead).
+    #[inline]
+    pub fn materialize_with(&mut self, net: &NNUENet, board: &Board,
+                            ts: Option<&mut crate::threat_accum::ThreatStack>) {
+        if self.threat_fused {
+            self.materialize_fused(net, board, ts);
+        } else {
+            self.materialize_psq(net, board);
+        }
+    }
+
+    /// Nearest ply this perspective can replay from under threat fusion: an
+    /// accurate ancestor with no PSQ refresh (king bucket / mirror change) and
+    /// no threat barrier (king d/e-file crossing, overflowed deltas) between
+    /// it and the top. Threat mirror changes are a subset of PSQ mirror
+    /// changes (both flip at the d/e file), so the threat check is a guard,
+    /// not a separate case.
+    fn fused_ancestor(&self, ts: &crate::threat_accum::ThreatStack, perspective: u8) -> Option<usize> {
+        let mut ply = self.top;
+        while ply > 0 {
+            if self.stack[ply].dirty.refreshes_perspective(perspective)
+                || ts.replay_blocked(ply, perspective)
+            {
+                return None;
+            }
+            ply -= 1;
+            if self.stack[ply].psq_accurate[perspective as usize] {
+                return Some(ply);
+            }
+        }
+        None
+    }
+
+    fn materialize_fused(&mut self, net: &NNUENet, board: &Board,
+                         ts: Option<&mut crate::threat_accum::ThreatStack>) {
+        let top = self.top;
+        let accurate = self.stack[top].psq_accurate;
+        if accurate[0] && accurate[1] {
+            self.stats_cached_skips += 1;
+            return;
+        }
+        let mut ts = ts.filter(|t| t.index() == top);
+
+        // Common case: both perspectives replay from the same ancestor (the
+        // parent, nearly always) — one shared walk over the threat deltas.
+        if !accurate[0] && !accurate[1] {
+            if let Some(t) = ts.as_deref_mut() {
+                if let (Some(w), Some(b)) = (self.fused_ancestor(t, WHITE), self.fused_ancestor(t, BLACK)) {
+                    // On overflow fall through: the offending ply is now marked
+                    // valid-and-overflowed, so `fused_ancestor` refuses it below.
+                    if w == b && t.prepare_replay(board, w + 1) {
+                        for ply in (w + 1)..=top {
+                            self.apply_fused_both_from_parent(net, board, t, ply);
+                        }
+                        self.stats_incremental_updates += 1;
+                        return;
+                    }
+                }
+            }
+        }
+
+        let mut refreshed = false;
+        let mut incremented = false;
+        for perspective in [WHITE, BLACK] {
+            if self.stack[top].psq_accurate[perspective as usize] {
+                continue;
+            }
+            if let Some(t) = ts.as_deref_mut() {
+                if let Some(a) = self.fused_ancestor(t, perspective) {
+                    if t.prepare_replay(board, a + 1) {
+                        for ply in (a + 1)..=top {
+                            self.apply_fused_perspective_from_parent(net, board, t, ply, perspective);
+                        }
+                        incremented = true;
+                        continue;
+                    }
+                }
+            }
+            self.refresh_fused(net, board, perspective);
+            refreshed = true;
+        }
+
+        if refreshed {
+            self.stats_full_rebuilds += 1;
+            if top == 0 {
+                self.stats_rebuild_root += 1;
+            } else if self.stack[top].dirty.refreshes_any() {
+                self.stats_rebuild_kind0 += 1;
+            } else {
+                self.stats_rebuild_chain += 1;
+            }
+        } else if incremented {
+            self.stats_incremental_updates += 1;
+        }
+        debug_assert!(self.stack[top].psq_accurate[0] && self.stack[top].psq_accurate[1]);
+    }
+
+    /// Fused refresh of one perspective: the PSQ part from the Finny table
+    /// (exactly as the unfused refresh), then the threat part rebuilt from
+    /// the board. Threats are not king-bucketed, so nothing of them can be
+    /// cached per bucket; and with a single combined accumulator the parent's
+    /// threat part is not separable from its PSQ part. A threat refresh is
+    /// cheap — it enumerates the board and adds about as many rows as one
+    /// incremental replay (see `threat_accum::refresh_always`) — and it runs
+    /// only on king-bucket/mirror changes and chain breaks, so carrying a
+    /// second threat-only accumulator through every incremental update to
+    /// avoid it would cost far more memory traffic than it saves.
+    fn refresh_fused(&mut self, net: &NNUENet, board: &Board, perspective: u8) {
+        self.refresh_accumulator(net, board, perspective);
+        self.add_threat_part(net, board, perspective);
+    }
+
+    /// Add the full threat (+ pawn-pair) contribution of `board` for one
+    /// perspective onto the current ply's `psq` slot.
+    fn add_threat_part(&mut self, net: &NNUENet, board: &Board, perspective: u8) {
+        let h = self.hidden_size;
+        let mut storage = std::mem::MaybeUninit::<
+            [usize; crate::threat_accum::MAX_ACTIVE_THREAT_FEATURES]>::uninit();
+        let ptr = scratch_ptr!(storage, usize);
+        let (n, _overflowed) = unsafe {
+            crate::threat_accum::collect_refresh_rows(
+                board, net.num_threat_features, net.num_pawn_pair_features, perspective, ptr)
+        };
+        let indices = scratch_slice!(ptr, n);
+        let dst = self.psq.view_mut(self.top, perspective as usize);
+        crate::threats::add_weight_rows(dst, &net.threat_weights, h, indices);
+    }
+
+    /// PSQ add/sub rows of the move that produced a ply, for one perspective,
+    /// in fixed 8-slot arrays (a move changes at most 5 features).
+    #[inline(always)]
+    #[allow(clippy::type_complexity)]
+    fn psq_rows<'a>(net: &'a NNUENet, dirty: &DirtyPiece, perspective: u8, king_sq: u8)
+        -> ([&'a [i16]; 8], usize, [&'a [i16]; 8], usize)
+    {
+        let mut adds: [&[i16]; 8] = [&[]; 8];
+        let mut subs: [&[i16]; 8] = [&[]; 8];
+        let (mut na, mut ns) = (0usize, 0usize);
+        for i in 0..dirty.n_changes as usize {
+            let (add, color, pt, sq) = dirty.changes[i];
+            let row = net.input_weight_row(net.halfka_index(perspective, king_sq, color, pt, sq));
+            if add { adds[na] = row; na += 1; } else { subs[ns] = row; ns += 1; }
+        }
+        (adds, na, subs, ns)
+    }
+
+    /// Fused incremental update of both perspectives of `ply` from `ply - 1`.
+    /// King squares and mirroring come from the live board, which is valid
+    /// for every ply of a replay chain: `fused_ancestor` stops at any ply that
+    /// changes either.
+    fn apply_fused_both_from_parent(&mut self, net: &NNUENet, board: &Board,
+                                    ts: &crate::threat_accum::ThreatStack, ply: usize) {
+        use crate::threats::MAX_THREAT_DELTAS;
+        use crate::pawn_pair::MAX_PAWN_PAIR_DELTAS;
+        debug_assert!(ply > 0);
+        let h = self.hidden_size;
+        let dirty = self.stack[ply].dirty;
+        let w_king = board.king_sq(WHITE);
+        let b_king = board.king_sq(BLACK);
+        let (wa, nwa, ws, nws) = Self::psq_rows(net, &dirty, WHITE, w_king);
+        let (ba, nba, bs, nbs) = Self::psq_rows(net, &dirty, BLACK, b_king);
+
+        let (deltas, pp) = ts.ply_deltas(ply);
+        let mut s0 = std::mem::MaybeUninit::<[usize; MAX_THREAT_DELTAS + MAX_PAWN_PAIR_DELTAS]>::uninit();
+        let mut s1 = std::mem::MaybeUninit::<[usize; MAX_THREAT_DELTAS + MAX_PAWN_PAIR_DELTAS]>::uninit();
+        let mut s2 = std::mem::MaybeUninit::<[usize; MAX_THREAT_DELTAS + MAX_PAWN_PAIR_DELTAS]>::uninit();
+        let mut s3 = std::mem::MaybeUninit::<[usize; MAX_THREAT_DELTAS + MAX_PAWN_PAIR_DELTAS]>::uninit();
+        let out = [scratch_ptr!(s0, usize), scratch_ptr!(s1, usize),
+                   scratch_ptr!(s2, usize), scratch_ptr!(s3, usize)];
+        let [n0, n1, n2, n3] = unsafe {
+            crate::threats::collect_threat_rows_dual(
+                deltas, &net.threat_weights, h, net.num_threat_features,
+                w_king % 8 >= 4, b_king % 8 >= 4,
+                pp, net.num_threat_features, out)
+        };
+        let (taw, tsw) = (scratch_slice!(out[0], n0), scratch_slice!(out[1], n1));
+        let (tab, tsb) = (scratch_slice!(out[2], n2), scratch_slice!(out[3], n3));
+        #[cfg(feature = "profile-threats")]
+        {
+            crate::threats::apply_stats::record(deltas.len());
+            crate::threats::apply_stats::record(deltas.len());
+            crate::threats::apply_stats::record_cancel(taw, tsw);
+            crate::threats::apply_stats::record_cancel(tab, tsb);
+        }
+
+        let (parent, current) = self.psq.parent_and_current(ply - 1, ply, WHITE as usize);
+        acc_fused_threat_apply(net, current, parent, &wa[..nwa], &ws[..nws], taw, tsw, h);
+        let (parent, current) = self.psq.parent_and_current(ply - 1, ply, BLACK as usize);
+        acc_fused_threat_apply(net, current, parent, &ba[..nba], &bs[..nbs], tab, tsb, h);
+        self.stack[ply].psq_accurate = [true; 2];
+    }
+
+    /// Single-perspective twin of `apply_fused_both_from_parent`.
+    fn apply_fused_perspective_from_parent(&mut self, net: &NNUENet, board: &Board,
+                                           ts: &crate::threat_accum::ThreatStack,
+                                           ply: usize, perspective: u8) {
+        use crate::threats::MAX_THREAT_DELTAS;
+        use crate::pawn_pair::MAX_PAWN_PAIR_DELTAS;
+        debug_assert!(ply > 0);
+        let h = self.hidden_size;
+        let dirty = self.stack[ply].dirty;
+        let king = board.king_sq(perspective);
+        let (pa, npa, ps, nps) = Self::psq_rows(net, &dirty, perspective, king);
+
+        let (deltas, pp) = ts.ply_deltas(ply);
+        let mut s0 = std::mem::MaybeUninit::<[usize; MAX_THREAT_DELTAS + MAX_PAWN_PAIR_DELTAS]>::uninit();
+        let mut s1 = std::mem::MaybeUninit::<[usize; MAX_THREAT_DELTAS + MAX_PAWN_PAIR_DELTAS]>::uninit();
+        let (a_ptr, s_ptr) = (scratch_ptr!(s0, usize), scratch_ptr!(s1, usize));
+        let (na, ns) = unsafe {
+            crate::threats::collect_threat_rows(
+                deltas, &net.threat_weights, h, net.num_threat_features,
+                perspective, king % 8 >= 4, pp, net.num_threat_features, a_ptr, s_ptr)
+        };
+        let (ta, tsub) = (scratch_slice!(a_ptr, na), scratch_slice!(s_ptr, ns));
+        #[cfg(feature = "profile-threats")]
+        {
+            crate::threats::apply_stats::record(deltas.len());
+            crate::threats::apply_stats::record_cancel(ta, tsub);
+        }
+
+        let (parent, current) = self.psq.parent_and_current(ply - 1, ply, perspective as usize);
+        acc_fused_threat_apply(net, current, parent, &pa[..npa], &ps[..nps], ta, tsub, h);
+        self.stack[ply].psq_accurate[perspective as usize] = true;
+    }
+
+    /// Unfused (PSQ-only) materialization.
+    fn materialize_psq(&mut self, net: &NNUENet, board: &Board) {
         #[cfg(feature = "profile-materialize")]
         crate::nnue::mat_stats::record_entry(self.stack[self.top].psq_accurate[0] && self.stack[self.top].psq_accurate[1]);
         if self.stack[self.top].psq_accurate[0] && self.stack[self.top].psq_accurate[1] {
@@ -8886,6 +9536,222 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Every fused PSQ+threat kernel the host can run matches the scalar
+    /// oracle, across tile-exact and tail-producing widths and every mix of
+    /// empty / non-empty PSQ and threat row lists.
+    #[test]
+    fn test_acc_fused_threat_kernels_match_scalar() {
+        type Kernel = unsafe fn(&mut [i16], &[i16], &[&[i16]], &[&[i16]], &[i8], &[usize], &[usize], usize);
+        let mut kernels: Vec<(&str, Kernel, usize)> = Vec::new();
+        #[cfg(target_arch = "x86_64")]
+        {
+            if is_x86_feature_detected!("avx512f") && is_x86_feature_detected!("avx512bw") {
+                kernels.push(("avx512", simd_acc_fused_threat_avx512, 32));
+            }
+            if is_x86_feature_detected!("avx2") {
+                kernels.push(("avx2", simd_acc_fused_threat_avx2, 16));
+            }
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            kernels.push(("neon", simd_acc_fused_threat_neon, 8));
+        }
+        if kernels.is_empty() {
+            eprintln!("no SIMD fused kernel on this host; scalar only");
+        }
+
+        for &h in &[32usize, 64, 96, 128, 160, 256, 512, 768, 800, 1024, 1056] {
+            let mut r = rng(0xf05e_d7a7_0000_0001 ^ h as u64);
+            let psq_bufs: Vec<Vec<i16>> = (0..8).map(|_| {
+                (0..h).map(|_| ((r() % 1024) as i16) - 512).collect()
+            }).collect();
+            let psq: Vec<&[i16]> = psq_bufs.iter().map(|v| v.as_slice()).collect();
+            let n_threat_rows = 24usize;
+            let tw: Vec<i8> = (0..n_threat_rows * h).map(|_| r() as u8 as i8).collect();
+            let src: Vec<i16> = (0..h).map(|_| ((r() % 4000) as i16) - 2000).collect();
+
+            let cases: [(&[&[i16]], &[&[i16]], &[usize], &[usize]); 6] = [
+                (&psq[..2], &psq[2..3], &[3, 7, 11], &[5, 19, 23, 0]),
+                (&psq[..3], &psq[3..5], &[], &[]),
+                (&[], &[], &[1, 2], &[4]),
+                (&[], &[], &[], &[]),
+                (&psq[..1], &[], &[9, 9, 10], &[]),
+                (&[], &psq[..4], &[], &[22, 6, 17, 8, 13]),
+            ];
+            for (ci, (pa, ps, ta, ts)) in cases.iter().enumerate() {
+                let mut want = vec![0i16; h];
+                acc_fused_threat_scalar(&mut want, &src, pa, ps, &tw, ta, ts, h);
+                // Oracle sanity: equals applying the two halves separately.
+                let mut two_pass = src.clone();
+                for row in pa.iter() { for j in 0..h { two_pass[j] = two_pass[j].wrapping_add(row[j]); } }
+                for row in ps.iter() { for j in 0..h { two_pass[j] = two_pass[j].wrapping_sub(row[j]); } }
+                for &i in ta.iter() { for j in 0..h { two_pass[j] = two_pass[j].wrapping_add(tw[i * h + j] as i16); } }
+                for &i in ts.iter() { for j in 0..h { two_pass[j] = two_pass[j].wrapping_sub(tw[i * h + j] as i16); } }
+                assert_eq!(want, two_pass, "scalar oracle wrong h={} case={}", h, ci);
+
+                for &(name, k, lane) in &kernels {
+                    if h % lane != 0 { continue; }
+                    let mut got = vec![0i16; h];
+                    unsafe { k(&mut got, &src, pa, ps, &tw, ta, ts, h); }
+                    assert_eq!(want, got, "{} fused kernel diverged h={} case={}", name, h, ci);
+                }
+            }
+        }
+    }
+
+    /// Fused PSQ+threat accumulator vs from-scratch rebuild over random walks
+    /// with pops, null moves and lazy gaps (materialised on ~1/3 of steps, so
+    /// multi-ply replays, king-bucket refreshes with the threat part rebuilt,
+    /// mirror crossings and mixed refresh/replay perspectives all occur).
+    /// Runs under both lazy and eager threat-delta generation. The reference
+    /// is the unfused pipeline: PSQ force_recompute + ThreatStack refresh,
+    /// summed — i.e. exactly what the eval combined before fusion.
+    #[test]
+    fn fuzz_fused_threat_accumulator() {
+        let _space = crate::threats::FEATURE_SPACE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        use crate::board::Board;
+        use crate::movegen::generate_legal_moves;
+        use crate::search::build_dirty_piece;
+        use crate::threat_accum::ThreatStack;
+        use crate::types::{flip_color, move_from};
+
+        crate::init();
+        let net = match try_load_v9_net() {
+            Some(n) if n.has_threats && n.l1_size > 0 => n,
+            _ => { eprintln!("Skipping fused fuzzer: no threat net available"); return; }
+        };
+        let h = net.hidden_size;
+        let nf = net.num_threat_features;
+
+        const START_FENS: &[&str] = &[
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+            "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+            "r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 w - - 0 10",
+            "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",
+            "4k3/P6P/8/8/8/8/p6p/4K3 w - - 0 1",
+            "r3k2r/pppq1ppp/2n1pn2/3p4/3P4/2N1PN2/PPPQ1PPP/R3K2R w KQkq - 0 1",
+            "2rk3r/pppppppp/8/8/8/8/PPPPPPPP/2RK3R w HChc - 0 1",
+        ];
+        fn next_u32(state: &mut u32) -> u32 {
+            let mut x = *state;
+            x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+            *state = x; x
+        }
+
+        let mut checks = 0u64;
+        let mut stats = [0u64; 3]; // incremental, refresh, cached
+        for eager in [false, true] {
+            for (fen_idx, fen) in START_FENS.iter().enumerate() {
+                for walk in 0..4usize {
+                    let seed: u32 = 0xF05E_0001u32
+                        .wrapping_add((fen_idx as u32).wrapping_mul(1_000_003))
+                        .wrapping_add((walk as u32).wrapping_mul(7919))
+                        .wrapping_add(eager as u32);
+                    let mut rng = seed;
+                    let mut board = Board::from_fen(fen);
+                    board.generate_threat_deltas = eager;
+                    board.generate_pawn_pair_deltas = eager && net.num_pawn_pair_features > 0;
+
+                    let mut ts = ThreatStack::new(h);
+                    ts.active = true;
+                    ts.pp_features = net.num_pawn_pair_features;
+                    let mut acc = NNUEAccumulator::new(h);
+                    acc.set_threat_fusion(true);
+                    acc.materialize_with(&net, &board, Some(&mut ts));
+
+                    let mut null_stack: Vec<bool> = Vec::new();
+                    for step in 0..300usize {
+                        let action = next_u32(&mut rng) % 100;
+                        let depth = null_stack.len();
+                        let pop = |board: &mut Board, acc: &mut NNUEAccumulator, ts: &mut ThreatStack,
+                                   null_stack: &mut Vec<bool>| {
+                            acc.pop();
+                            ts.pop();
+                            if null_stack.pop().unwrap() { board.unmake_null_move(); } else { board.unmake_move(); }
+                        };
+                        if action < 35 && depth > 0 {
+                            pop(&mut board, &mut acc, &mut ts, &mut null_stack);
+                        } else if action >= 92 && depth < 24 && !board.in_check()
+                            && !null_stack.last().copied().unwrap_or(false)
+                        {
+                            acc.push(DirtyPiece::incremental(&[]));
+                            ts.push(NO_MOVE, NO_PIECE_TYPE);
+                            board.make_null_move();
+                            null_stack.push(true);
+                        } else if depth < 24 {
+                            let legal = generate_legal_moves(&board);
+                            if legal.len == 0 {
+                                if depth == 0 { break; }
+                                pop(&mut board, &mut acc, &mut ts, &mut null_stack);
+                                continue;
+                            }
+                            let mut mv = legal.get((next_u32(&mut rng) as usize) % legal.len);
+                            // Favour king moves: they drive bucket / mirror refreshes.
+                            if next_u32(&mut rng) % 3 == 0 {
+                                for i in 0..legal.len {
+                                    let m = legal.get(i);
+                                    if board.piece_type_at(move_from(m)) == KING && next_u32(&mut rng) % 2 == 0 {
+                                        mv = m;
+                                    }
+                                }
+                            }
+                            let us = board.side_to_move;
+                            let moved_pt = board.piece_type_at(move_from(mv));
+                            let captured_pt = board.captured_piece_type(mv);
+                            let dirty = build_dirty_piece(mv, us, flip_color(us), moved_pt, captured_pt,
+                                                          &board.castle_rooks, &net);
+                            acc.push(dirty);
+                            ts.push(NO_MOVE, NO_PIECE_TYPE);
+                            assert!(board.make_move(mv));
+                            ts.absorb_deltas(&board);
+                            null_stack.push(false);
+                        } else {
+                            pop(&mut board, &mut acc, &mut ts, &mut null_stack);
+                        }
+                        if next_u32(&mut rng) % 3 != 0 { continue; }
+
+                        let before = (acc.stats_incremental_updates, acc.stats_full_rebuilds, acc.stats_cached_skips);
+                        acc.materialize_with(&net, &board, Some(&mut ts));
+                        stats[0] += acc.stats_incremental_updates - before.0;
+                        stats[1] += acc.stats_full_rebuilds - before.1;
+                        stats[2] += acc.stats_cached_skips - before.2;
+
+                        let mut psq_ref = NNUEAccumulator::new(h);
+                        psq_ref.force_recompute(&net, &board);
+                        let mut t_ref = ThreatStack::new(h);
+                        t_ref.active = true;
+                        t_ref.pp_features = net.num_pawn_pair_features;
+                        for pov in [WHITE, BLACK] {
+                            t_ref.refresh(&net.threat_weights, nf, &board, pov);
+                            let p = psq_ref.psq.view(psq_ref.top, pov as usize);
+                            let t = t_ref.values(pov);
+                            let want: Vec<i16> = (0..h).map(|j| p[j].wrapping_add(t[j])).collect();
+                            let got = acc.psq.view(acc.top, pov as usize);
+                            if got != &want[..] {
+                                let j = (0..h).find(|&j| got[j] != want[j]).unwrap();
+                                panic!("fused fuzz divergence: eager={} fen_idx={} walk={} step={} pov={} \
+                                        fen=\"{}\" ch{} fused={} reference={}",
+                                       eager, fen_idx, walk, step, pov, board.to_fen(), j, got[j], want[j]);
+                            }
+                        }
+                        // Same answer through a fused force_recompute.
+                        let mut fused_ref = NNUEAccumulator::new(h);
+                        fused_ref.set_threat_fusion(true);
+                        fused_ref.force_recompute(&net, &board);
+                        for pov in [WHITE as usize, BLACK as usize] {
+                            assert_eq!(fused_ref.psq.view(fused_ref.top, pov), acc.psq.view(acc.top, pov));
+                        }
+                        checks += 1;
+                    }
+                }
+            }
+        }
+        eprintln!("fused fuzz: {} checks, materialize incremental={} refresh={} cached={}",
+                  checks, stats[0], stats[1], stats[2]);
+        assert!(checks > 1000 && stats[0] > 500 && stats[1] > 20,
+                "fused fuzz coverage too thin: checks={} stats={:?}", checks, stats);
     }
 
     /// Test Finny table consistency: incremental update vs full recompute.
