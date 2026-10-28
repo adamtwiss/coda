@@ -942,6 +942,20 @@ pub static FEAT_TT_STORE: AtomicBool = AtomicBool::new(true);
 // Static-eval cache: reuse TT-stored static_eval instead of calling NNUE.
 // Ablate (NO_TT_STATIC_EVAL=1) to test whether skipping evals hurts more
 // than it helps via deeper lazy-replay gaps (fatter threat/finny applies).
+/// log2 of the per-thread eval cache's entry count (8-byte entries).
+///
+/// Sized from per-core L2, the level this table has to live in to beat a
+/// recomputation. The smallest per-core L2 on the OB fleet is 512 KB (Zen 1
+/// and Zen 3 EPYC workers; Zen 4/5 hosts, Zeus included, have 1 MB). Workers
+/// run one game per hardware thread, so with SMT two searches share a core's
+/// L2: 256 KB each. The cache must leave most of that to what already lives
+/// there (accumulator stack, hot FT/threat weight rows, history tables), so
+/// it takes half of the per-thread share: 128 KB = 2^14 entries.
+/// Bench-measured hit rate is shallow in size (2^13: 19%, 2^14: 21%,
+/// 2^15: 22% of NNUE evals), so a halving costs little coverage.
+pub const EVAL_CACHE_LOG2: u32 = 14;
+pub const EVAL_CACHE_ENTRIES: usize = 1 << EVAL_CACHE_LOG2;
+
 pub static FEAT_TT_STATIC_EVAL: AtomicBool = AtomicBool::new(true);
 /// Saturation material tiebreak (issue #18). Deliberately NOT cleared by
 /// `disable_all_features()`: it is an eval-correctness term, not a search
@@ -1353,6 +1367,10 @@ pub struct SearchInfo {
     // cached static_eval and did NOT call NNUE. The NNUE counters live on
     // `nnue_acc` (full rebuilds vs incremental updates vs computed skips).
     pub stats_tt_static_eval_hits: u64,
+    /// Nodes whose static eval came from `eval_cache` (no NNUE call).
+    pub stats_eval_cache_hits: u64,
+    /// Per-thread direct-mapped cache of `eval()` results; see `EVAL_CACHE_LOG2`.
+    eval_cache: Box<[u64]>,
     /// True while inside an RFP_AUDIT verification subtree — suppresses
     /// nested audits (each audited cutoff would otherwise spawn audits at
     /// every RFP cutoff inside its own verification, compounding cost).
@@ -1682,6 +1700,8 @@ impl SearchInfo {
             defer_final_info: false,
             stats: PruneStats::default(),
             stats_tt_static_eval_hits: 0,
+            stats_eval_cache_hits: 0,
+            eval_cache: vec![0u64; EVAL_CACHE_ENTRIES].into_boxed_slice(),
             tt,
             history: alloc_zeroed_box(),
             cont: crate::movepicker::ContHist::shared_zeroed(),
@@ -2378,6 +2398,43 @@ impl SearchInfo {
         final_score
     }
 
+    /// `eval()` served through the per-thread eval cache. Returns the same
+    /// value `eval()` would (the halfmove-independent raw eval, i.e. what the
+    /// TT stores as static eval) and whether it was a cache hit. A hit skips
+    /// the NNUE call entirely, including accumulator materialisation: the
+    /// lazy accumulator then replays from the nearest accurate ancestor if a
+    /// descendant needs an eval, exactly as after a TT static-eval hit.
+    ///
+    /// Entry layout: the high 48 bits of the Zobrist key as the tag, the eval
+    /// as an i16 in the low 16 bits. The index uses the low bits of the key,
+    /// so the tag and the index are disjoint key bits and a false hit needs a
+    /// 48-bit collision. An eval outside i16 is never stored (always a miss).
+    #[inline]
+    pub(crate) fn eval_cached(&mut self, board: &Board) -> (i32, bool) {
+        let idx = (board.hash as usize) & (EVAL_CACHE_ENTRIES - 1);
+        let e = unsafe { *self.eval_cache.get_unchecked(idx) };
+        if (e ^ board.hash) & !0xFFFF == 0 {
+            self.stats_eval_cache_hits += 1;
+            return (e as u16 as i16 as i32, true);
+        }
+        let v = self.eval(board);
+        if let Ok(v16) = i16::try_from(v) {
+            unsafe {
+                *self.eval_cache.get_unchecked_mut(idx) = (board.hash & !0xFFFF) | (v16 as u16 as u64);
+            }
+        }
+        (v, false)
+    }
+
+    /// Empty the eval cache. Called at the start of every search on every
+    /// thread, so a `setoption` that changes the eval (net, EVAL_SCALE_PCT,
+    /// material-scaling tunables) can never be served a stale value. At this
+    /// size the cache only retains the current search's most recent evals
+    /// anyway, so clearing it costs no reuse that it could have kept.
+    pub(crate) fn clear_eval_cache(&mut self) {
+        self.eval_cache.fill(0);
+    }
+
     #[inline]
     fn materialize_tt_barrier(&mut self, board: &Board) {
         if let (Some(net), Some(acc)) = (&self.nnue_net, &mut self.nnue_acc) {
@@ -3003,6 +3060,7 @@ pub(crate) fn refresh_helper_per_go(helper: &mut SearchInfo, main: &SearchInfo) 
 /// caller sets that from main's depth. Threat-stack + the bulk of scratch state
 /// are reset inside `search_helper`.
 pub(crate) fn prepare_helper_for_search(info: &mut SearchInfo, board: &Board) {
+    info.clear_eval_cache();
     info.start_time = Instant::now();
     info.time_limit = 0;
     info.soft_limit = 0;
@@ -3851,6 +3909,7 @@ fn emit_final_info(info: &SearchInfo, board: &Board, nodes: u64) {
 /// Run iterative deepening search.
 pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -> Move {
     init_feature_flags();
+    info.clear_eval_cache();
 
     // Enable threat delta generation if we have a threat net
     // Decide threat REFRESH mode once per search, from the root piece count.
@@ -5808,30 +5867,13 @@ fn negamax(
             info.stats_tt_static_eval_hits += 1;
             tt_static_eval_hit = true;
         } else {
-            raw_eval = info.eval(board);
-            // Eval-only TT writeback: when we paid for an NNUE eval AND
-            // there's no existing TT entry, seed the TT with static_eval
-            // so later visits of this position (from different move
-            // orders or ID re-searches) skip the NNUE call.
-            //
-            // Phase-2 NPS lever: reduces
-            // evals/node (Coda 0.677).
-            //
-            // Safety:
-            //   - Gated on `!tt_hit` so we never overwrite a real entry
-            //     with a shallow stub.
-            //   - depth=-2 means `tt_depth >= depth` is false for any
-            //     real search depth, so this entry never triggers TT
-            //     cutoffs or alpha/beta window narrowing.
-            //   - flag=TT_FLAG_UPPER + score=-INFINITY makes any
-            //     score read trivially rejected.
-            //   - tt_move=NO_MOVE preserves IIR behaviour at this
-            //     position on later visits.
-            //   - tt_pv carries current node's is_pv context so PV
-            //     propagation is correct on re-visit.
-            if !tt_hit && FEAT_TT_STORE.load(Ordering::Relaxed) {
-                info.tt.store(board.hash, -2, -INFINITY, TT_FLAG_UPPER, NO_MOVE, raw_eval, is_pv);
-            }
+            // No eval-only TT entry is written here: a fresh eval goes to the
+            // per-thread eval cache instead, so TT slots hold search bounds
+            // only. A cache hit leaves the accumulator unmaterialised, like
+            // a TT static-eval hit, hence the shared barrier flag.
+            let (v, hit) = info.eval_cached(board);
+            raw_eval = v;
+            tt_static_eval_hit = hit;
         }
         scaled_eval = apply_halfmove_scale(raw_eval, board.halfmove);
         // Apply correction history to the halfmove-scaled value
@@ -8022,7 +8064,7 @@ fn quiescence_with_depth(
         info.stats_tt_static_eval_hits += 1;
         tt_entry.static_eval
     } else {
-        info.eval(board)
+        info.eval_cached(board).0
     };
     // Apply correction history to the QS stand-pat, mirroring negamax's
     // static-eval path (halfmove-scale THEN corrected_eval).
@@ -8612,7 +8654,7 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
         let skip = acc.stats_cached_skips;
         let tt   = info.stats_tt_static_eval_hits;
         let total_evals = full + incr;
-        let eval_call_attempts = total_evals + skip + tt;
+        let eval_call_attempts = total_evals + skip + tt + info.stats_eval_cache_hits;
         eprintln!("--- NNUE Eval Decomposition ---");
         eprintln!("NNUE full rebuilds: {:>10} ({:>5.2}% of evals)", full,
                   if total_evals > 0 { full as f64 * 100.0 / total_evals as f64 } else { 0.0 });
@@ -8627,6 +8669,8 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
                   if total_evals > 0 { incr as f64 * 100.0 / total_evals as f64 } else { 0.0 });
         eprintln!("TT static-eval hit: {:>10} ({:>5.2}% of call sites)", tt,
                   if eval_call_attempts > 0 { tt as f64 * 100.0 / eval_call_attempts as f64 } else { 0.0 });
+        eprintln!("Eval-cache hit:     {:>10} ({:>5.2}% of call sites)", info.stats_eval_cache_hits,
+                  if eval_call_attempts > 0 { info.stats_eval_cache_hits as f64 * 100.0 / eval_call_attempts as f64 } else { 0.0 });
         eprintln!("Already-computed:   {:>10}", skip);
         eprintln!("Evals / node:       {:>10.3}", total_evals as f64 / total_nodes as f64);
         eprintln!("Call-sites / node:  {:>10.3}", eval_call_attempts as f64 / total_nodes as f64);
