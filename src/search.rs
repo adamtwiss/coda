@@ -7192,13 +7192,13 @@ let singular_beta = tt_score_local - depth;
                         let gp_mv = go_piece(moved_piece);
                         // base = current cont_hist + main_hist / 2 (concept from Stormphrax).
                         let main_score_v = info.history.main_score(from, to, enemy_attacks);
-                        let ch_offsets = [1usize, 2, 4, 6];
+                        let ch_offsets = crate::movepicker::CONT_OFFSETS;
                         for &off in &ch_offsets {
                             if ply_u >= off {
                                 let prior_piece = info.moved_piece_stack[ply_u - off] as usize;
                                 let prior_to = info.moved_to_stack[ply_u - off] as usize;
                                 if prior_piece > 0 && prior_piece < crate::movepicker::CONT_PLANES && prior_to < 64 {
-                                    // Uniform bonus across offsets {1,2,4,6},
+                                    // Uniform bonus across all CONT_OFFSETS,
                                     // as Berserk/Alexandria/Stormphrax do —
                                     // NOT a [bonus, b/2, b/2, b/2] taper.
                                     let ch_b = nudge_bonus;
@@ -7354,13 +7354,13 @@ let singular_beta = tt_score_local - depth;
                             bonus,
                         );
 
-                        // Update continuation history at plies 1, 2, 4, 6
-                        // Ply-1 at full bonus, plies 2/4/6 at half bonus (Obsidian pattern)
+                        // Update continuation history at the CONT_OFFSETS plies
+                        // (uniform bonus; see the LMR nudge site above).
                         if moved_piece != NO_PIECE {
                             let gp_mv = go_piece(moved_piece);
                             // base = current cont_hist + main_hist / 2 (concept from Stormphrax).
                             let main_score_v = info.history.main_score(from, to, enemy_attacks);
-                            let ch_offsets = [1usize, 2, 4, 6];
+                            let ch_offsets = crate::movepicker::CONT_OFFSETS;
                             for &off in ch_offsets.iter() {
                                 if ply_u >= off {
                                     let prior_piece = info.moved_piece_stack[ply_u - off] as usize;
@@ -7400,14 +7400,14 @@ let singular_beta = tt_score_local - depth;
                                 -malus,
                             );
 
-                            // Penalize continuation history at plies 1, 2, 4, 6.
+                            // Penalize continuation history at the CONT_OFFSETS plies.
                             // T6: base uses qf,qt move's main_score (the move being malused).
                             {
                                 let q_piece = board.piece_at(qf);
                                 if q_piece != NO_PIECE {
                                     let gp_q = go_piece(q_piece);
                                     let q_main_score = info.history.main_score(qf, qt, enemy_attacks);
-                                    let ch_offsets = [1usize, 2, 4, 6];
+                                    let ch_offsets = crate::movepicker::CONT_OFFSETS;
                                     for &off in ch_offsets.iter() {
                                         if ply_u >= off {
                                             let prior_piece = info.moved_piece_stack[ply_u - off] as usize;

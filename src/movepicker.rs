@@ -254,14 +254,23 @@ enum Stage {
 
 const PICK_BASE: u8 = Stage::GoodCaptures as u8;
 
+/// Ply offsets of the continuation-history contexts read by quiet/evasion
+/// scoring and written by the search's cont-hist update sites (which import
+/// this list, so reads and writes cannot drift apart). Ply 3 is the
+/// opponent's move before last: the same side as the ply-1 context, one
+/// exchange earlier, and the context the 1/2/4/6 set skipped. Ply 5 stays
+/// out, as it always has.
+pub const CONT_OFFSETS: [usize; 5] = [1, 2, 3, 4, 6];
+
 pub struct MovePicker {
     stage: Stage,
     tt_move: Move,
     // Pointer to the History struct (lives for the duration of search)
     history: *const History,
-    // Continuation history sub-table pointers at plies 1, 2, 4, 6 back.
-    // cont_hist_subs[0] = ply-1 (3x weight), [1] = ply-2 (3x), [2] = ply-4 (1x), [3] = ply-6 (1x)
-    cont_hist_subs: [Option<*const [[std::sync::atomic::AtomicI16; 64]; 13]>; 4],
+    // Continuation history sub-table pointers at plies 1, 2, 3, 4, 6 back
+    // (indexed as CONT_OFFSETS). [0] = ply-1 and [1] = ply-2 at
+    // CONT_HIST_MULT weight; [2] = ply-3, [3] = ply-4, [4] = ply-6 at 1x.
+    cont_hist_subs: [Option<*const [[std::sync::atomic::AtomicI16; 64]; 13]>; CONT_OFFSETS.len()],
     pawn_hist_ptr: Option<*const [[i16; 64]; 13]>,
     // Main moves list and scores.
     moves: MoveList,
@@ -322,13 +331,12 @@ impl MovePicker {
         moved_piece_stack: &[u8],
         moved_to_stack: &[u8],
     ) -> Self {
-        // Get continuation history sub-table pointers at plies 1, 2, 4, 6 back.
+        // Get continuation history sub-table pointers at the CONT_OFFSETS plies back.
         // Uses moved_piece_stack for correct piece lookup (avoids stale board.piece_at).
         // Upper-bound guard: callers (search + qsearch) should clamp ply but
         // we defend here too — indexing out of range panics the search thread.
-        let mut cont_hist_subs: [Option<*const [[std::sync::atomic::AtomicI16; 64]; 13]>; 4] = [None; 4];
-        let offsets = [1usize, 2, 4, 6];
-        for (i, &off) in offsets.iter().enumerate() {
+        let mut cont_hist_subs: [Option<*const [[std::sync::atomic::AtomicI16; 64]; 13]>; CONT_OFFSETS.len()] = [None; CONT_OFFSETS.len()];
+        for (i, &off) in CONT_OFFSETS.iter().enumerate() {
             if ply >= off && ply - off < moved_piece_stack.len() && ply - off < moved_to_stack.len() {
                 let prior_piece = moved_piece_stack[ply - off] as usize;
                 let prior_to = moved_to_stack[ply - off] as usize;
@@ -384,7 +392,7 @@ impl MovePicker {
             stage: Stage::TTMove,
             tt_move,
             history: history as *const History,
-            cont_hist_subs: [None; 4],
+            cont_hist_subs: [None; CONT_OFFSETS.len()],
             pawn_hist_ptr: None,
             moves: MoveList::new(),
             // SAFETY: see MovePicker::new — uninit MaybeUninit arrays are
@@ -427,9 +435,8 @@ impl MovePicker {
         // Also guard the upper bound: qsearch can deepen past MAX_PLY via
         // evasion chains, and the caller's clamp might be missed — indexing
         // moved_piece_stack with ply >= len panics the search thread.
-        let mut cont_hist_subs: [Option<*const [[std::sync::atomic::AtomicI16; 64]; 13]>; 4] = [None; 4];
-        let offsets = [1usize, 2, 4, 6];
-        for (i, &off) in offsets.iter().enumerate() {
+        let mut cont_hist_subs: [Option<*const [[std::sync::atomic::AtomicI16; 64]; 13]>; CONT_OFFSETS.len()] = [None; CONT_OFFSETS.len()];
+        for (i, &off) in CONT_OFFSETS.iter().enumerate() {
             if ply >= off && ply - off < moved_piece_stack.len() && ply - off < moved_to_stack.len() {
                 let prior_piece = moved_piece_stack[ply - off] as usize;
                 let prior_to = moved_to_stack[ply - off] as usize;
@@ -680,7 +687,9 @@ impl MovePicker {
         // side effects — the per-move scoring arithmetic is unchanged.
         use std::sync::atomic::Ordering;
         let cm = crate::search::tp10(&crate::search::CONT_HIST_MULT_10X);
-        let cont_weights = [cm, cm, 1i32, 1]; // ply-1, ply-2, ply-4, ply-6
+        // ply-1, ply-2 at CONT_HIST_MULT; ply-3 at the 1x weight of the other
+        // older contexts (ply-4, ply-6).
+        let cont_weights: [i32; CONT_OFFSETS.len()] = [cm, cm, 1, 1, 1];
         let pw = crate::search::tp10(&crate::search::PAWN_HIST_MULT_10X);
         let null_threat_escape_bonus = crate::search::NULL_THREAT_ESCAPE_BONUS.load(Ordering::Relaxed);
         let escape_bonus_q = crate::search::ESCAPE_BONUS_Q.load(Ordering::Relaxed);
@@ -720,7 +729,7 @@ impl MovePicker {
 
             let mut score = history.main_score(from, to, self.threats);
 
-            // Continuation history: plies 1,2 at CONT_HIST_MULT weight, plies 4,6 at 1x weight.
+            // Continuation history: plies 1,2 at CONT_HIST_MULT weight, plies 3,4,6 at 1x weight.
             // Matches Obsidian/Alexandria/Berserk pattern (default 3).
             if piece != NO_PIECE {
                 let gp = go_piece(piece);
@@ -851,7 +860,9 @@ impl MovePicker {
         // Per-node tunable loads hoisted out of the scoring loop (pure
         // atomic loads — quiet-branch arithmetic unchanged).
         let cm = crate::search::tp10(&crate::search::CONT_HIST_MULT_10X);
-        let cont_weights = [cm, cm, 1i32, 1]; // ply-1, ply-2, ply-4, ply-6
+        // ply-1, ply-2 at CONT_HIST_MULT; ply-3 at the 1x weight of the other
+        // older contexts (ply-4, ply-6).
+        let cont_weights: [i32; CONT_OFFSETS.len()] = [cm, cm, 1, 1, 1];
         let pw = crate::search::tp10(&crate::search::PAWN_HIST_MULT_10X);
 
         for i in 0..all.len {
