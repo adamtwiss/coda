@@ -693,6 +693,7 @@ impl MovePicker {
         let quiet_check_bonus = crate::search::QUIET_CHECK_BONUS.load(Ordering::Relaxed);
         let quiet_check_see_margin = crate::search::QUIET_CHECK_SEE_MARGIN.load(Ordering::Relaxed);
         let kf_bonus = crate::search::KNIGHT_FORK_BONUS.load(Ordering::Relaxed);
+        let offense_bonus = crate::search::OFFENSE_BONUS.load(Ordering::Relaxed);
         let us = board.side_to_move;
         let them = 1 - us;
         let occ = board.colors[us as usize] | board.colors[them as usize];
@@ -773,10 +774,11 @@ impl MovePicker {
 
 
 
-            // "Offense bonus": quiet move that lands on a square
-            // attacking an enemy non-pawn piece. +6000 flat. Not yet present
-            // in Coda; consensus places it at ~+6000. Signal: does our piece on
-            // `to` attack an enemy worth threatening?
+            // "Offense bonus": quiet move that lands on a square attacking an
+            // enemy non-pawn piece — creating a threat is the quiet analogue
+            // of the check bonus above. Flat OFFENSE_BONUS (tunable; seeded
+            // from QUIET_CHECK_BONUS, see its comment). Signal: does our piece
+            // on `to` attack an enemy worth threatening?
             // Safety filter: skip if `to` is attacked by any lower-value enemy
             // piece (the capture back would be net negative for us).
             if piece != NO_PIECE {
@@ -796,7 +798,7 @@ impl MovePicker {
                         // Only skip if WE would be a bigger target than a pawn
                         let unsafe_square = pt != 0 && (enemy_pawn_attacks & (1u64 << to)) != 0;
                         if !unsafe_square {
-                            score += 6000;
+                            score += offense_bonus;
                             // "Good quiet": the offense move's strongest target
                             // is worth more than the piece making the move — a
                             // cheap proxy for positive quiet-SEE. The 6687 is a
