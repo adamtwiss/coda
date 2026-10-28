@@ -951,7 +951,7 @@ pub static FEAT_SAT_TIEBREAK: AtomicBool = AtomicBool::new(true);
 pub static FEAT_QS_CAPTURES: AtomicBool = AtomicBool::new(true); // false = QS returns eval immediately
 pub static FEAT_SINGULAR: AtomicBool = AtomicBool::new(true); // singular extensions specifically
 pub static FEAT_CUCKOO: AtomicBool = AtomicBool::new(true);
-pub static FEAT_4D_HISTORY: AtomicBool = AtomicBool::new(true); // threat-aware 4D history indexing
+pub static FEAT_4D_HISTORY: AtomicBool = AtomicBool::new(false); // threat-aware 4D history indexing (OFF: research ablation)
 // Diagnostic-only (env RFP_AUDIT=1): null-verify every RFP cutoff and count
 // false positives per depth. NOT a play feature — costs NPS; bench/EPD use.
 pub static RFP_AUDIT: AtomicBool = AtomicBool::new(false);
