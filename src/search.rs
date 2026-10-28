@@ -1203,6 +1203,9 @@ prune_stats! {
     tt_cross_gen_cutoffs: u64,
     tt_cutoffs: u64,
     tt_near_miss: u64,
+    dr_rfp_capped: u64,
+    dr_lmr_ext_blocked: u64,
+    dr_deeper_blocked: u64,
     nmp_attempts: u64,
     nmp_cutoffs: u64,
     nmp_verify: u64,
@@ -1577,7 +1580,8 @@ pub struct SearchInfo {
     pub root_depth: i32,
     /// Set once per completed ID iteration: the root score says the game is
     /// decided and the search is deep enough for that score to be trusted.
-    /// Read at interior nodes to suppress positive singular extensions.
+    /// Read at interior nodes to suppress positive singular extensions, the
+    /// LMR one-ply extension and doDeeper, and to cap RFP depth.
     pub root_decided: bool,
     /// TMDebug-only stop-time snapshot of the dynamic-TM factors (see TmDbg).
     tm_dbg: TmDbg,
@@ -5977,7 +5981,22 @@ fn negamax(
             && !is_promotion(tt_move);
         // TB/mate guard: every peer skips RFP when eval is near mate/TB range.
         // Without this, RFP could cut a node where NNUE sees forced mate. (RFP audit RFP-3)
-        if depth <= tp(&RFP_DEPTH) && ply > 0 && !tt_pv && !tt_move_is_quiet && info.excluded_move[ply_u] == NO_MOVE && FEAT_RFP.load(Ordering::Relaxed)
+        // Decided-root mode (see SE_ROOT_DECIDED_CP): once the root score says
+        // the game is won or lost, nearly every interior static eval sits far
+        // from beta and RFP would cut the deep nodes where the conversion is
+        // actually found. Cap RFP at the depth where Coda's own margin already
+        // stops trusting it unaided (the RFP_DEEP_KNEE_10X knee, past which
+        // the margin gains its deep term): in decided games RFP keeps its
+        // shallow, un-kneed range and leaves the deep nodes to the search.
+        let rfp_depth_max = if info.root_decided {
+            tp(&RFP_DEPTH).min(tp10(&RFP_DEEP_KNEE_10X))
+        } else {
+            tp(&RFP_DEPTH)
+        };
+        if info.root_decided && depth > rfp_depth_max && depth <= tp(&RFP_DEPTH) {
+            info.stats.dr_rfp_capped += 1;
+        }
+        if depth <= rfp_depth_max && ply > 0 && !tt_pv && !tt_move_is_quiet && info.excluded_move[ply_u] == NO_MOVE && FEAT_RFP.load(Ordering::Relaxed)
             && static_eval.abs() < MATE_SCORE - 200 {
             let mut margin = if improving { depth * tp(&RFP_MARGIN_IMP) } else { depth * tp(&RFP_MARGIN_NOIMP) };
             // Root-depth-aware relaxation: + depth*(root_depth-thresh)+ *coef/100.
@@ -7012,6 +7031,16 @@ let singular_beta = tt_score_local - depth;
                 if reduction < -LMR_SCALE {
                     reduction = -LMR_SCALE;
                 }
+                // Decided-root mode: no LMR extension. With the game decided,
+                // histories along the winning line saturate and the reduce-less
+                // terms push many quiets a full ply past zero, so every reduced
+                // probe becomes an extension and the line deepens without
+                // converging. Same suppression as the positive singular
+                // extension under the same gate.
+                if info.root_decided && reduction <= -LMR_SCALE {
+                    info.stats.dr_lmr_ext_blocked += 1;
+                    reduction = 0;
+                }
             }
         }
 
@@ -7151,8 +7180,16 @@ let singular_beta = tt_score_local - depth;
                 // range, which masked the unit error for a long time.
                 num_fail_highs += 1; // LMR fail-high cascade (Starzix pattern).
                 let mut do_deeper_adj = 0;
+                // Decided-root mode suppresses doDeeper for the same reason as
+                // the LMR extension above: an extra ply on a fail-high is what
+                // the search needs least once the root is already decided.
+                // doShallower is kept.
                 if lmr_score > best_score + 60 + 10 * reduction {
-                    do_deeper_adj = 1;
+                    if info.root_decided {
+                        info.stats.dr_deeper_blocked += 1;
+                    } else {
+                        do_deeper_adj = 1;
+                    }
                 } else if lmr_score < best_score + 20 {
                     do_deeper_adj = -1;
                 }
@@ -8467,6 +8504,8 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
         s.tt_cross_gen_cutoffs,
         if s.tt_cutoffs > 0 { s.tt_cross_gen_cutoffs as f64 / s.tt_cutoffs as f64 * 100.0 } else { 0.0 });
     eprintln!("TT near-miss:   {:>8}", s.tt_near_miss);
+    eprintln!("Decided root:   rfp-capped: {}  lmr-ext blocked: {}  doDeeper blocked: {}",
+        s.dr_rfp_capped, s.dr_lmr_ext_blocked, s.dr_deeper_blocked);
     // Root aspiration failures. These were accumulated but never printed, so
     // nobody had seen that ~75% of windows fail their first search (2026-09-06
     // audit). Games say the narrow window is optimal regardless -- the
