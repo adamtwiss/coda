@@ -593,3 +593,77 @@ mod see_pin_tests {
         assert_eq!(see_value_of(&b, mv), 100);
     }
 }
+
+#[cfg(test)]
+mod see_ep_tests {
+    use super::*;
+    use crate::board::Board;
+    use crate::movegen::generate_legal_moves;
+
+    fn init() { crate::init(); }
+
+    fn ep_move(b: &Board, from: u8, to: u8) -> Move {
+        let moves = generate_legal_moves(b);
+        for i in 0..moves.len {
+            let mv = moves.get(i);
+            if move_from(mv) == from && move_to(mv) == to {
+                assert_eq!(move_flags(mv), FLAG_EN_PASSANT, "expected an EP capture");
+                return mv;
+            }
+        }
+        panic!("no legal EP move {} -> {}", from, to);
+    }
+
+    /// The EP destination is empty, so a SEE that read the victim from `to`
+    /// would credit nothing; one that skipped the exchange would pass every
+    /// threshold. Undefended: exactly a pawn, and no threshold above it.
+    #[test]
+    fn see_ep_undefended_is_exactly_a_pawn() {
+        init();
+        let b = Board::from_fen("4k3/8/8/3Pp3/8/8/8/4K3 w - e6 0 1");
+        let mv = ep_move(&b, 35, 44); // d5xe6
+        let p = see_value(PAWN);
+        assert!(see_ge(&b, mv, p));
+        assert!(!see_ge(&b, mv, p + 1), "EP must not pass a threshold above a pawn");
+        assert!(!see_ge(&b, mv, 1000));
+    }
+
+    /// Defended by a pawn: P for P = 0, so any positive threshold fails.
+    #[test]
+    fn see_ep_defended_by_pawn_is_even() {
+        init();
+        let b = Board::from_fen("4k3/5p2/8/3Pp3/8/8/8/4K3 w - e6 0 1");
+        let mv = ep_move(&b, 35, 44); // d5xe6, f7 recaptures
+        assert_eq!(see_value_of(&b, mv), 0);
+        assert!(see_ge(&b, mv, 0));
+        assert!(!see_ge(&b, mv, 1));
+    }
+
+    /// The victim sits on the destination's file, one rank behind it. Removing
+    /// it opens that file, so our rook on e1 now defends e6 and Black's Re8
+    /// cannot recapture profitably: SEE = +P. Without the file opening the
+    /// rook would not count and Black would win the pawn back (SEE 0) — the
+    /// control position below.
+    #[test]
+    fn see_ep_victim_removal_opens_file_xray() {
+        init();
+        let with_rook = Board::from_fen("4r2k/8/8/3Pp3/8/8/8/K3R3 w - e6 0 1");
+        let mv = ep_move(&with_rook, 35, 44);
+        assert_eq!(see_value_of(&with_rook, mv), see_value(PAWN));
+
+        let control = Board::from_fen("4r2k/8/8/3Pp3/8/8/8/K7 w - e6 0 1");
+        let mv = ep_move(&control, 35, 44);
+        assert_eq!(see_value_of(&control, mv), 0);
+    }
+
+    /// Same x-ray from Black's side: d4xe3 e.p. opens the e-file for Re8,
+    /// so White's Re1 cannot recapture without losing the rook.
+    #[test]
+    fn see_ep_black_side_xray() {
+        init();
+        let b = Board::from_fen("k3r3/8/8/8/3pP3/8/8/4R2K b - e3 0 1");
+        let mv = ep_move(&b, 27, 20); // d4xe3
+        assert_eq!(see_value_of(&b, mv), see_value(PAWN));
+        assert!(!see_ge(&b, mv, see_value(PAWN) + 1));
+    }
+}
