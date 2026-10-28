@@ -296,6 +296,16 @@ tunables!(
     (TM_OPT_WINDOW_PCT, 73, 45, 95, 3.0, false),      // opt = computed * N/100
     (TM_INC_FRAC_PCT, 93, 40, 100, 4.0, false),       // computed += inc * N/100
     (TM_DEFAULT_MTG, 24, 14, 40, 1.5, false),         // sudden-death moves-to-go
+    // Opening-phase damp on opt (see compute_tm_budgets): a linear ramp from
+    // FLOOR/100 at fullmove 0 to 1.0 at fullmove RAMP_FM, flat after.
+    //   * FLOOR 42 = round(100 * TM_STAB_4_100 / TM_STAB_0_100) = round(100 * 74/175):
+    //     stability is 0 at search start, so an opening move runs at the top
+    //     stability entry while a settled move runs at the [4+] entry. The
+    //     floor cancels that excess factor on the first moves.
+    //   * RAMP_FM 24 = the TM_DEFAULT_MTG default: the damp releases fully once
+    //     one sudden-death moves-to-go horizon of the game has been played.
+    (TM_PHASE_FLOOR_100, 42, 10, 80, 4.0, false),
+    (TM_PHASE_RAMP_FM, 24, 8, 60, 3.0, false),
     (TM_STAB_0_100, 175, 100, 260, 8.0, false),       // stability table [0] * 1/100
     (TM_STAB_1_100, 122, 80, 180, 5.0, false),        // stability table [1]
     (TM_STAB_2_100, 90, 60, 130, 3.0, false),         // stability table [2]
@@ -3415,29 +3425,27 @@ pub fn compute_tm_budgets(
         ((computed.min(max_time) * opt_window_pct / 100).min(hard_time)).max(1)
     };
 
-    // Opening-phase damp (Hobbes pattern). Without it the opening is grossly
-    // overspent: stability is 0 at search start, so the factor multiplier is at
-    // its 2.5× maximum on the very first moves, and ten of those can eat an
-    // entire 30+0.25 budget before the middlegame. Hobbes embeds the damp in
-    // its base — `soft_scale = 0.024 + 0.042 × (1 - exp(-0.045 × fm))`, a
-    // ~0.36 → 1.0 ramp. Coda applies the same exponential as a multiplier:
+    // Opening-phase damp. Without it the opening is grossly overspent:
+    // stability is 0 at search start, so the factor multiplier is at its
+    // maximum on the very first moves, and ten of those can eat an entire
+    // 30+0.25 budget before the middlegame. Damping the early-game base share
+    // is a common pattern; Coda's form is a clamped linear ramp on opt:
     //
-    //   phase_mult = 0.22 + 0.78 × (1 - exp(-0.045 × fullmove))
-    //     fm=1:  0.25×
-    //     fm=5:  0.38×
-    //     fm=10: 0.50×
-    //     fm=20: 0.68×
-    //     fm=40: ~0.87×
+    //   phase_mult = clamp(F + (1 - F) * fullmove / R, F, 1.0)
+    //     F = TM_PHASE_FLOOR_100 / 100, R = TM_PHASE_RAMP_FM
+    //     at the defaults (F=0.42, R=24):
+    //       fm=1: 0.44x   fm=5: 0.54x   fm=10: 0.66x   fm=20: 0.90x   fm>=24: 1.0x
     //
-    // The 0.22 floor is load-bearing and was arrived at empirically: a softer
-    // floor (0.36, giving 0.39× at fm=1) still left most games overspending the
-    // opening. Skip the damp when movestogo > 0 — that path paces from the
-    // explicit count.
+    // Both ends come from Coda's own TM quantities (see the tunable comments).
+    // Skip the damp when movestogo > 0 — that path paces from the explicit
+    // count.
     let opt_time = if movestogo > 0 {
         opt_time_base
     } else {
-        let phase_mult = 0.22 + 0.78 * (1.0 - (-0.045 * fullmove as f64).exp());
-        ((opt_time_base as f64) * phase_mult.clamp(0.22, 1.0)) as u64
+        let floor = (tp(&TM_PHASE_FLOOR_100).clamp(1, 100) as f64) / 100.0;
+        let ramp_fm = tp(&TM_PHASE_RAMP_FM).max(1) as f64;
+        let phase_mult = (floor + (1.0 - floor) * fullmove as f64 / ramp_fm).clamp(floor, 1.0);
+        ((opt_time_base as f64) * phase_mult) as u64
     };
     // Behind-on-clock damp: spend less when our clock trails the opponent's.
     // Applied to opt only, before the ponder bump, on every clock path
