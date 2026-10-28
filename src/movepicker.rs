@@ -692,18 +692,6 @@ impl MovePicker {
         ];
         let quiet_check_bonus = crate::search::QUIET_CHECK_BONUS.load(Ordering::Relaxed);
         let quiet_check_see_margin = crate::search::QUIET_CHECK_SEE_MARGIN.load(Ordering::Relaxed);
-        let kf_bonus = crate::search::KNIGHT_FORK_BONUS.load(Ordering::Relaxed);
-        let us = board.side_to_move;
-        let them = 1 - us;
-        let occ = board.colors[us as usize] | board.colors[them as usize];
-        let enemy_non_pawns = board.colors[them as usize]
-            & !(board.pieces[PAWN as usize] | board.pieces[KING as usize]);
-        let their_pawns = board.pieces[PAWN as usize] & board.colors[them as usize];
-        let enemy_pawn_attacks = if them == WHITE {
-            ((their_pawns & !FILE_A) << 7) | ((their_pawns & !FILE_H) << 9)
-        } else {
-            ((their_pawns & !FILE_A) >> 9) | ((their_pawns & !FILE_H) >> 7)
-        };
 
         for i in 0..quiets.len {
             let m = quiets.get(i);
@@ -772,64 +760,6 @@ impl MovePicker {
             }
 
 
-
-            // "Offense bonus": quiet move that lands on a square
-            // attacking an enemy non-pawn piece. +6000 flat. Not yet present
-            // in Coda; consensus places it at ~+6000. Signal: does our piece on
-            // `to` attack an enemy worth threatening?
-            // Safety filter: skip if `to` is attacked by any lower-value enemy
-            // piece (the capture back would be net negative for us).
-            if piece != NO_PIECE {
-                if pt < 6 {
-                    // We'd be on `to` after the move; compute attacks from `to` by our piece type.
-                    let attacks_from_to = match pt {
-                        0 => pawn_attacks(us, to as u32),  // pawn
-                        1 => knight_attacks(to as u32),
-                        2 => bishop_attacks(to as u32, occ & !(1u64 << from)),  // bishop: occ minus our from-square
-                        3 => rook_attacks(to as u32, occ & !(1u64 << from)),    // rook
-                        4 => queen_attacks(to as u32, occ & !(1u64 << from)),   // queen
-                        _ => 0,  // king — no offense bonus, too risky
-                    };
-                    if attacks_from_to & enemy_non_pawns != 0 {
-                        // Safety check: skip if `to` is attacked by enemy pawn
-                        // (which could recapture us).
-                        // Only skip if WE would be a bigger target than a pawn
-                        let unsafe_square = pt != 0 && (enemy_pawn_attacks & (1u64 << to)) != 0;
-                        if !unsafe_square {
-                            score += 6000;
-                            // "Good quiet": the offense move's strongest target
-                            // is worth more than the piece making the move — a
-                            // cheap proxy for positive quiet-SEE. The 6687 is a
-                            // tuned value and ablation-confirmed load-bearing
-                            // (~2 Elo), not an arbitrary constant.
-                            {
-                                let our_val = see_value(pt);
-                                let mut hits = attacks_from_to & enemy_non_pawns;
-                                let mut max_t_val = 0;
-                                while hits != 0 {
-                                    let t_sq = hits.trailing_zeros() as u8;
-                                    hits &= hits - 1;
-                                    let t_pt = board.piece_type_at(t_sq);
-                                    if t_pt < 6 {
-                                        let v = see_value(t_pt);
-                                        if v > max_t_val { max_t_val = v; }
-                                    }
-                                }
-                                if max_t_val > our_val {
-                                    score += 6687;
-                                }
-                            }
-                        }
-                        // Knight-fork bonus: knight move attacking 2+ enemy
-                        // non-pawn pieces from `to` is a fork. Tunable
-                        // (KNIGHT_FORK_BONUS), stacks on top of offense.
-                        if kf_bonus > 0 && pt == 1 && !unsafe_square
-                            && popcount(attacks_from_to & enemy_non_pawns) >= 2 {
-                            score += kf_bonus;
-                        }
-                    }
-                }
-            }
 
             let idx = self.moves.len;
             self.moves.push(m);
