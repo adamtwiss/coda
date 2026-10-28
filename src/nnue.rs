@@ -3131,6 +3131,7 @@ impl NNUENet {
         let mut reader = std::io::Cursor::new(data);
         let mut net = Self::load_from_reader(&mut reader, data.len() as u64, "<embedded>")?;
         net.validate_compat()?;
+        net.permute_ft_for_group_sparsity();
         net.share_weights();
         Ok(net)
     }
@@ -3161,6 +3162,7 @@ impl NNUENet {
         let mut reader = BufReader::new(file);
         let mut net = Self::load_from_reader(&mut reader, file_len, path)?;
         net.validate_compat()?;
+        net.permute_ft_for_group_sparsity();
         net.share_weights();
         Ok(net)
     }
@@ -5383,6 +5385,243 @@ impl NNUENet {
         }
 
         result
+    }
+}
+
+// ---------------------------------------------------------------------------
+// FT lane permutation for L1 group sparsity.
+//
+// The listed L1 kernels skip 4-byte input groups that are entirely zero, so
+// their cost scales with the number of NON-ZERO GROUPS, not non-zero bytes. A
+// group is zero only when all four of its pairwise outputs are; which outputs
+// share a group is an accident of training order. Re-ordering the pairwise
+// outputs so that units that tend to be active in the same positions share a
+// group (and units that are rarely active share groups with each other) lowers
+// the group density without changing any value.
+//
+// Exactness: the FT is lane-wise (every accumulator lane is the bias plus a
+// sum of that lane's weight rows, then a lane-wise clamp and the pairwise
+// product of lanes j and j+pw), and L1 is a sum over its inputs. Applying one
+// permutation to the FT columns (both pairwise halves together), the FT bias,
+// and the L1 input rows (both perspective blocks) therefore permutes the
+// packed vector and the order of the L1 terms, and nothing else. The integer
+// sums are identical, so eval and search are bit-identical.
+//
+// The permutation is computed at load from the net itself (activation
+// statistics over positions derived from the bench set), so it adapts to
+// whichever net is loaded and is never baked into the source or a net file.
+// ---------------------------------------------------------------------------
+impl NNUENet {
+    /// Boards whose FT activations drive the grouping: every bench position
+    /// plus short random-legal-move walks from each. The walks reach material
+    /// and king placements the root list does not; the PRNG is fixed, so the
+    /// sample, and therefore the permutation, is deterministic for a given net.
+    fn coactivation_boards() -> Vec<Board> {
+        // Walk shape, measured on the production net (in-search group
+        // density at bench / on 40 held-out UHO openings, unpermuted
+        // 45.6% / 41.5%): 4 walks x 16 plies (~6k samples) reached
+        // 41.6% / 37.2%, 8 x 32 (~23k samples) 40.2% / 35.9%, and doubling
+        // again to 16 x 32 bought only 0.2 points more. 8 x 32 costs ~70 ms of
+        // load time, almost all of it the accumulator refreshes.
+        const WALKS_PER_ROOT: usize = 8;
+        const PLIES: usize = 32;
+        let mut boards = Vec::new();
+        let mut s: u64 = 0x9E37_79B9_7F4A_7C15; // golden-ratio seed; any odd value works
+        let mut next = || { s ^= s << 13; s ^= s >> 7; s ^= s << 17; s };
+        for fen in crate::search::BENCH_POSITIONS {
+            let root = Board::from_fen(fen);
+            boards.push(root.clone());
+            for _ in 0..WALKS_PER_ROOT {
+                let mut b = root.clone();
+                for _ in 0..PLIES {
+                    let moves = crate::movegen::generate_legal_moves(&b);
+                    if moves.len == 0 { break; }
+                    let mv = moves.get((next() % moves.len as u64) as usize);
+                    if !b.make_move(mv) { break; }
+                    boards.push(b.clone());
+                }
+            }
+        }
+        boards
+    }
+
+    /// For each pairwise output lane j in 0..pw, a bitset over samples (one
+    /// sample per board per perspective) of whether the packed value is
+    /// non-zero. Uses the same accumulator code as search, so the statistics
+    /// describe exactly the bytes the L1 kernels will see.
+    fn pairwise_activity(&self, boards: &[Board]) -> (Vec<u64>, usize) {
+        let h = self.hidden_size;
+        let pw = h / 2;
+        let samples = boards.len() * 2;
+        let words = samples.div_ceil(64);
+        let mut bits = vec![0u64; pw * words];
+        let mut acc = NNUEAccumulator::new(h);
+        let mut ts = crate::threat_accum::ThreatStack::new(h);
+        ts.active = self.has_threats;
+        for (bi, board) in boards.iter().enumerate() {
+            acc.force_recompute(self, board);
+            if ts.active {
+                ts.reset();
+                ts.ensure_computed(&self.threat_weights, self.num_threat_features,
+                    self.num_pawn_pair_features, board);
+            }
+            for (pi, pov) in [WHITE, BLACK].into_iter().enumerate() {
+                let psq = if pov == WHITE { acc.white() } else { acc.black() };
+                let thr = if ts.active { Some(ts.values(pov)) } else { None };
+                let sample = bi * 2 + pi;
+                for j in 0..pw {
+                    // Same arithmetic as the packs: saturating i16 combine,
+                    // clamp to [0, QA], product, shift.
+                    let (mut a, mut b) = (psq[j], psq[j + pw]);
+                    if let Some(t) = thr { a = a.saturating_add(t[j]); b = b.saturating_add(t[j + pw]); }
+                    let v = ((a as i32).clamp(0, QA) * (b as i32).clamp(0, QA)) >> FT_SHIFT;
+                    if v != 0 { bits[j * words + sample / 64] |= 1u64 << (sample % 64); }
+                }
+            }
+        }
+        (bits, words)
+    }
+
+    /// Greedy grouping into 4-lane groups. Returns `perm` with
+    /// `perm[new_lane] = old_lane`.
+    ///
+    /// Groups are seeded from the most active unplaced lane. Each of the other
+    /// three slots takes the unplaced lane whose activations are best COVERED
+    /// by the group so far: smallest uncovered fraction |A \ U| / |A|, where U
+    /// is the union of the group's activations. A lane that fires only when
+    /// the group already fires costs nothing, whatever its own rate. Lanes
+    /// that never fire are placed last, among themselves, so all-dead groups
+    /// stay all-zero instead of filling slots an active lane could have used.
+    fn coactivation_grouping(bits: &[u64], words: usize, pw: usize) -> Vec<usize> {
+        let count = |j: usize| -> u32 { bits[j * words..(j + 1) * words].iter().map(|w| w.count_ones()).sum() };
+        let act: Vec<u32> = (0..pw).map(count).collect();
+        let mut placed = vec![false; pw];
+        let mut perm = Vec::with_capacity(pw);
+        let mut union = vec![0u64; words];
+        while perm.len() < pw {
+            // Seed: most active unplaced lane (lowest index on ties).
+            let seed = (0..pw).filter(|&j| !placed[j])
+                .max_by(|&x, &y| act[x].cmp(&act[y]).then(y.cmp(&x))).unwrap();
+            placed[seed] = true;
+            perm.push(seed);
+            union.copy_from_slice(&bits[seed * words..(seed + 1) * words]);
+            for _ in 1..4 {
+                if perm.len() >= pw { break; }
+                // Minimise uncovered/act as a cross-multiplied rational, so the
+                // comparison is exact; dead lanes (act 0) rank last.
+                let mut best: Option<(usize, u64, u64)> = None; // (lane, uncovered, act)
+                for j in 0..pw {
+                    if placed[j] { continue; }
+                    let a = act[j] as u64;
+                    let unc: u64 = bits[j * words..(j + 1) * words].iter().zip(&union)
+                        .map(|(w, u)| (w & !u).count_ones() as u64).sum();
+                    let better = match best {
+                        None => true,
+                        Some((_, bu, ba)) => {
+                            if a == 0 { false }
+                            else if ba == 0 { true }
+                            else { unc * ba < bu * a || (unc * ba == bu * a && a > ba) }
+                        }
+                    };
+                    if better { best = Some((j, unc, a)); }
+                }
+                let (j, _, _) = best.unwrap();
+                placed[j] = true;
+                perm.push(j);
+                for (u, w) in union.iter_mut().zip(&bits[j * words..(j + 1) * words]) { *u |= w; }
+            }
+        }
+        perm
+    }
+
+    /// Expected non-zero groups per perspective-sample under `perm`.
+    fn group_density(bits: &[u64], words: usize, pw: usize, perm: &[usize], samples: usize) -> f64 {
+        let mut nz = 0u64;
+        for g in 0..pw / 4 {
+            for w in 0..words {
+                let u = bits[perm[4 * g] * words + w] | bits[perm[4 * g + 1] * words + w]
+                    | bits[perm[4 * g + 2] * words + w] | bits[perm[4 * g + 3] * words + w];
+                nz += u.count_ones() as u64;
+            }
+        }
+        nz as f64 / (samples as f64 * (pw / 4) as f64)
+    }
+
+    /// Apply `perm` (`perm[new] = old`, over pairwise lanes 0..pw) to every
+    /// array indexed by FT lane or by L1 input. See the section comment for
+    /// why this is exact.
+    fn apply_ft_permutation(&mut self, perm: &[usize]) {
+        let h = self.hidden_size;
+        let pw = h / 2;
+        debug_assert_eq!(perm.len(), pw);
+        // Full-width column map: lane p of either half takes old lane perm[p]
+        // of the same half.
+        let col: Vec<usize> = (0..h).map(|p| if p < pw { perm[p] } else { pw + perm[p - pw] }).collect();
+
+        fn permute_rows<T: Copy + Default>(data: &mut [T], width: usize, col: &[usize]) {
+            let mut tmp = vec![T::default(); width];
+            for row in data.chunks_exact_mut(width) {
+                tmp.copy_from_slice(row);
+                for (p, &c) in col.iter().enumerate() { row[p] = tmp[c]; }
+            }
+        }
+        permute_rows(&mut self.input_weights[..], h, &col);
+        permute_rows(&mut self.input_biases[..], h, &col);
+        if !self.threat_weights.is_empty() {
+            permute_rows(&mut self.threat_weights[..], h, &col);
+        }
+
+        // L1 inputs: the pairwise L1 input is [STM pw][NTM pw], i.e. the same
+        // `col` map over h inputs. `l1_weights` is [input][neuron].
+        let bl1 = if self.bucketed_hidden { NNUE_OUTPUT_BUCKETS * self.l1_size } else { self.l1_size };
+        {
+            let old = self.l1_weights.clone();
+            for p in 0..h {
+                self.l1_weights[p * bl1..(p + 1) * bl1].copy_from_slice(&old[col[p] * bl1..(col[p] + 1) * bl1]);
+            }
+        }
+        // Transposed tables are [STM: neuron][pw] then [NTM: neuron][pw]:
+        // rows of width pw permuted by `perm` in both blocks.
+        if !self.l1_weights_t.is_empty() { permute_rows(&mut self.l1_weights_t[..], pw, perm); }
+        if !self.l1_weights_8t.is_empty() { permute_rows(&mut self.l1_weights_8t[..], pw, perm); }
+        // Column-major table: rebuild from the permuted int8 transpose exactly
+        // as the loader does.
+        if !self.l1_weights_sparse.is_empty() {
+            self.l1_weights_sparse = if self.bucketed_hidden {
+                let mut all: Vec<i8> = Vec::with_capacity(self.l1_weights_sparse.len());
+                for b in 0..NNUE_OUTPUT_BUCKETS {
+                    all.extend_from_slice(&crate::sparse_l1::transpose_weights_for_sparse_range(
+                        &self.l1_weights_8t, h, bl1, b * self.l1_size, self.l1_size));
+                }
+                all.into()
+            } else {
+                crate::sparse_l1::transpose_weights_for_sparse(&self.l1_weights_8t, h, bl1).into()
+            };
+        }
+    }
+
+    /// Compute and apply the co-activation permutation when the listed L1
+    /// kernel is in use (the dense kernels do the same work whatever the
+    /// order, so permuting for them would only cost load time).
+    /// `CODA_NO_FT_PERMUTE` disables it, for A/B on one binary.
+    fn permute_ft_for_group_sparsity(&mut self) {
+        if !self.use_pairwise || !self.l1_kernel.is_listed()
+            || std::env::var_os("CODA_NO_FT_PERMUTE").is_some() {
+            return;
+        }
+        let t0 = std::time::Instant::now();
+        let pw = self.hidden_size / 2;
+        let boards = Self::coactivation_boards();
+        let (bits, words) = self.pairwise_activity(&boards);
+        let samples = boards.len() * 2;
+        let ident: Vec<usize> = (0..pw).collect();
+        let perm = Self::coactivation_grouping(&bits, words, pw);
+        let before = Self::group_density(&bits, words, pw, &ident, samples);
+        let after = Self::group_density(&bits, words, pw, &perm, samples);
+        self.apply_ft_permutation(&perm);
+        println!("info string FT co-activation permutation: {} samples, sampled group density \
+                  {:.1}% -> {:.1}% ({} ms)",
+            samples, before * 100.0, after * 100.0, t0.elapsed().as_millis());
     }
 }
 
