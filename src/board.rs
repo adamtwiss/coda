@@ -1438,7 +1438,15 @@ impl Board {
 
         self.side_to_move = flip_color(self.side_to_move);
         self.hash ^= side_key();
-        self.halfmove += 1;
+        // The halfmove clock is deliberately NOT advanced: a null move plays no
+        // move, so it cannot bring a 50-move claim any closer. Advancing it made
+        // the null subtree see the rule-50 horizon one ply early — at
+        // halfmove 99 the null child was an immediate draw, so NMP could cut
+        // on a draw score that no real line reaches — and shifted the
+        // halfmove-scaled eval, tt_halfmove_ok and the score_from_tt budget
+        // by one in every null subtree. Repetition and cuckoo scans are
+        // unaffected: they are bounded by min(halfmove, plies_from_null), and
+        // plies_from_null (reset below) is the binding term after a null.
         self.plies_from_null = 0; // reset on null move for cuckoo
     }
 
@@ -2474,6 +2482,26 @@ mod tests {
         assert!(!b.is_repetition_draw(3),
             "halfmove=0 limit must block detection past irreversible move");
         b.undo_stack[2].hash = saved2;
+    }
+
+    /// A null move plays no move, so it must not advance the 50-move clock;
+    /// unmake must restore everything. At halfmove 99 the old behaviour made
+    /// the null child sit on the rule-50 horizon (a fake immediate draw).
+    #[test]
+    fn null_move_keeps_halfmove() {
+        init();
+        let mut b = Board::from_fen("4k3/8/8/8/8/8/8/R3K3 w - - 99 120");
+        assert_eq!(b.halfmove, 99);
+        let fen0 = b.to_fen();
+        b.make_null_move();
+        assert_eq!(b.halfmove, 99, "null move must not advance the halfmove clock");
+        assert_eq!(b.plies_from_null, 0, "null move resets plies_from_null");
+        // A real reply after the null advances it as any real move does.
+        b.make_move(make_move(60, 59, FLAG_NONE)); // Kd8
+        assert_eq!(b.halfmove, 100);
+        b.unmake_move();
+        b.unmake_null_move();
+        assert_eq!(b.to_fen(), fen0, "null make/unmake must round-trip");
     }
 
     /// Random-games fuzzer: the repetition helper must not panic and must
