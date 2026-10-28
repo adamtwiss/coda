@@ -1016,14 +1016,21 @@ unsafe fn simd_screlu_pack(acc: &[i16], out: *mut u8, h: usize) {
 /// acc[0..pw] and acc[pw..2*pw] → out[0..pw] u8.
 /// clamp(a, 0, 255) * clamp(b, 0, 255) >> FT_SHIFT for each pair.
 /// pw must be multiple of 16.
+///
+/// When `EMIT` is set, the pack also appends every non-zero 4-byte output
+/// group to `list` (see `sparse_l1::push_groups`) while the packed bytes are
+/// still in a register, and returns the count; the listed L1 kernels consume
+/// it. With `EMIT` false the list code is compile-time dead and `list` unused.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
-unsafe fn simd_pairwise_pack_impl<const HAS_THREAT: bool>(
+unsafe fn simd_pairwise_pack_impl<const HAS_THREAT: bool, const EMIT: bool>(
     acc: &[i16],
     threat: *const i16,
     out: *mut u8,
     pw: usize,
-) {
+    list: *mut u8,
+) -> usize {
+    let mut listed = 0usize;
     let zero = _mm256_setzero_si256();
     let qa = _mm256_set1_epi16(QA as i16);
     let mut i = 0;
@@ -1064,6 +1071,13 @@ unsafe fn simd_pairwise_pack_impl<const HAS_THREAT: bool>(
             let packed = _mm256_packus_epi16(d, d2);
             let fixed = _mm256_permute4x64_epi64(packed, 0xD8);
             _mm256_storeu_si256(out.add(i) as *mut __m256i, fixed);
+            if EMIT {
+                // Packed bytes are <= 127, so a group is non-zero iff its
+                // dword is > 0 as a signed i32: one compare, one movemask.
+                let nz = _mm256_cmpgt_epi32(fixed, zero);
+                let m = _mm256_movemask_ps(_mm256_castsi256_ps(nz)) as u32;
+                listed = crate::sparse_l1::push_groups(list, listed, m, (i / 4) as u8);
+            }
             i += 32;
         } else {
             // Remaining 16: pack with zeros
@@ -1072,6 +1086,11 @@ unsafe fn simd_pairwise_pack_impl<const HAS_THREAT: bool>(
             // Only store 16 bytes (lower half)
             _mm_storeu_si128(out.add(i) as *mut __m128i,
                 _mm256_castsi256_si128(fixed));
+            if EMIT {
+                let nz = _mm256_cmpgt_epi32(fixed, zero);
+                let m = (_mm256_movemask_ps(_mm256_castsi256_ps(nz)) as u32) & 0xF;
+                listed = crate::sparse_l1::push_groups(list, listed, m, (i / 4) as u8);
+            }
             i += 16;
         }
     }
@@ -1082,12 +1101,16 @@ unsafe fn simd_pairwise_pack_impl<const HAS_THREAT: bool>(
         out.add(i).write(((a.clamp(0, 255) * b.clamp(0, 255)) >> FT_SHIFT) as u8);
         i += 1;
     }
+    // Listed packs are only selected for pw % 32 == 0, so the scalar tail
+    // never runs with EMIT set.
+    debug_assert!(!EMIT || pw.is_multiple_of(16));
+    listed
 }
 
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
 unsafe fn simd_pairwise_pack_plain(acc: &[i16], out: *mut u8, pw: usize) {
-    simd_pairwise_pack_impl::<false>(acc, std::ptr::null(), out, pw);
+    simd_pairwise_pack_impl::<false, false>(acc, std::ptr::null(), out, pw, std::ptr::null_mut());
 }
 
 /// Pairwise pack with fused threat combine.
@@ -1095,7 +1118,7 @@ unsafe fn simd_pairwise_pack_plain(acc: &[i16], out: *mut u8, pw: usize) {
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
 unsafe fn simd_pairwise_pack_threat(acc: &[i16], threat: *const i16, out: *mut u8, pw: usize) {
-    simd_pairwise_pack_impl::<true>(acc, threat, out, pw);
+    simd_pairwise_pack_impl::<true, false>(acc, threat, out, pw, std::ptr::null_mut());
 }
 
 
@@ -1424,14 +1447,19 @@ unsafe fn simd512_pairwise_dot(acc_first: &[i16], acc_second: &[i16], weights: &
 /// If threat is non-null, adds threat[i] to acc[i] before clamp (v9 fused pack).
 /// clamp(a, 0, 255) * clamp(b, 0, 255) >> FT_SHIFT for each pair.
 /// pw must be multiple of 32.
+///
+/// `EMIT` appends the non-zero 4-byte output groups to `list` and returns the
+/// count, as in `simd_pairwise_pack_impl`.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f,avx512bw")]
-unsafe fn simd512_pairwise_pack_impl<const HAS_THREAT: bool>(
+unsafe fn simd512_pairwise_pack_impl<const HAS_THREAT: bool, const EMIT: bool>(
     acc: &[i16],
     threat: *const i16,
     out: *mut u8,
     pw: usize,
-) {
+    list: *mut u8,
+) -> usize {
+    let mut listed = 0usize;
     let zero = _mm512_setzero_si512();
     let qa = _mm512_set1_epi16(QA as i16);
     let mut i = 0;
@@ -1479,11 +1507,25 @@ unsafe fn simd512_pairwise_pack_impl<const HAS_THREAT: bool>(
             let pack1 = _mm512_cvtusepi16_epi8(d1);
             _mm256_storeu_si256(out.add(i) as *mut __m256i, pack0);
             _mm256_storeu_si256(out.add(i + 32) as *mut __m256i, pack1);
+            if EMIT {
+                // Output group g of this block is i16 lanes 4g..4g+3 of d0/d1,
+                // i.e. one 64-bit lane, and a packed byte is non-zero iff its
+                // i16 is (values are 0..=127). So one VPTESTMQ per 8 groups,
+                // taken on the pre-pack vectors.
+                let m0 = _mm512_test_epi64_mask(d0, d0) as u32;
+                let m1 = _mm512_test_epi64_mask(d1, d1) as u32;
+                listed = crate::sparse_l1::push_groups(list, listed, m0, (i / 4) as u8);
+                listed = crate::sparse_l1::push_groups(list, listed, m1, (i / 4 + 8) as u8);
+            }
             i += 64;
         } else {
             // Remaining 32 elements.
             let pack0 = _mm512_cvtusepi16_epi8(d0);
             _mm256_storeu_si256(out.add(i) as *mut __m256i, pack0);
+            if EMIT {
+                let m0 = _mm512_test_epi64_mask(d0, d0) as u32;
+                listed = crate::sparse_l1::push_groups(list, listed, m0, (i / 4) as u8);
+            }
             i += 32;
         }
     }
@@ -1495,12 +1537,14 @@ unsafe fn simd512_pairwise_pack_impl<const HAS_THREAT: bool>(
         out.add(i).write(((a.clamp(0, 255) * b.clamp(0, 255)) >> FT_SHIFT) as u8);
         i += 1;
     }
+    debug_assert!(!EMIT || pw.is_multiple_of(32));
+    listed
 }
 
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f,avx512bw")]
 unsafe fn simd512_pairwise_pack_plain(acc: &[i16], out: *mut u8, pw: usize) {
-    simd512_pairwise_pack_impl::<false>(acc, std::ptr::null(), out, pw);
+    simd512_pairwise_pack_impl::<false, false>(acc, std::ptr::null(), out, pw, std::ptr::null_mut());
 }
 
 /// AVX-512 pairwise pack with fused threat combine.
@@ -1508,7 +1552,7 @@ unsafe fn simd512_pairwise_pack_plain(acc: &[i16], out: *mut u8, pw: usize) {
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f,avx512bw")]
 unsafe fn simd512_pairwise_pack_threat(acc: &[i16], threat: *const i16, out: *mut u8, pw: usize) {
-    simd512_pairwise_pack_impl::<true>(acc, threat, out, pw);
+    simd512_pairwise_pack_impl::<true, false>(acc, threat, out, pw, std::ptr::null_mut());
 }
 
 /// AVX-512 SCReLU pack: clamp [0,255], v²/255 → [0,255] as u8.
@@ -2807,6 +2851,18 @@ struct Align64<T>(T);
 /// reference the column-major path is checked against (CODA_FORCE_ROWMAJOR_L1).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum L1Kernel {
+    /// AVX-512 VNNI group-listed, L1=16: the pairwise pack emits the list of
+    /// non-zero 4-byte input groups and L1 runs one VPDPBUSD per listed group
+    /// (`sparse_l1::listed_l1_16_avx512_vnni`). Same weight table as the
+    /// column-major dense arms.
+    ListedAvx512Vnni,
+    /// AVX-VNNI (YMM) group-listed, L1=16.
+    ListedAvxVnni,
+    /// AVX2 group-listed, L1=16, with maddubs-pair fusion across consecutive
+    /// list entries — only when `sparse_l1::listed_pair_fusion_safe` holds.
+    ListedAvx2X2,
+    /// AVX2 group-listed, L1=16, unfused.
+    ListedAvx2,
     /// AVX-512 VNNI column-major dense (one VPDPBUSD per chunk, L1=16).
     DenseAvx512Vnni,
     /// AVX-512 VNNI column-major dense, L1=32 (two ZMM-wide, VPDPBUSD).
@@ -2845,6 +2901,15 @@ pub enum L1Kernel {
     Scalar,
 }
 
+impl L1Kernel {
+    /// Kernels that read the group lists emitted by the pairwise pack.
+    #[inline(always)]
+    pub fn is_listed(self) -> bool {
+        matches!(self, L1Kernel::ListedAvx512Vnni | L1Kernel::ListedAvxVnni
+            | L1Kernel::ListedAvx2X2 | L1Kernel::ListedAvx2)
+    }
+}
+
 /// Mirror of the historical dispatch priority in
 /// `forward_with_l1_pairwise_inner`. Bucketed-hidden nets use the
 /// column-major arms too (per-bucket sections; see `L1Kernel` docs). All inputs are
@@ -2858,6 +2923,7 @@ fn select_l1_kernel(
     have_sparse: bool,    // !l1_weights_sparse.is_empty()
     have_8t: bool,        // !l1_weights_8t.is_empty()
     x2_safe: bool,        // sparse_l1::x2_fusion_safe on the loaded weights
+    listed_x2_safe: bool, // sparse_l1::listed_pair_fusion_safe on the loaded weights
     has_avx2: bool,
     has_avx512: bool,
     has_avx512_vnni: bool,
@@ -2877,8 +2943,18 @@ fn select_l1_kernel(
     // handled bucketed nets correctly, so it is the reference implementation
     // this change is verified against. Off unless the variable is set.
     let col_ok = have_sparse && std::env::var_os("CODA_FORCE_ROWMAJOR_L1").is_none();
+    // Group-listed kernels: L1=16, and pw a multiple of 64 so every pack
+    // (AVX2 32-wide, AVX-512 64-wide) emits whole 8-group rows with no scalar
+    // tail; pw <= 1024 keeps per-perspective group indices within a u8.
+    // CODA_DENSE_L1 forces the dense column-major kernels instead, so the two
+    // can be A/B'd on one binary (no build-to-build layout noise).
+    let listed_ok = col_ok && l1 == 16 && pw.is_multiple_of(64) && pw <= NNUE_PW_BUF
+        && std::env::var_os("CODA_DENSE_L1").is_none();
     #[cfg(target_arch = "x86_64")]
     {
+        if has_avx512_vnni && listed_ok {
+            return L1Kernel::ListedAvx512Vnni;
+        }
         if has_avx512_vnni && col_ok && l1 == 16 && pw.is_multiple_of(4) {
             return L1Kernel::DenseAvx512Vnni;
         }
@@ -2887,6 +2963,9 @@ fn select_l1_kernel(
         }
         if has_avx512_vnni && pw.is_multiple_of(64) && have_8t {
             return L1Kernel::RowMajorAvx512Vnni;
+        }
+        if has_avx_vnni && listed_ok {
+            return L1Kernel::ListedAvxVnni;
         }
         if has_avx_vnni && col_ok && l1 <= 16 && pw.is_multiple_of(4) {
             return L1Kernel::DenseAvxVnni;
@@ -2902,6 +2981,12 @@ fn select_l1_kernel(
         }
         if has_avx2 && col_ok && l1 == 32 && pw.is_multiple_of(4) {
             return L1Kernel::DenseAvx2L1_32;
+        }
+        if has_avx2 && listed_ok && listed_x2_safe {
+            return L1Kernel::ListedAvx2X2;
+        }
+        if has_avx2 && listed_ok {
+            return L1Kernel::ListedAvx2;
         }
         if has_avx2 && col_ok && l1 == 16 && pw.is_multiple_of(8) && x2_safe {
             return L1Kernel::DenseAvx2L1_16X2;
@@ -2926,7 +3011,7 @@ fn select_l1_kernel(
             return L1Kernel::NeonX4;
         }
     }
-    let _ = (l1, bucketed_hidden, pw, col_ok, have_8t, x2_safe,
+    let _ = (l1, bucketed_hidden, pw, col_ok, listed_ok, listed_x2_safe, have_8t, x2_safe,
              has_avx2, has_avx512, has_avx512_vnni, has_avx_vnni,
              has_neon, has_dotprod, has_i8mm);
     L1Kernel::Scalar
@@ -3607,6 +3692,11 @@ impl NNUENet {
                       (weights exceed the saturation bound). AVX2-without-VNNI hosts \
                       — including CCRL — fall back to the unfused L1 kernel.", l1_size);
         }
+        // The listed AVX2 kernel fuses whichever two groups are adjacent in
+        // the list, so it needs the any-pair bound, not the aligned-pair one.
+        // Checked over the whole table (every bucket section): conservative.
+        let listed_x2_safe = !l1_weights_sparse.is_empty()
+            && crate::sparse_l1::listed_pair_fusion_safe(&l1_weights_sparse, l1_size);
         let l1_kernel = select_l1_kernel(
             use_pairwise,
             l1_size, // header (per-bucket) width — equals total when unbucketed
@@ -3615,6 +3705,7 @@ impl NNUENet {
             !l1_weights_sparse.is_empty(),
             !l1_weights_8t.is_empty(),
             x2_safe,
+            listed_x2_safe,
             has_avx2,
             has_avx512,
             has_avx512_vnni,
@@ -3878,8 +3969,56 @@ impl NNUENet {
         let stm_pw_ptr = scratch_ptr!(stm_pw_storage, u8);
         let ntm_pw_ptr = scratch_ptr!(ntm_pw_storage, u8);
 
+        // Group lists for the listed L1 kernels: filled by the pack itself
+        // (EMIT packs) when `self.l1_kernel.is_listed()`, untouched otherwise.
+        // One u8 per non-zero 4-byte group of each perspective.
         #[cfg(target_arch = "x86_64")]
-        if self.has_avx512 && pw.is_multiple_of(32) {
+        const LIST_BUF: usize = NNUE_PW_BUF / 4 + crate::sparse_l1::GROUP_LIST_SLACK;
+        #[cfg(target_arch = "x86_64")]
+        let mut stm_list_storage = std::mem::MaybeUninit::<Align64<[u8; LIST_BUF]>>::uninit();
+        #[cfg(target_arch = "x86_64")]
+        let mut ntm_list_storage = std::mem::MaybeUninit::<Align64<[u8; LIST_BUF]>>::uninit();
+        #[cfg(target_arch = "x86_64")]
+        let stm_list_ptr = scratch_ptr!(stm_list_storage, u8);
+        #[cfg(target_arch = "x86_64")]
+        let ntm_list_ptr = scratch_ptr!(ntm_list_storage, u8);
+        #[cfg(target_arch = "x86_64")]
+        let (mut stm_listed, mut ntm_listed) = (0usize, 0usize);
+        #[cfg(target_arch = "x86_64")]
+        let listed = self.l1_kernel.is_listed();
+
+        #[cfg(target_arch = "x86_64")]
+        if listed && self.has_avx512 {
+            // Listed kernels are selected only for pw % 64 == 0.
+            unsafe {
+                if has_threats {
+                    stm_listed = simd512_pairwise_pack_impl::<true, true>(
+                        stm_acc, stm_threat.as_ptr(), stm_pw_ptr, pw, stm_list_ptr);
+                    ntm_listed = simd512_pairwise_pack_impl::<true, true>(
+                        ntm_acc, ntm_threat.as_ptr(), ntm_pw_ptr, pw, ntm_list_ptr);
+                } else {
+                    stm_listed = simd512_pairwise_pack_impl::<false, true>(
+                        stm_acc, std::ptr::null(), stm_pw_ptr, pw, stm_list_ptr);
+                    ntm_listed = simd512_pairwise_pack_impl::<false, true>(
+                        ntm_acc, std::ptr::null(), ntm_pw_ptr, pw, ntm_list_ptr);
+                }
+            }
+        } else if listed {
+            // Every listed kernel requires AVX2, so the AVX2 pack is available.
+            unsafe {
+                if has_threats {
+                    stm_listed = simd_pairwise_pack_impl::<true, true>(
+                        stm_acc, stm_threat.as_ptr(), stm_pw_ptr, pw, stm_list_ptr);
+                    ntm_listed = simd_pairwise_pack_impl::<true, true>(
+                        ntm_acc, ntm_threat.as_ptr(), ntm_pw_ptr, pw, ntm_list_ptr);
+                } else {
+                    stm_listed = simd_pairwise_pack_impl::<false, true>(
+                        stm_acc, std::ptr::null(), stm_pw_ptr, pw, stm_list_ptr);
+                    ntm_listed = simd_pairwise_pack_impl::<false, true>(
+                        ntm_acc, std::ptr::null(), ntm_pw_ptr, pw, ntm_list_ptr);
+                }
+            }
+        } else if self.has_avx512 && pw.is_multiple_of(32) {
             unsafe {
                 if has_threats {
                     simd512_pairwise_pack_threat(stm_acc, stm_threat.as_ptr(), stm_pw_ptr, pw);
@@ -4032,7 +4171,29 @@ impl NNUENet {
                 }
             }};
         }
+        // Listed arms: (input ptr, list ptr, count) per perspective.
+        #[cfg(target_arch = "x86_64")]
+        macro_rules! listed_arm {
+            ($kernel:expr) => {{
+                debug_assert!(stm_listed <= pw / 4 && ntm_listed <= pw / 4);
+                unsafe {
+                    $kernel(
+                        stm_pw.as_ptr(), ntm_pw.as_ptr(), pw, l1_sparse.as_ptr(),
+                        stm_list_ptr, stm_listed, ntm_list_ptr, ntm_listed,
+                        &self.l1_biases[l1_off..], pw_scale, hidden32_ptr,
+                    );
+                }
+            }};
+        }
         match self.l1_kernel {
+            #[cfg(target_arch = "x86_64")]
+            L1Kernel::ListedAvx512Vnni => { listed_arm!(crate::sparse_l1::listed_l1_16_avx512_vnni); }
+            #[cfg(target_arch = "x86_64")]
+            L1Kernel::ListedAvxVnni => { listed_arm!(crate::sparse_l1::listed_l1_16_avx_vnni); }
+            #[cfg(target_arch = "x86_64")]
+            L1Kernel::ListedAvx2X2 => { listed_arm!(crate::sparse_l1::listed_l1_16_avx2::<true>); }
+            #[cfg(target_arch = "x86_64")]
+            L1Kernel::ListedAvx2 => { listed_arm!(crate::sparse_l1::listed_l1_16_avx2::<false>); }
             #[cfg(target_arch = "x86_64")]
             L1Kernel::DenseAvx512Vnni => {
                 // AVX-512 VNNI column-major: all 16 L1 neurons in one ZMM
@@ -7471,6 +7632,70 @@ mod tests {
             let a = (acc[i] as i32 + ta).clamp(0, QA);
             let b = (acc[i + pw] as i32 + tb).clamp(0, QA);
             out[i] = ((a * b) >> FT_SHIFT) as u8;
+        }
+    }
+
+    /// The EMIT packs must (a) write exactly the bytes the plain packs write
+    /// and (b) list exactly the non-zero 4-byte groups, in order — the listed
+    /// L1 kernels' exactness rests on (b). Swept over activation densities from
+    /// all-zero to all-non-zero, with and without threats, and up to pw=1024
+    /// (group index 255, the top of the u8 list encoding).
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn test_x86_pairwise_pack_emits_group_list() {
+        if !is_x86_feature_detected!("avx2") {
+            eprintln!("No AVX2, skipping group-list pack test");
+            return;
+        }
+        let has512 = is_x86_feature_detected!("avx512f") && is_x86_feature_detected!("avx512bw");
+        const SLACK: usize = crate::sparse_l1::GROUP_LIST_SLACK;
+        for &pw in &[384usize, 512, 1024] {
+            for &shift in &[-2000i32, 0, 150, 300, 390, 2000] {
+                let mut r = rng(0x9e0b_11a7 ^ (pw as u64) ^ ((shift as u64) << 20));
+                let mut acc = vec![0i16; pw * 2];
+                for v in acc.iter_mut() {
+                    *v = ((r() as i32 as i16).rem_euclid(801) as i32 - 400 - shift)
+                        .clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+                }
+                let mut threat = vec![0i16; pw * 2];
+                for v in threat.iter_mut() { *v = (r() as i32 as i16).rem_euclid(201) - 100; }
+
+                for t_opt in [None, Some(&threat)] {
+                    let t_ptr = t_opt.map_or(std::ptr::null(), |t: &Vec<i16>| t.as_ptr());
+                    let mut want = vec![0u8; pw];
+                    pairwise_pack_scalar_ref(&acc, t_opt.map(|t| t.as_slice()), &mut want, pw);
+                    let mut want_list = vec![0u8; pw / 4];
+                    let want_n = crate::sparse_l1::scan_groups(&want, &mut want_list);
+
+                    let mut out = vec![0u8; pw];
+                    let mut list = vec![0xAAu8; pw / 4 + SLACK];
+                    let n = unsafe {
+                        if t_ptr.is_null() {
+                            simd_pairwise_pack_impl::<false, true>(&acc, t_ptr, out.as_mut_ptr(), pw, list.as_mut_ptr())
+                        } else {
+                            simd_pairwise_pack_impl::<true, true>(&acc, t_ptr, out.as_mut_ptr(), pw, list.as_mut_ptr())
+                        }
+                    };
+                    assert_eq!(out, want, "AVX2 EMIT pack bytes diverged pw={} shift={}", pw, shift);
+                    assert_eq!(&list[..n], &want_list[..want_n],
+                        "AVX2 group list wrong pw={} shift={}", pw, shift);
+
+                    if has512 {
+                        let mut out = vec![0u8; pw];
+                        let mut list = vec![0xAAu8; pw / 4 + SLACK];
+                        let n = unsafe {
+                            if t_ptr.is_null() {
+                                simd512_pairwise_pack_impl::<false, true>(&acc, t_ptr, out.as_mut_ptr(), pw, list.as_mut_ptr())
+                            } else {
+                                simd512_pairwise_pack_impl::<true, true>(&acc, t_ptr, out.as_mut_ptr(), pw, list.as_mut_ptr())
+                            }
+                        };
+                        assert_eq!(out, want, "AVX-512 EMIT pack bytes diverged pw={} shift={}", pw, shift);
+                        assert_eq!(&list[..n], &want_list[..want_n],
+                            "AVX-512 group list wrong pw={} shift={}", pw, shift);
+                    }
+                }
+            }
         }
     }
 

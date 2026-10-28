@@ -1196,6 +1196,339 @@ pub unsafe fn dense_l1_avx_vnni(
     }
 }
 
+// ---------------------------------------------------------------------------
+// Group-listed L1 (the "fused" sparse path).
+//
+// The packed pairwise input is read by L1 in 4-byte GROUPS (one VPDPBUSD /
+// VPMADDUBSW broadcast each). In search roughly half of those groups are all
+// zero, and a zero group contributes exactly nothing to any neuron, so skipping
+// it is exact.
+//
+// The earlier sparse kernels in this file found the non-zero groups with a
+// SEPARATE pass over the packed vector (`find_nnz_chunks4`) or a per-group
+// branch, and lost to dense at every density measured. Here the pack itself
+// emits the list: when it stores a block of packed bytes it already holds those
+// bytes in a register, so one compare-to-mask plus one table lookup per 8 groups
+// produces the indices, with no second read of the buffer and no
+// data-dependent branch. L1 then walks only the listed groups.
+//
+// List format: one `u8` group index per non-zero group, local to its
+// perspective (group g covers packed bytes 4g..4g+3). A perspective has
+// pw/4 <= 256 groups for every net Coda can load (`NNUE_PW_BUF` = 1024), so a
+// byte is enough. Emission stores 8 bytes at a time, so list buffers need
+// `GROUP_LIST_SLACK` bytes beyond the maximum group count.
+// ---------------------------------------------------------------------------
+
+/// Extra bytes a group list needs beyond its maximum entry count, because
+/// `push_groups` always stores a full 8-byte row.
+pub const GROUP_LIST_SLACK: usize = 8;
+
+/// `GROUP_LUT[m]` lists, in ascending order, the positions of the set bits of
+/// the 8-bit mask `m`. Unused trailing entries are 0 and are overwritten by
+/// the next push (or ignored, being past the count).
+pub static GROUP_LUT: [[u8; 8]; 256] = build_group_lut();
+
+const fn build_group_lut() -> [[u8; 8]; 256] {
+    let mut t = [[0u8; 8]; 256];
+    let mut m = 0;
+    while m < 256 {
+        let mut k = 0;
+        let mut b = 0;
+        while b < 8 {
+            if (m >> b) & 1 == 1 {
+                t[m][k] = b as u8;
+                k += 1;
+            }
+            b += 1;
+        }
+        m += 1;
+    }
+    t
+}
+
+/// Append the groups set in `mask` (bit b = group `first + b`) to `list`,
+/// which currently holds `n` entries; returns the new count. Branch-free: the
+/// 8-byte row is always stored and the count advances by popcount.
+///
+/// # Safety
+/// `list` must have room for `n + 8` bytes. `first + 7` must fit in a u8.
+#[cfg(target_arch = "x86_64")]
+#[inline(always)]
+pub unsafe fn push_groups(list: *mut u8, n: usize, mask: u32, first: u8) -> usize {
+    use std::arch::x86_64::*;
+    debug_assert!(mask < 256);
+    let row = _mm_loadl_epi64(GROUP_LUT.as_ptr().add(mask as usize) as *const __m128i);
+    let row = _mm_add_epi8(row, _mm_set1_epi8(first as i8));
+    _mm_storel_epi64(list.add(n) as *mut __m128i, row);
+    n + mask.count_ones() as usize
+}
+
+/// Portable reference for the list the packs emit: every group of `pw_buf`
+/// (pw bytes) with any non-zero byte, ascending. Used by the scalar pack
+/// fallback and as the oracle in tests.
+pub fn scan_groups(pw_buf: &[u8], list: &mut [u8]) -> usize {
+    let mut n = 0;
+    for (g, grp) in pw_buf.chunks_exact(4).enumerate() {
+        if grp.iter().any(|&b| b != 0) {
+            list[n] = g as u8;
+            n += 1;
+        }
+    }
+    n
+}
+
+/// Load-time gate for `listed_l1_16_avx2_x2`, the pair-fused AVX2 listed
+/// kernel. The dense x2 kernel only ever fuses ALIGNED chunk pairs, so
+/// `x2_fusion_safe` checks those; the listed kernel fuses whichever two
+/// non-zero groups happen to be adjacent in the list, so it needs the bound
+/// for ANY pair: for every neuron and maddubs lane, the two largest per-group
+/// lane sums `|w0| + |w1|` across all groups must satisfy
+/// `127 * (s1 + s2) <= 32767` (same derivation as `x2_fusion_safe`: input is
+/// at most 127, the fused i16 lane holds four products). O(weights), once.
+pub fn listed_pair_fusion_safe(sparse_weights: &[i8], num_neurons: usize) -> bool {
+    let chunk_stride = num_neurons * 4;
+    if chunk_stride == 0 || !sparse_weights.len().is_multiple_of(chunk_stride) {
+        return false;
+    }
+    let chunks = sparse_weights.len() / chunk_stride;
+    for j in 0..num_neurons {
+        for lane in 0..2 {
+            let (mut s1, mut s2) = (0i32, 0i32);
+            for c in 0..chunks {
+                let a = c * chunk_stride + j * 4 + 2 * lane;
+                let s = (sparse_weights[a] as i32).abs() + (sparse_weights[a + 1] as i32).abs();
+                if s > s1 { s2 = s1; s1 = s; } else if s > s2 { s2 = s; }
+            }
+            if 127 * (s1 + s2) > i16::MAX as i32 {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+/// Scalar reference for the listed kernels: same result as `sparse_l1_scalar`
+/// but driven by explicit group lists.
+#[allow(clippy::too_many_arguments)]
+pub fn listed_l1_scalar(
+    stm_pw: &[u8], ntm_pw: &[u8], pw: usize, weights: &[i8], num_neurons: usize,
+    stm_list: &[u8], ntm_list: &[u8], bias: &[i16], bias_scale: i32, output: &mut [i32],
+) {
+    let stride = num_neurons * 4;
+    for i in 0..num_neurons { output[i] = bias[i] as i32 * bias_scale; }
+    for (input, list, base) in [(stm_pw, stm_list, 0usize), (ntm_pw, ntm_list, pw / 4)] {
+        for &g in list {
+            let g = g as usize;
+            let w = (base + g) * stride;
+            for j in 0..num_neurons {
+                for b in 0..4 {
+                    output[j] += input[g * 4 + b] as i32 * weights[w + j * 4 + b] as i32;
+                }
+            }
+        }
+    }
+}
+
+/// Group-listed L1 matmul, AVX-512 VNNI, L1=16: one VPDPBUSD per LISTED group
+/// (versus one per group in `dense_l1_avx512_vnni`). Same input-chunk-major
+/// weight table; the per-group weight row is one 64-byte line, so only the
+/// lines of non-zero groups are touched. Four accumulators, as in the dense
+/// kernel, to cover VPDPBUSD latency.
+///
+/// # Safety
+/// CPU must support AVX-512F/BW/VNNI. `stm_pw`/`ntm_pw` must hold `pw` bytes,
+/// `weights` the full `(pw/2) * 16` byte table, every list entry must be
+/// `< pw/4`, and `output` must point to 16 writable i32s.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f,avx512bw,avx512vnni")]
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn listed_l1_16_avx512_vnni(
+    stm_pw: *const u8, ntm_pw: *const u8, pw: usize, weights: *const i8,
+    stm_list: *const u8, stm_n: usize, ntm_list: *const u8, ntm_n: usize,
+    bias: &[i16], bias_scale: i32, output: *mut i32,
+) {
+    use std::arch::x86_64::*;
+    const STRIDE: usize = 64;
+    let mut a0 = _mm512_setzero_si512();
+    let mut a1 = _mm512_setzero_si512();
+    let mut a2 = _mm512_setzero_si512();
+    let mut a3 = _mm512_setzero_si512();
+
+    macro_rules! run {
+        ($input:expr, $list:expr, $n:expr, $w:expr) => {{
+            let inp = $input as *const i32;
+            let list: *const u8 = $list;
+            let n: usize = $n;
+            let w: *const i8 = $w;
+            let mut k = 0usize;
+            while k + 4 <= n {
+                let g0 = *list.add(k) as usize;
+                let g1 = *list.add(k + 1) as usize;
+                let g2 = *list.add(k + 2) as usize;
+                let g3 = *list.add(k + 3) as usize;
+                a0 = _mm512_dpbusd_epi32(a0, _mm512_set1_epi32(inp.add(g0).read_unaligned()),
+                    _mm512_loadu_si512(w.add(g0 * STRIDE) as *const __m512i));
+                a1 = _mm512_dpbusd_epi32(a1, _mm512_set1_epi32(inp.add(g1).read_unaligned()),
+                    _mm512_loadu_si512(w.add(g1 * STRIDE) as *const __m512i));
+                a2 = _mm512_dpbusd_epi32(a2, _mm512_set1_epi32(inp.add(g2).read_unaligned()),
+                    _mm512_loadu_si512(w.add(g2 * STRIDE) as *const __m512i));
+                a3 = _mm512_dpbusd_epi32(a3, _mm512_set1_epi32(inp.add(g3).read_unaligned()),
+                    _mm512_loadu_si512(w.add(g3 * STRIDE) as *const __m512i));
+                k += 4;
+            }
+            while k < n {
+                let g = *list.add(k) as usize;
+                a0 = _mm512_dpbusd_epi32(a0, _mm512_set1_epi32(inp.add(g).read_unaligned()),
+                    _mm512_loadu_si512(w.add(g * STRIDE) as *const __m512i));
+                k += 1;
+            }
+        }};
+    }
+    run!(stm_pw, stm_list, stm_n, weights);
+    run!(ntm_pw, ntm_list, ntm_n, weights.add((pw / 4) * STRIDE));
+
+    let acc = _mm512_add_epi32(_mm512_add_epi32(a0, a1), _mm512_add_epi32(a2, a3));
+    let b = _mm512_cvtepi16_epi32(_mm256_loadu_si256(bias.as_ptr() as *const __m256i));
+    let b = _mm512_mullo_epi32(b, _mm512_set1_epi32(bias_scale));
+    _mm512_storeu_si512(output as *mut __m512i, _mm512_add_epi32(acc, b));
+}
+
+/// Group-listed L1 matmul, AVX-VNNI (YMM VPDPBUSD), L1=16. The YMM twin of
+/// `listed_l1_16_avx512_vnni`: 16 neurons = two YMM halves per group, two
+/// accumulator pairs.
+///
+/// # Safety
+/// CPU must support AVX2 + AVX-VNNI; otherwise as `listed_l1_16_avx512_vnni`.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,avxvnni")]
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn listed_l1_16_avx_vnni(
+    stm_pw: *const u8, ntm_pw: *const u8, pw: usize, weights: *const i8,
+    stm_list: *const u8, stm_n: usize, ntm_list: *const u8, ntm_n: usize,
+    bias: &[i16], bias_scale: i32, output: *mut i32,
+) {
+    use std::arch::x86_64::*;
+    const STRIDE: usize = 64;
+    let mut lo0 = _mm256_setzero_si256();
+    let mut hi0 = _mm256_setzero_si256();
+    let mut lo1 = _mm256_setzero_si256();
+    let mut hi1 = _mm256_setzero_si256();
+
+    macro_rules! run {
+        ($input:expr, $list:expr, $n:expr, $w:expr) => {{
+            let inp = $input as *const i32;
+            let list: *const u8 = $list;
+            let n: usize = $n;
+            let w: *const i8 = $w;
+            let mut k = 0usize;
+            while k + 2 <= n {
+                let g0 = *list.add(k) as usize;
+                let g1 = *list.add(k + 1) as usize;
+                let i0 = _mm256_set1_epi32(inp.add(g0).read_unaligned());
+                let i1 = _mm256_set1_epi32(inp.add(g1).read_unaligned());
+                let w0 = w.add(g0 * STRIDE);
+                let w1 = w.add(g1 * STRIDE);
+                lo0 = _mm256_dpbusd_avx_epi32(lo0, i0, _mm256_loadu_si256(w0 as *const __m256i));
+                hi0 = _mm256_dpbusd_avx_epi32(hi0, i0, _mm256_loadu_si256(w0.add(32) as *const __m256i));
+                lo1 = _mm256_dpbusd_avx_epi32(lo1, i1, _mm256_loadu_si256(w1 as *const __m256i));
+                hi1 = _mm256_dpbusd_avx_epi32(hi1, i1, _mm256_loadu_si256(w1.add(32) as *const __m256i));
+                k += 2;
+            }
+            if k < n {
+                let g = *list.add(k) as usize;
+                let i0 = _mm256_set1_epi32(inp.add(g).read_unaligned());
+                let w0 = w.add(g * STRIDE);
+                lo0 = _mm256_dpbusd_avx_epi32(lo0, i0, _mm256_loadu_si256(w0 as *const __m256i));
+                hi0 = _mm256_dpbusd_avx_epi32(hi0, i0, _mm256_loadu_si256(w0.add(32) as *const __m256i));
+            }
+        }};
+    }
+    run!(stm_pw, stm_list, stm_n, weights);
+    run!(ntm_pw, ntm_list, ntm_n, weights.add((pw / 4) * STRIDE));
+
+    let scale = _mm256_set1_epi32(bias_scale);
+    let b0 = _mm256_mullo_epi32(_mm256_cvtepi16_epi32(_mm_loadu_si128(bias.as_ptr() as *const __m128i)), scale);
+    let b1 = _mm256_mullo_epi32(_mm256_cvtepi16_epi32(_mm_loadu_si128(bias.as_ptr().add(8) as *const __m128i)), scale);
+    _mm256_storeu_si256(output as *mut __m256i, _mm256_add_epi32(_mm256_add_epi32(lo0, lo1), b0));
+    _mm256_storeu_si256(output.add(8) as *mut __m256i, _mm256_add_epi32(_mm256_add_epi32(hi0, hi1), b1));
+}
+
+/// Group-listed L1 matmul, AVX2, L1=16. `FUSE_PAIRS` sums two listed groups'
+/// VPMADDUBSW products in i16 before one shared VPMADDWD (the listed analogue
+/// of `dense_l1_avx2_l1_16_x2`); it is exact only when
+/// `listed_pair_fusion_safe` holds for the loaded weights, and the loader
+/// selects it only then. Without fusion every group is widened on its own,
+/// which can never saturate (one maddubs lane is at most 127 * 256).
+///
+/// # Safety
+/// CPU must support AVX2; otherwise as `listed_l1_16_avx512_vnni`. With
+/// `FUSE_PAIRS`, the weights must satisfy `listed_pair_fusion_safe`.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn listed_l1_16_avx2<const FUSE_PAIRS: bool>(
+    stm_pw: *const u8, ntm_pw: *const u8, pw: usize, weights: *const i8,
+    stm_list: *const u8, stm_n: usize, ntm_list: *const u8, ntm_n: usize,
+    bias: &[i16], bias_scale: i32, output: *mut i32,
+) {
+    use std::arch::x86_64::*;
+    const STRIDE: usize = 64;
+    let ones = _mm256_set1_epi16(1);
+    let mut lo0 = _mm256_setzero_si256();
+    let mut hi0 = _mm256_setzero_si256();
+    let mut lo1 = _mm256_setzero_si256();
+    let mut hi1 = _mm256_setzero_si256();
+
+    macro_rules! run {
+        ($input:expr, $list:expr, $n:expr, $w:expr) => {{
+            let inp = $input as *const i32;
+            let list: *const u8 = $list;
+            let n: usize = $n;
+            let w: *const i8 = $w;
+            let mut k = 0usize;
+            while k + 2 <= n {
+                let g0 = *list.add(k) as usize;
+                let g1 = *list.add(k + 1) as usize;
+                let i0 = _mm256_set1_epi32(inp.add(g0).read_unaligned());
+                let i1 = _mm256_set1_epi32(inp.add(g1).read_unaligned());
+                let w0 = w.add(g0 * STRIDE);
+                let w1 = w.add(g1 * STRIDE);
+                let p0l = _mm256_maddubs_epi16(i0, _mm256_loadu_si256(w0 as *const __m256i));
+                let p0h = _mm256_maddubs_epi16(i0, _mm256_loadu_si256(w0.add(32) as *const __m256i));
+                let p1l = _mm256_maddubs_epi16(i1, _mm256_loadu_si256(w1 as *const __m256i));
+                let p1h = _mm256_maddubs_epi16(i1, _mm256_loadu_si256(w1.add(32) as *const __m256i));
+                if FUSE_PAIRS {
+                    lo0 = _mm256_add_epi32(lo0, _mm256_madd_epi16(_mm256_add_epi16(p0l, p1l), ones));
+                    hi0 = _mm256_add_epi32(hi0, _mm256_madd_epi16(_mm256_add_epi16(p0h, p1h), ones));
+                } else {
+                    lo0 = _mm256_add_epi32(lo0, _mm256_madd_epi16(p0l, ones));
+                    hi0 = _mm256_add_epi32(hi0, _mm256_madd_epi16(p0h, ones));
+                    lo1 = _mm256_add_epi32(lo1, _mm256_madd_epi16(p1l, ones));
+                    hi1 = _mm256_add_epi32(hi1, _mm256_madd_epi16(p1h, ones));
+                }
+                k += 2;
+            }
+            if k < n {
+                let g = *list.add(k) as usize;
+                let i0 = _mm256_set1_epi32(inp.add(g).read_unaligned());
+                let w0 = w.add(g * STRIDE);
+                lo1 = _mm256_add_epi32(lo1, _mm256_madd_epi16(
+                    _mm256_maddubs_epi16(i0, _mm256_loadu_si256(w0 as *const __m256i)), ones));
+                hi1 = _mm256_add_epi32(hi1, _mm256_madd_epi16(
+                    _mm256_maddubs_epi16(i0, _mm256_loadu_si256(w0.add(32) as *const __m256i)), ones));
+            }
+        }};
+    }
+    run!(stm_pw, stm_list, stm_n, weights);
+    run!(ntm_pw, ntm_list, ntm_n, weights.add((pw / 4) * STRIDE));
+
+    let scale = _mm256_set1_epi32(bias_scale);
+    let b0 = _mm256_mullo_epi32(_mm256_cvtepi16_epi32(_mm_loadu_si128(bias.as_ptr() as *const __m128i)), scale);
+    let b1 = _mm256_mullo_epi32(_mm256_cvtepi16_epi32(_mm_loadu_si128(bias.as_ptr().add(8) as *const __m128i)), scale);
+    _mm256_storeu_si256(output as *mut __m256i, _mm256_add_epi32(_mm256_add_epi32(lo0, lo1), b0));
+    _mm256_storeu_si256(output.add(8) as *mut __m256i, _mm256_add_epi32(_mm256_add_epi32(hi0, hi1), b1));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1413,6 +1746,93 @@ mod tests {
         let bias: Vec<i16> = (0..num_neurons).map(|i| (i as i16) * 3 - 20).collect();
         let bias_scale = 127; // PW_SCALE
         (sparse_weights, bias, stm_pw, ntm_pw, pw, num_neurons, bias_scale)
+    }
+
+    /// Every listed kernel against the dense scalar oracle, bit-for-bit,
+    /// driven by the list `scan_groups` produces (the packs are checked to
+    /// emit that same list in nnue.rs). Includes 0% and 100% density and
+    /// pw=1024 (group index 255). The AVX2 pair-fused form is run only on
+    /// weights that pass `listed_pair_fusion_safe`, as in production; the
+    /// gate itself is checked to reject a table built to violate it.
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn test_listed_kernels_match_scalar() {
+        crate::init();
+        if !is_x86_feature_detected!("avx2") {
+            eprintln!("No AVX2, skipping listed-kernel test");
+            return;
+        }
+        let vnni512 = is_x86_feature_detected!("avx512f") && is_x86_feature_detected!("avx512bw")
+            && is_x86_feature_detected!("avx512vnni");
+        let avxvnni = is_x86_feature_detected!("avxvnni");
+        for &pw_dim in &[384usize, 512, 1024] {
+            for density in [0u32, 10, 45, 90, 100] {
+                for seed in 0u64..4 {
+                    let (sw, bias, s_pw, n_pw, pw, nn, scale) = build_l1_16_test_case(seed, density, pw_dim);
+                    // Pairwise inputs never exceed 127; keep the oracle honest.
+                    let s_pw: Vec<u8> = s_pw.iter().map(|&b| b & 0x7F).collect();
+                    let n_pw: Vec<u8> = n_pw.iter().map(|&b| b & 0x7F).collect();
+                    let mut want = vec![0i32; nn];
+                    sparse_l1_scalar(&s_pw, &n_pw, pw, &sw, nn, &bias, scale, &mut want);
+
+                    let mut sl = vec![0u8; pw / 4 + GROUP_LIST_SLACK];
+                    let mut nl = vec![0u8; pw / 4 + GROUP_LIST_SLACK];
+                    let sn = scan_groups(&s_pw, &mut sl);
+                    let nn_ = scan_groups(&n_pw, &mut nl);
+
+                    let mut got = vec![0i32; nn];
+                    listed_l1_scalar(&s_pw, &n_pw, pw, &sw, nn, &sl[..sn], &nl[..nn_], &bias, scale, &mut got);
+                    assert_eq!(got, want, "listed scalar seed={} d={} pw={}", seed, density, pw);
+
+                    let run = |k: unsafe fn(*const u8, *const u8, usize, *const i8, *const u8, usize,
+                                            *const u8, usize, &[i16], i32, *mut i32)| {
+                        let mut out = vec![0i32; nn];
+                        unsafe {
+                            k(s_pw.as_ptr(), n_pw.as_ptr(), pw, sw.as_ptr(), sl.as_ptr(), sn,
+                              nl.as_ptr(), nn_, &bias, scale, out.as_mut_ptr());
+                        }
+                        out
+                    };
+                    assert_eq!(run(listed_l1_16_avx2::<false>), want,
+                        "listed avx2 seed={} d={} pw={}", seed, density, pw);
+                    if listed_pair_fusion_safe(&sw, nn) {
+                        assert_eq!(run(listed_l1_16_avx2::<true>), want,
+                            "listed avx2 x2 seed={} d={} pw={}", seed, density, pw);
+                    }
+                    if avxvnni {
+                        assert_eq!(run(listed_l1_16_avx_vnni), want,
+                            "listed avx-vnni seed={} d={} pw={}", seed, density, pw);
+                    }
+                    if vnni512 {
+                        assert_eq!(run(listed_l1_16_avx512_vnni), want,
+                            "listed avx512-vnni seed={} d={} pw={}", seed, density, pw);
+                    }
+                }
+            }
+        }
+        // Fusion-safe table: weights within +-64 keep every pair sum <= 256.
+        let mut small = vec![0i8; 128 * 64];
+        for (i, w) in small.iter_mut().enumerate() { *w = ((i * 37 % 129) as i32 - 64) as i8; }
+        assert!(listed_pair_fusion_safe(&small, 16));
+        let (s_pw, n_pw): (Vec<u8>, Vec<u8>) = ((0..256).map(|i| (i * 7 % 128) as u8).collect(),
+                                               (0..256).map(|i| (i * 11 % 128) as u8).collect());
+        let bias = vec![5i16; 16];
+        let mut want = vec![0i32; 16];
+        sparse_l1_scalar(&s_pw, &n_pw, 256, &small, 16, &bias, 127, &mut want);
+        let (mut sl, mut nl) = (vec![0u8; 64 + GROUP_LIST_SLACK], vec![0u8; 64 + GROUP_LIST_SLACK]);
+        let sn = scan_groups(&s_pw, &mut sl);
+        let nn_ = scan_groups(&n_pw, &mut nl);
+        let mut got = vec![0i32; 16];
+        unsafe {
+            listed_l1_16_avx2::<true>(s_pw.as_ptr(), n_pw.as_ptr(), 256, small.as_ptr(), sl.as_ptr(), sn,
+                nl.as_ptr(), nn_, &bias, 127, got.as_mut_ptr());
+        }
+        assert_eq!(got, want, "listed avx2 x2 on a fusion-safe table");
+        // Two groups whose lane sums are 254 each break the any-pair bound.
+        let mut big = small.clone();
+        big[0] = 127; big[1] = 127;
+        big[64] = -127; big[65] = -127;
+        assert!(!listed_pair_fusion_safe(&big, 16));
     }
 
     #[test]
