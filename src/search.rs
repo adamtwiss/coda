@@ -6779,6 +6779,20 @@ let singular_beta = tt_score_local - depth;
 
         let mut new_depth = depth - 1 + extension + singular_extension;
 
+        // A TT move that survived the singular test (and was actually
+        // extended, i.e. not suppressed by root_decided / FEAT_EXTENSIONS
+        // above) says this node is sharper than its nominal depth suggests:
+        // its one good move is forcing. Raise the node's own depth by a ply
+        // for everything after this point — the remaining siblings' LMR,
+        // LMP/futility/SEE gates, the cutoff history bonus and the TT store.
+        // The TT move's own child depth was fixed on the line above, so it
+        // is not extended twice. Bounded: SE runs at most once per node (only
+        // on the TT move), so this adds at most one ply per node, the same
+        // budget the singular extension itself spends.
+        if singular_extension >= 1 {
+            depth += 1;
+        }
+
         // Propagate double extension counter to child
         if ply_u < MAX_PLY {
             info.double_ext_count[ply_u + 1] = info.double_ext_count[ply_u]
