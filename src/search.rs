@@ -7307,204 +7307,38 @@ let singular_beta = tt_score_local - depth;
                     info.stats.cutoff_movecount_sum += move_count as u64;
                     info.stats.cutoff_movecount_sq_sum += (move_count as u64) * (move_count as u64);
 
-                    // Beta cutoff - update history for quiet moves.
-                    // The !is_promo gate matters: letting non-capture promotions
-                    // take the quiet branch writes main/cont/pawn-history
-                    // bonuses for a move the picker orders in the CAPTURE stage,
-                    // polluting cells that genuine quiets read (quiets_tried
-                    // already excludes promos). They belong in the capture
-                    // branch, training the capt-hist empty slot the read side
-                    // uses — SF capture_stage semantics.
-                    if !is_cap && !is_promo {
-                        // Depth-boost on a big fail-high. Two triggers
-                        // (Stormphrax: cutoff beat static eval; improving) can
-                        // stack for +2 depth.
-                        let bonus_depth = depth
-                            + if !in_check && static_eval <= best_score { 1 } else { 0 }
-                            + if improving { 1 } else { 0 };
-                        // numFailHighs multiplicative scaling (Starzix pattern)
-                        // — more cascades = stronger cutoff confidence.
-                        let raw_bonus = history_bonus(bonus_depth);
-                        let scale_factor = num_fail_highs.min(tp10(&NFH_CAP_10X));
-                        // Fixed-point divisor (stored × 10).
-                        let mut bonus = raw_bonus + raw_bonus * scale_factor * 10 / NFH_DIV_10X.load(Ordering::Relaxed).max(1);
-                        // SF searched-count scale: the more moves were refuted
-                        // before this one cut, the more informative the cutoff
-                        // — scale the bonus up by moves-searched/256 at non-PV
-                        // nodes.
-                        if !is_pv {
-                            bonus += bonus * (move_count - 1).max(0) / 256;
-                        }
-                        // Also from SF: at non-PV nodes, amplify the cutoff move's
-                        // bonus by the number of moves searched before it cut off
-                        // (more competition survived = stronger signal). Best-move
-                        // bonus only — the malus is left unscaled.
-                        if !is_pv {
-                            let siblings = (quiets_count + n_captures_tried) as i32;
-                            bonus += bonus * siblings / tp(&HIST_SIBLING_DIV);
-                        }
-                        // Malus magnitude: separate constants, same scaling chain
-                        // (identical to bonus at default tunables → bench-identical).
-                        let raw_malus = history_malus(bonus_depth);
-                        let malus = raw_malus + raw_malus * scale_factor * 10 / NFH_DIV_10X.load(Ordering::Relaxed).max(1);
-
-                        // Update main history
-                        History::update_history(
-                            info.history.main_entry(from, to, enemy_attacks),
-                            bonus,
-                        );
-
-                        // Update continuation history at plies 1, 2, 4, 6
-                        // Ply-1 at full bonus, plies 2/4/6 at half bonus (Obsidian pattern)
-                        if moved_piece != NO_PIECE {
-                            let gp_mv = go_piece(moved_piece);
-                            // base = current cont_hist + main_hist / 2 (concept from Stormphrax).
-                            let main_score_v = info.history.main_score(from, to, enemy_attacks);
-                            let ch_offsets = [1usize, 2, 4, 6];
-                            for &off in ch_offsets.iter() {
-                                if ply_u >= off {
-                                    let prior_piece = info.moved_piece_stack[ply_u - off] as usize;
-                                    let prior_to = info.moved_to_stack[ply_u - off] as usize;
-                                    if prior_piece > 0 && prior_piece < crate::movepicker::CONT_PLANES && prior_to < 64 {
-                                        // B1: uniform bonus (see LMR nudge site above).
-                                        let ch_bonus = bonus;
-                                        let cur_cont = info.cont.t[prior_piece][prior_to][gp_mv][to as usize].load(std::sync::atomic::Ordering::Relaxed) as i32;
-                                        let base = cur_cont + main_score_v / 2;
-                                        History::update_cont_history_with_base(
-                                            &info.cont.t[prior_piece][prior_to][gp_mv][to as usize],
-                                            cur_cont,
-                                            base,
-                                            ch_bonus,
-                                        );
-                                    }
-                                }
-                            }
-                        }
-
-                        // Update pawn history
-                        if moved_piece != NO_PIECE {
-                            let gp = go_piece(moved_piece);
-                            let v = info.pawn_hist[ph_idx][gp][to as usize] as i32;
-                            let clamped = bonus.clamp(-16384, 16384);
-                            let new_v = v + clamped - v * clamped.abs() / 16384;
-                            info.pawn_hist[ph_idx][gp][to as usize] = new_v.clamp(-32000, 32000) as i16;
-                        }
-
-                        // Penalize all quiet moves tried before the cutoff move
-                        for i in 0..quiets_count.saturating_sub(1) {
-                            let q = quiets_tried[i];
-                            let qf = move_from(q);
-                            let qt = move_to(q);
-                            History::update_history(
-                                info.history.main_entry(qf, qt, enemy_attacks),
-                                -malus,
-                            );
-
-                            // Penalize continuation history at plies 1, 2, 4, 6.
-                            // T6: base uses qf,qt move's main_score (the move being malused).
-                            {
-                                let q_piece = board.piece_at(qf);
-                                if q_piece != NO_PIECE {
-                                    let gp_q = go_piece(q_piece);
-                                    let q_main_score = info.history.main_score(qf, qt, enemy_attacks);
-                                    let ch_offsets = [1usize, 2, 4, 6];
-                                    for &off in ch_offsets.iter() {
-                                        if ply_u >= off {
-                                            let prior_piece = info.moved_piece_stack[ply_u - off] as usize;
-                                            let prior_to = info.moved_to_stack[ply_u - off] as usize;
-                                            if prior_piece > 0 && prior_piece < crate::movepicker::CONT_PLANES && prior_to < 64 {
-                                                // B1: uniform penalty (see bonus site above).
-                                                let ch_pen = -malus;
-                                                let cur_cont = info.cont.t[prior_piece][prior_to][gp_q][qt as usize].load(std::sync::atomic::Ordering::Relaxed) as i32;
-                                                let base = cur_cont + q_main_score / 2;
-                                                History::update_cont_history_with_base(
-                                                    &info.cont.t[prior_piece][prior_to][gp_q][qt as usize],
-                                                    cur_cont,
-                                                    base,
-                                                    ch_pen,
-                                                );
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-
-                            // Penalize pawn history
-                            {
-                                let q_piece = board.piece_at(qf);
-                                if q_piece != NO_PIECE {
-                                    let gp = go_piece(q_piece);
-                                    let v = info.pawn_hist[ph_idx][gp][qt as usize] as i32;
-                                    let clamped = (-malus).clamp(-16384, 16384);
-                                    let new_v = v + clamped - v * clamped.abs() / 16384;
-                                    info.pawn_hist[ph_idx][gp][qt as usize] = new_v.clamp(-32000, 32000) as i16;
-                                }
-                            }
-                        }
-
-                    } else {
-                        // Capture caused beta cutoff: bonus the cutoff capture.
-                        // No depth boost here, unlike the quiet site above.
-                        let cap_bonus_depth = depth;
-                        // numFailHighs multiplicative scaling, as at the quiet
-                        // site: more cascades = stronger cutoff confidence.
-                        let raw_cap_bonus = capture_history_bonus(cap_bonus_depth);
-                        let scale_factor = num_fail_highs.min(tp10(&NFH_CAP_10X));
-                        // Fixed-point divisor (stored × 10).
-                        let mut cap_bonus = raw_cap_bonus + raw_cap_bonus * scale_factor * 10 / NFH_DIV_10X.load(Ordering::Relaxed).max(1);
-                        // SF searched-count scale (see quiet site above).
-                        if !is_pv {
-                            cap_bonus += cap_bonus * (move_count - 1).max(0) / 256;
-                        }
-                        // captured_pt == NO_PIECE_TYPE here means a non-capture
-                        // promotion (the only non-capture route into this branch):
-                        // train slot 0 ("empty") — the slot capt_hist_score_static
-                        // reads when ordering non-capture promos.
-                        if moved_piece != NO_PIECE {
-                            let cpt = if flags == FLAG_EN_PASSANT {
-                                captured_type(PAWN)
-                            } else if captured_pt != NO_PIECE_TYPE {
-                                captured_type(captured_pt)
-                            } else {
-                                0
-                            };
-                            History::update_cont_history(
-                                &mut info.history.capture[go_piece(moved_piece)][to as usize][cpt],
-                                cap_bonus,
-                            );
-                        }
-                    }
-
-
-                    // Unconditionally penalize all tried captures that didn't cause cutoff
-                    // (matching Stockfish/Obsidian — captures that fail should be
-                    // penalized regardless of whether the best move was quiet or tactical)
-                    {
-                        // numFailHighs multiplicative scaling — mirrors the
-                        // capture-BONUS path exactly so the failed captures'
-                        // penalty tracks the cutoff capture's bonus. Omitting it
-                        // here (the easy mistake: this is the least obvious of
-                        // the beta-cutoff history updates) slowly inflates
-                        // capture-history magnitude relative to the scaled
-                        // bonuses and to quiets.
-                        let raw_cap_malus = capture_history_malus(depth);
-                        let scale_factor = num_fail_highs.min(tp10(&NFH_CAP_10X));
-                        let cap_malus = raw_cap_malus + raw_cap_malus * scale_factor * 10 / NFH_DIV_10X.load(Ordering::Relaxed).max(1);
-                        // is_promo joins is_cap: a promo cutoff move is the
-                        // last captures_tried entry and must not malus itself.
-                        let cap_count = if is_cap || is_promo { n_captures_tried.saturating_sub(1) } else { n_captures_tried };
-                        for i in 0..cap_count {
-                            let (cp, ct, cv) = captures_tried[i];
-                            History::update_cont_history(
-                                &mut info.history.capture[cp as usize][ct as usize][cv as usize],
-                                -cap_malus,
-                            );
-                        }
-                    }
+                    update_best_move_history(
+                        info, board, mv, true, depth, in_check, static_eval,
+                        best_score, improving, num_fail_highs, is_pv, move_count,
+                        &quiets_tried[..quiets_count], &captures_tried[..n_captures_tried],
+                        enemy_attacks, ph_idx, ply_u,
+                    );
                     break;
                 }
             }
         }
+    }
+
+    // Exact PV node: the best move raised alpha but nothing cut. It is still
+    // the move this node settled on after searching every alternative, which
+    // is at least as much evidence as a cutoff that ended the loop early — so
+    // give it the same best-move history update (and the alternatives their
+    // malus). Without this, PV nodes feed history only when they fail high,
+    // which at a PV node means an aspiration-style miss rather than the
+    // normal outcome. Singular verification searches are zero-window, so they
+    // never reach here; a stopped search is skipped as at the TT store below.
+    if is_pv
+        && best_move != NO_MOVE
+        && best_score > alpha_orig
+        && best_score < beta
+        && !info.stop.load(Ordering::Relaxed)
+    {
+        update_best_move_history(
+            info, board, best_move, false, depth, in_check, static_eval,
+            best_score, improving, num_fail_highs, is_pv, move_count,
+            &quiets_tried[..quiets_count], &captures_tried[..n_captures_tried],
+            enemy_attacks, ph_idx, ply_u,
+        );
     }
 
     // Check for checkmate or stalemate
@@ -7689,6 +7523,259 @@ let singular_beta = tt_score_local - depth;
     }
 
     best_score
+}
+
+/// Best-move history update: main/cont/pawn history bonus for a quiet best
+/// move (plus malus for the quiets searched alongside it), capture-history
+/// bonus for a noisy one, and capture-history malus for the other captures.
+///
+/// Called at a beta cutoff (`cutoff`, best move = last move searched) and at a
+/// PV node that finished with an exact score (`!cutoff`: the best move raised
+/// alpha without cutting, and other moves may have been searched after it).
+/// The non-PV-only scalings inside are gated on `is_pv` and so never fire on
+/// the exact-node path, which only runs at PV nodes.
+#[allow(clippy::too_many_arguments)]
+#[inline(always)]
+fn update_best_move_history(
+    info: &mut SearchInfo,
+    board: &Board,
+    mv: Move,
+    cutoff: bool,
+    depth: i32,
+    in_check: bool,
+    static_eval: i32,
+    best_score: i32,
+    improving: bool,
+    num_fail_highs: i32,
+    is_pv: bool,
+    move_count: i32,
+    quiets_tried: &[Move],
+    captures_tried: &[(u8, u8, u8)],
+    enemy_attacks: u64,
+    ph_idx: usize,
+    ply_u: usize,
+) {
+    let from = move_from(mv);
+    let to = move_to(mv);
+    let flags = move_flags(mv);
+    let is_cap = board.is_capture(mv);
+    let is_promo = is_promotion(mv);
+    let moved_piece = board.piece_at(from);
+    let captured_pt = if is_cap { board.captured_piece_type(mv) } else { NO_PIECE_TYPE };
+    // The best move's own capture-history cell, for skipping it in the
+    // exact-node malus (same victim encoding as the bonus below).
+    let best_cap_slot = if (is_cap || is_promo) && moved_piece != NO_PIECE {
+        let ct = if flags == FLAG_EN_PASSANT {
+            captured_type(PAWN)
+        } else if captured_pt != NO_PIECE_TYPE {
+            captured_type(captured_pt)
+        } else {
+            0
+        };
+        Some((go_piece(moved_piece) as u8, to, ct as u8))
+    } else {
+        None
+    };
+    {
+        // Beta cutoff - update history for quiet moves.
+        // The !is_promo gate matters: letting non-capture promotions
+        // take the quiet branch writes main/cont/pawn-history
+        // bonuses for a move the picker orders in the CAPTURE stage,
+        // polluting cells that genuine quiets read (quiets_tried
+        // already excludes promos). They belong in the capture
+        // branch, training the capt-hist empty slot the read side
+        // uses — SF capture_stage semantics.
+        if !is_cap && !is_promo {
+            // Depth-boost on a big fail-high. Two triggers
+            // (Stormphrax: cutoff beat static eval; improving) can
+            // stack for +2 depth.
+            let bonus_depth = depth
+                + if !in_check && static_eval <= best_score { 1 } else { 0 }
+                + if improving { 1 } else { 0 };
+            // numFailHighs multiplicative scaling (Starzix pattern)
+            // — more cascades = stronger cutoff confidence.
+            let raw_bonus = history_bonus(bonus_depth);
+            let scale_factor = num_fail_highs.min(tp10(&NFH_CAP_10X));
+            // Fixed-point divisor (stored × 10).
+            let mut bonus = raw_bonus + raw_bonus * scale_factor * 10 / NFH_DIV_10X.load(Ordering::Relaxed).max(1);
+            // SF searched-count scale: the more moves were refuted
+            // before this one cut, the more informative the cutoff
+            // — scale the bonus up by moves-searched/256 at non-PV
+            // nodes.
+            if !is_pv {
+                bonus += bonus * (move_count - 1).max(0) / 256;
+            }
+            // Also from SF: at non-PV nodes, amplify the cutoff move's
+            // bonus by the number of moves searched before it cut off
+            // (more competition survived = stronger signal). Best-move
+            // bonus only — the malus is left unscaled.
+            if !is_pv {
+                let siblings = (quiets_tried.len() + captures_tried.len()) as i32;
+                bonus += bonus * siblings / tp(&HIST_SIBLING_DIV);
+            }
+            // Malus magnitude: separate constants, same scaling chain
+            // (identical to bonus at default tunables → bench-identical).
+            let raw_malus = history_malus(bonus_depth);
+            let malus = raw_malus + raw_malus * scale_factor * 10 / NFH_DIV_10X.load(Ordering::Relaxed).max(1);
+
+            // Update main history
+            History::update_history(
+                info.history.main_entry(from, to, enemy_attacks),
+                bonus,
+            );
+
+            // Update continuation history at plies 1, 2, 4, 6
+            // Ply-1 at full bonus, plies 2/4/6 at half bonus (Obsidian pattern)
+            if moved_piece != NO_PIECE {
+                let gp_mv = go_piece(moved_piece);
+                // base = current cont_hist + main_hist / 2 (concept from Stormphrax).
+                let main_score_v = info.history.main_score(from, to, enemy_attacks);
+                let ch_offsets = [1usize, 2, 4, 6];
+                for &off in ch_offsets.iter() {
+                    if ply_u >= off {
+                        let prior_piece = info.moved_piece_stack[ply_u - off] as usize;
+                        let prior_to = info.moved_to_stack[ply_u - off] as usize;
+                        if prior_piece > 0 && prior_piece < crate::movepicker::CONT_PLANES && prior_to < 64 {
+                            // B1: uniform bonus (see LMR nudge site above).
+                            let ch_bonus = bonus;
+                            let cur_cont = info.cont.t[prior_piece][prior_to][gp_mv][to as usize].load(std::sync::atomic::Ordering::Relaxed) as i32;
+                            let base = cur_cont + main_score_v / 2;
+                            History::update_cont_history_with_base(
+                                &info.cont.t[prior_piece][prior_to][gp_mv][to as usize],
+                                cur_cont,
+                                base,
+                                ch_bonus,
+                            );
+                        }
+                    }
+                }
+            }
+
+            // Update pawn history
+            if moved_piece != NO_PIECE {
+                let gp = go_piece(moved_piece);
+                let v = info.pawn_hist[ph_idx][gp][to as usize] as i32;
+                let clamped = bonus.clamp(-16384, 16384);
+                let new_v = v + clamped - v * clamped.abs() / 16384;
+                info.pawn_hist[ph_idx][gp][to as usize] = new_v.clamp(-32000, 32000) as i16;
+            }
+
+            // Penalize all quiet moves tried before the cutoff move
+            let q_end = if cutoff { quiets_tried.len().saturating_sub(1) } else { quiets_tried.len() };
+            for &q in &quiets_tried[..q_end] {
+                // At a cutoff the best move is the last entry and the range
+                // already excludes it; at an exact node it can sit anywhere.
+                if q == mv { continue; }
+                let qf = move_from(q);
+                let qt = move_to(q);
+                History::update_history(
+                    info.history.main_entry(qf, qt, enemy_attacks),
+                    -malus,
+                );
+
+                // Penalize continuation history at plies 1, 2, 4, 6.
+                // T6: base uses qf,qt move's main_score (the move being malused).
+                {
+                    let q_piece = board.piece_at(qf);
+                    if q_piece != NO_PIECE {
+                        let gp_q = go_piece(q_piece);
+                        let q_main_score = info.history.main_score(qf, qt, enemy_attacks);
+                        let ch_offsets = [1usize, 2, 4, 6];
+                        for &off in ch_offsets.iter() {
+                            if ply_u >= off {
+                                let prior_piece = info.moved_piece_stack[ply_u - off] as usize;
+                                let prior_to = info.moved_to_stack[ply_u - off] as usize;
+                                if prior_piece > 0 && prior_piece < crate::movepicker::CONT_PLANES && prior_to < 64 {
+                                    // B1: uniform penalty (see bonus site above).
+                                    let ch_pen = -malus;
+                                    let cur_cont = info.cont.t[prior_piece][prior_to][gp_q][qt as usize].load(std::sync::atomic::Ordering::Relaxed) as i32;
+                                    let base = cur_cont + q_main_score / 2;
+                                    History::update_cont_history_with_base(
+                                        &info.cont.t[prior_piece][prior_to][gp_q][qt as usize],
+                                        cur_cont,
+                                        base,
+                                        ch_pen,
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Penalize pawn history
+                {
+                    let q_piece = board.piece_at(qf);
+                    if q_piece != NO_PIECE {
+                        let gp = go_piece(q_piece);
+                        let v = info.pawn_hist[ph_idx][gp][qt as usize] as i32;
+                        let clamped = (-malus).clamp(-16384, 16384);
+                        let new_v = v + clamped - v * clamped.abs() / 16384;
+                        info.pawn_hist[ph_idx][gp][qt as usize] = new_v.clamp(-32000, 32000) as i16;
+                    }
+                }
+            }
+
+        } else {
+            // Capture caused beta cutoff: bonus the cutoff capture.
+            // No depth boost here, unlike the quiet site above.
+            let cap_bonus_depth = depth;
+            // numFailHighs multiplicative scaling, as at the quiet
+            // site: more cascades = stronger cutoff confidence.
+            let raw_cap_bonus = capture_history_bonus(cap_bonus_depth);
+            let scale_factor = num_fail_highs.min(tp10(&NFH_CAP_10X));
+            // Fixed-point divisor (stored × 10).
+            let mut cap_bonus = raw_cap_bonus + raw_cap_bonus * scale_factor * 10 / NFH_DIV_10X.load(Ordering::Relaxed).max(1);
+            // SF searched-count scale (see quiet site above).
+            if !is_pv {
+                cap_bonus += cap_bonus * (move_count - 1).max(0) / 256;
+            }
+            // captured_pt == NO_PIECE_TYPE here means a non-capture
+            // promotion (the only non-capture route into this branch):
+            // train slot 0 ("empty") — the slot capt_hist_score_static
+            // reads when ordering non-capture promos.
+            if moved_piece != NO_PIECE {
+                let cpt = if flags == FLAG_EN_PASSANT {
+                    captured_type(PAWN)
+                } else if captured_pt != NO_PIECE_TYPE {
+                    captured_type(captured_pt)
+                } else {
+                    0
+                };
+                History::update_cont_history(
+                    &mut info.history.capture[go_piece(moved_piece)][to as usize][cpt],
+                    cap_bonus,
+                );
+            }
+        }
+
+
+        // Unconditionally penalize all tried captures that didn't cause cutoff
+        // (matching Stockfish/Obsidian — captures that fail should be
+        // penalized regardless of whether the best move was quiet or tactical)
+        {
+            // numFailHighs multiplicative scaling — mirrors the
+            // capture-BONUS path exactly so the failed captures'
+            // penalty tracks the cutoff capture's bonus. Omitting it
+            // here (the easy mistake: this is the least obvious of
+            // the beta-cutoff history updates) slowly inflates
+            // capture-history magnitude relative to the scaled
+            // bonuses and to quiets.
+            let raw_cap_malus = capture_history_malus(depth);
+            let scale_factor = num_fail_highs.min(tp10(&NFH_CAP_10X));
+            let cap_malus = raw_cap_malus + raw_cap_malus * scale_factor * 10 / NFH_DIV_10X.load(Ordering::Relaxed).max(1);
+            // is_promo joins is_cap: a promo cutoff move is the
+            // last captures_tried entry and must not malus itself.
+            let cap_count = if cutoff && (is_cap || is_promo) { captures_tried.len().saturating_sub(1) } else { captures_tried.len() };
+            for &(cp, ct, cv) in &captures_tried[..cap_count] {
+                // Exact node: the best capture may be anywhere in the list.
+                if !cutoff && best_cap_slot == Some((cp, ct, cv)) { continue; }
+                History::update_cont_history(
+                    &mut info.history.capture[cp as usize][ct as usize][cv as usize],
+                    -cap_malus,
+                );
+            }
+        }
+    }
 }
 
 /// History bonus: linear depth-based bonus for history updates.
