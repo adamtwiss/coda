@@ -3246,6 +3246,13 @@ pub fn behind_on_clock_factor(our_time: u64, opp_time: u64) -> f64 {
     (1.0 - slope * deficit).clamp(floor, 1.0)
 }
 
+/// 0 before fullmove TM_DEFAULT_MTG, rising linearly to 1 at twice that: how
+/// much of the late-game increment boost applies (see compute_tm_budgets).
+pub fn late_inc_ramp(fullmove: u16) -> f64 {
+    let mtg = tp(&TM_DEFAULT_MTG).max(2) as f64;
+    ((fullmove as f64 - mtg) / mtg).clamp(0.0, 1.0)
+}
+
 /// Compute time-management budgets from clock state. Returns
 /// (soft, hard, max, soft_floor) all in milliseconds.
 ///
@@ -3411,7 +3418,20 @@ pub fn compute_tm_budgets(
     } else {
         // Sudden death (or with inc). Add 94% of inc to base computed window.
         // paced_time == time_left except on the capped no-increment path.
-        let computed = paced_time / mtg_divisor + our_inc * inc_frac_pct / 100;
+        //
+        // Late-game increment credit: the opt window W also scales the
+        // increment, so spend = W * (clock/24 + F * inc) settles where
+        // clock/24 = inc * (1/W - F) -- a fixed point of ~10 increments that
+        // is never spent (lichess 1+1: median 14 s left at move 80). Scaling
+        // the increment up by 1/W undoes that, but doing it from move 1
+        // front-loads the opening and lost at 10+0.1 (#4671, -2.1). So the
+        // boost ramps in after the opening: none before fullmove
+        // TM_DEFAULT_MTG (one default moves-to-go of play), full by twice
+        // that. Late in the game the increment is then credited in full and
+        // the fixed point falls to ~3-4 increments.
+        let inc_boost = 1.0 + (100.0 / opt_window_pct as f64 - 1.0) * late_inc_ramp(fullmove);
+        let inc_credit = (our_inc as f64 * inc_frac_pct as f64 / 100.0 * inc_boost) as u64;
+        let computed = paced_time / mtg_divisor + inc_credit;
         ((computed.min(max_time) * opt_window_pct / 100).min(hard_time)).max(1)
     };
 
@@ -9823,6 +9843,21 @@ mod tests {
             out.push(clock);
         }
         out
+    }
+
+    /// The late increment boost leaves the opening as before (no boost up to
+    /// fullmove TM_DEFAULT_MTG) and spends the clock down late: by move 120
+    /// of a 1+1 game fewer than 7 increments remain, where window-scaling the
+    /// increment held ~10.
+    #[test]
+    fn late_increment_credit() {
+        let mtg = tp(&TM_DEFAULT_MTG) as u16;
+        let clk = simulate_clock(60_000, 1_000, 120, 0);
+        assert!(clk[119] < 7_000 && clk[119] < clk[99], "1+1 clock at move 120 = {} ms", clk[119]);
+        for fm in 1..=mtg {
+            assert_eq!(late_inc_ramp(fm), 0.0, "boost active in the opening at fm {}", fm);
+        }
+        assert_eq!(late_inc_ramp(2 * mtg), 1.0);
     }
 
     /// Without increment, a 200-move 1+0 game (the longest in Coda's lichess
