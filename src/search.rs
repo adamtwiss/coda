@@ -592,6 +592,17 @@ tunables!(
     (SE_ROOT_DECIDED_CP, 716, 250, 5000, 150.0, true),
     (SE_ROOT_DECIDED_DEPTH, 9, 4, 32, 2.0, true),
     (QUIET_CHECK_BONUS, 14805, 2000, 30000, 1400.0, false),
+    // Killer moves: the last two quiets that cut off at this ply under the
+    // same parent. Ordering lift for killer slot 0; slot 1 (the displaced
+    // killer, one cutoff staler) takes half. Seeded at QUIET_CHECK_BONUS --
+    // the only other non-history "this quiet is forcing" lift in the quiet
+    // scorer -- so a killer starts level with a safe quiet check. 0 = no
+    // ordering lift.
+    (KILLER_BONUS, 14805, 0, 60000, 1500.0, false),
+    // LMR relief for a killer quiet, in LMR_SCALE units. One ply (LMR_SCALE)
+    // is the natural seed -- the same step as the whole-ply relief terms in
+    // the quiet LMR block. 0 = no relief (ordering-only killers).
+    (KILLER_LMR_CENTI, 0, 0, 250, 15.0, false),
     // SEE gate on the quiet check bonus (a common cross-engine idea: only
     // bonus a check that is not badly losing). Without it Coda orders losing
     // check-sacs into the first-searched slot. Margin on Coda's pawn=100 scale:
@@ -1642,6 +1653,12 @@ pub struct SearchInfo {
     /// refutations come easy there — reduce late moves more. +4 padding
     /// allows unconditional ply+2 indexing.
     cutoff_count: [i32; MAX_PLY + 4],
+    /// Per-ply killer moves: the last two distinct quiets that failed high at
+    /// this ply. Each node clears its CHILD slot on entry, so a node's killers
+    /// come only from its earlier siblings (same parent position, one move
+    /// apart) -- the position-specific refutation that the history tables,
+    /// which aggregate across positions, cannot hold. Cleared per `go`.
+    killers: [[Move; 2]; MAX_PLY + 4],
     /// Per-ply moved piece (go_piece index 1-12, 0=none). Set before make_move.
     /// Used for correct cont hist lookups at ply-2+ (avoids stale board.piece_at).
     moved_piece_stack: [u8; MAX_PLY + 1],
@@ -1770,6 +1787,7 @@ impl SearchInfo {
             excluded_move: [NO_MOVE; MAX_PLY + 1],
             double_ext_count: [0; MAX_PLY + 1],
             cutoff_count: [0; MAX_PLY + 4],
+            killers: [[NO_MOVE; 2]; MAX_PLY + 4],
             moved_piece_stack: [0; MAX_PLY + 1],
             moved_to_stack: [0; MAX_PLY + 1],
             pv_table: [[NO_MOVE; MAX_PLY + 1]; MAX_PLY + 1],
@@ -3742,6 +3760,7 @@ pub(crate) fn search_helper(board: &mut Board, info: &mut SearchInfo, _limits: &
     info.moved_piece_stack = [0; MAX_PLY + 1];
     info.double_ext_count = [0; MAX_PLY + 1];
     info.cutoff_count = [0; MAX_PLY + 4];
+    info.killers = [[NO_MOVE; 2]; MAX_PLY + 4];
     info.moved_to_stack = [0; MAX_PLY + 1];
     info.pv_table = [[NO_MOVE; MAX_PLY + 1]; MAX_PLY + 1];
     info.pv_len = [0; MAX_PLY + 1];
@@ -4107,6 +4126,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     info.moved_piece_stack = [0; MAX_PLY + 1];
     info.double_ext_count = [0; MAX_PLY + 1];
     info.cutoff_count = [0; MAX_PLY + 4];
+    info.killers = [[NO_MOVE; 2]; MAX_PLY + 4];
     info.moved_to_stack = [0; MAX_PLY + 1];
     info.pv_table = [[NO_MOVE; MAX_PLY + 1]; MAX_PLY + 1];
     info.pv_len = [0; MAX_PLY + 1];
@@ -5986,6 +6006,13 @@ fn negamax(
     // read in LMR reflects only fail-highs under THIS node's subtree
     // (grandchild cutoff-counter reset, technique from SF).
     info.cutoff_count[ply_u + 2] = 0;
+    // Children read killers[ply+1]; start them empty so they only see their
+    // own siblings' refutations. Not in singular verification: that re-search
+    // of this same node walks the same children, and the killers it finds
+    // there are just as valid for the real search that follows.
+    if info.excluded_move[ply_u] == NO_MOVE {
+        info.killers[ply_u + 1] = [NO_MOVE; 2];
+    }
 
     // Detect if TT move is noisy. Captures, EP, AND promotions
     // (including non-capture promotions — they create a queen, so they are
@@ -6506,6 +6533,9 @@ fn negamax(
         MovePicker::new(board, tt_move, safe_ply, checkers, pinned, &info.history, &info.cont, prev_move, pawn_hist_ref, enemy_attacks, &info.moved_piece_stack, &info.moved_to_stack)
     };
     picker.threat_sq = threat_sq;
+    if !in_check {
+        picker.killers = info.killers[ply_u];
+    }
 
     let mut best_move = NO_MOVE;
     let mut best_score = -INFINITY;
@@ -7099,6 +7129,12 @@ let singular_beta = tt_score_local - depth;
                 let hist_adj = hist_score * LMR_SCALE / tp(&LMR_HIST_DIV);
                 reduction -= hist_adj;
 
+                // Killer relief: a quiet that just refuted a sibling position is
+                // likelier than its history alone says to refute this one too.
+                if mv == info.killers[ply_u][0] || mv == info.killers[ply_u][1] {
+                    reduction -= tp(&KILLER_LMR_CENTI);
+                }
+
                 // Complexity-aware LMR: reduce less when correction history
                 // magnitude is high (uncertain eval → search deeper).
                 // Reduce by the corrhist magnitude over a tunable divisor
@@ -7446,6 +7482,12 @@ let singular_beta = tt_score_local - depth;
                     // branch, training the capt-hist empty slot the read side
                     // uses — SF capture_stage semantics.
                     if !is_cap && !is_promo {
+                        // Killer update: newest refutation in slot 0, the old
+                        // slot 0 shifts down unless it is this same move.
+                        if info.killers[ply_u][0] != mv {
+                            info.killers[ply_u][1] = info.killers[ply_u][0];
+                            info.killers[ply_u][0] = mv;
+                        }
                         // Depth-boost on a big fail-high. Two triggers
                         // (Stormphrax: cutoff beat static eval; improving) can
                         // stack for +2 depth.
