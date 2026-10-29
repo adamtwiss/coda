@@ -398,6 +398,18 @@ tunables!(
     // preferred +13 (in tenths of a ply) over the measured 3-ply gap.
     (SE_ROOT_KNEE, 17, 10, 24, 1.5, true),
     (SE_ROOT_COEF, 4, 0, 15, 1.5, true),
+    // Ply ceiling on singular verification, relative to the root depth: SE runs
+    // only while `ply * 10 < SE_PLY_CAP_10X * root_depth`. Read raw (not tp10)
+    // because the product is already in tenths. SE_ROOT_KNEE/COEF above move the
+    // REMAINING-depth gate with root depth; this bounds how far past the nominal
+    // horizon a chain of extensions may keep paying for re-searches.
+    //
+    // Default from Coda's own SE firing distribution (bench positions,
+    // ply/root_depth of every verification search, single thread): p99 is 1.6
+    // at depth 16 and 1.55 at depth 20, p99.9 is ~2.0. 15 binds on the top
+    // ~1.3-1.5% of firings and leaves the body (median 0.65) untouched. The
+    // earlier 2.5x limiter sat above every observed firing, i.e. never bound.
+    (SE_PLY_CAP_10X, 15, 10, 30, 1.5, true),
     (ASP_DELTA, 11, 5, 30, 1.5, false),
     (ASP_SCORE_DIV, 12000, 8000, 50000, 2100.0, false),
     // Late move pruning: quiets searched before the cutoff, on the shape
@@ -6710,6 +6722,7 @@ fn negamax(
             // the SE path reads no static_eval (-INFINITY in check); the
             // correction_value margin input is position-keyed.
             && info.excluded_move[ply_u] == NO_MOVE
+            && ply * 10 < tp(&SE_PLY_CAP_10X) * info.root_depth
             && tt_hit
             && tt_entry.flag != TT_FLAG_UPPER
             && tt_entry.depth >= depth - tp(&SE_TT_DEPTH_SLACK)
