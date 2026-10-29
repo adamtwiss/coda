@@ -192,6 +192,14 @@ tunables!(
     // to fail futility sets skip_quiets (as LMP does), so this term only
     // decides where along the tail that first failure lands.
     (FUT_MC_PER_MOVE, 13, 0, 40, 2.0, true),
+    // Divisor for futility's history term, which reads the ordering-score
+    // composite (see the futility site) rather than main history alone.
+    // Derived from Coda's own data, not an additive guess: over `coda bench`
+    // at the futility site the composite's RMS is 2.55x main history's
+    // (mean |x| 2.59x; correlation 0.71, so the parts do not simply add), so
+    // the old main_hist/128 scale becomes 128 x 2.57 = 330. The default
+    // therefore changes which signal informs futility, not how loud it is.
+    (FUT_HIST_DIV, 330, 128, 1024, 30.0, true),
     (SEE_QUIET_MULT, 16, 5, 80, 3.75, true),
     // Low-increment TM multiplier ceiling. The factor product
     // (stability×fail-low×forced×subtree×score-trend, up to ~13.8×) is only
@@ -6655,7 +6663,30 @@ fn negamax(
             && lmr_d <= tp(&FUT_LMR_DEPTH)
         {
             let main_hist = info.history.main_score(from, to, enemy_attacks);
-            let hist_adj = main_hist / 128;
+            // History term reads the same sources, at the same weights, the
+            // quiet ordering sorts on (main + CONT_HIST_MULT x cont plies 1-2 +
+            // PAWN_HIST_MULT x pawn history; plies 4/6 are left out as the
+            // smallest-weight terms). With the first futility failure ending
+            // the quiet phase, the predicate should be close to monotone along
+            // the ordering, so that a failure says the rest would fail too;
+            // reading main history alone, a later quiet could still pass.
+            // Pre-make site: the mover comes from the board, not moved_piece.
+            let mut comp_hist = main_hist;
+            {
+                let fp = board.piece_at(from);
+                if fp != NO_PIECE {
+                    let gp = go_piece(fp) as usize;
+                    let cm = tp10(&CONT_HIST_MULT_10X);
+                    if prev_piece_for_cont != 0 {
+                        comp_hist += cm * info.cont.t[prev_piece_for_cont][prev_to_for_cont as usize][gp][to as usize].load(std::sync::atomic::Ordering::Relaxed) as i32;
+                    }
+                    if prev2_piece_for_cont != 0 {
+                        comp_hist += cm * info.cont.t[prev2_piece_for_cont][prev2_to_for_cont as usize][gp][to as usize].load(std::sync::atomic::Ordering::Relaxed) as i32;
+                    }
+                    comp_hist += tp10(&PAWN_HIST_MULT_10X) * info.pawn_hist[ph_idx][gp][to as usize] as i32;
+                }
+            }
+            let hist_adj = comp_hist / tp(&FUT_HIST_DIV);
             let threats_adj = any_threat_count * tp(&FUT_THREATS_MARGIN);
             let mc_adj = (move_count * tp(&FUT_MC_PER_MOVE)).min(lmr_d * tp(&FUT_PER_DEPTH));
             let futility_value = static_eval + tp(&FUT_BASE) + lmr_d * tp(&FUT_PER_DEPTH) + hist_adj + threats_adj - mc_adj;
