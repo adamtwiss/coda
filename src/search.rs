@@ -261,6 +261,16 @@ tunables!(
     // bind), while capping 600+1 at 40s (was 276s) and 60+0.1 at 13s.
     (TM_INC_HARD_MULT, 30, 0, 120, 4.0, false),
     (TM_INC_HARD_FLOOR_MS, 10000, 0, 60000, 1000.0, false),
+    // Moves-left estimate for increment sudden-death pacing (see
+    // `moves_left_estimate`): moves_left = max(FLOOR, START - SLOPE/100 * fm),
+    // fitted to the median number of moves still to come in Coda's own
+    // increment lichess games (both bots, June-October 2026; 16,102 games).
+    // Median remaining at fullmove 10/20/30/40/60/80: 46/37/29/25/23/19 ->
+    // START 55, SLOPE 0.8, FLOOR 24. Past move ~40 a game still in progress
+    // has about as far to go as one that just reached 40, hence the floor.
+    (TM_ML_START, 55, 35, 80, 2.5, false),
+    (TM_ML_SLOPE_100, 80, 40, 120, 5.0, false),
+    (TM_ML_FLOOR, 24, 14, 40, 1.5, false),
     // No-inc adaptive mtg divisor: base assumed moves-to-go, and the growth
     // rate once a game outlives that assumption — see compute_tm_budgets for
     // the full derivation.
@@ -3251,6 +3261,14 @@ pub fn behind_on_clock_factor(our_time: u64, opp_time: u64) -> f64 {
     (1.0 - slope * deficit).clamp(floor, 1.0)
 }
 
+/// Expected number of moves still to be played at `fullmove` in an increment
+/// game, from the median remaining game length in Coda's own lichess games
+/// (derivation at the TM_ML_* tunables). Linear in fullmove down to a floor.
+pub fn moves_left_estimate(fullmove: u16) -> f64 {
+    let slope = tp(&TM_ML_SLOPE_100).max(0) as f64 / 100.0;
+    (tp(&TM_ML_START) as f64 - slope * fullmove as f64).max(tp(&TM_ML_FLOOR).max(2) as f64)
+}
+
 /// Compute time-management budgets from clock state. Returns
 /// (soft, hard, max, soft_floor) all in milliseconds.
 ///
@@ -3431,11 +3449,31 @@ pub fn compute_tm_budgets_credited(
         let divisor = (movestogo as u64).clamp(2, default_moves_to_go);
         let computed = time_left / divisor + our_inc * inc_frac_pct / 100;
         (computed.min(max_time) * opt_window_pct / 100).max(1)
-    } else {
-        // Sudden death (or with inc). Add 94% of inc to base computed window.
-        // paced_time == time_left except on the capped no-increment path.
+    } else if no_inc_sd {
+        // Sudden death, no increment. paced_time / mtg_divisor is the share
+        // (paced_time holds back the latency reserve once the cap binds).
         let computed = paced_time / mtg_divisor + our_inc * inc_frac_pct / 100;
         ((computed.min(max_time) * opt_window_pct / 100).min(hard_time)).max(1)
+    } else {
+        // Increment, sudden death: an even share of everything still to come
+        // -- the clock plus the increments of the moves we expect to play --
+        // over those moves:
+        //
+        //   opt = (clock + F * inc * (moves_left - 1)) / moves_left
+        //
+        // moves_left comes from Coda's own game lengths (TM_ML_*), so a game
+        // that leaves the book at move 21 with a full clock paces from the
+        // ~37 moves actually left, not from a fixed divisor. The old form,
+        // W * (clock/24 + F * inc), applied the 0.73 window to the increment
+        // too and settled at a fixed point of ~10 increments that were never
+        // spent (lichess 1+1: 14 s left at move 80); here the late fixed
+        // point is ~(1 - F) * moves_left increments, about 2-3. No window: the
+        // phase damp below still governs the opening, which is what lost when
+        // a moves-left pacing was tried without it (#4663, -6.2).
+        let moves_left = moves_left_estimate(fullmove);
+        let future_inc = our_inc as f64 * inc_frac_pct as f64 / 100.0 * (moves_left - 1.0);
+        let share = ((paced_time as f64 + future_inc) / moves_left) as u64;
+        share.min(max_time).min(hard_time).max(1)
     };
 
     // Opening-phase damp (Hobbes pattern). Without it the opening is grossly
