@@ -724,7 +724,46 @@ tunables!(
     // endgames — the lever against the net over-rating simplified positions.
     // Non-core / experimental.
     (MAT_SCALE_BASE, 22400, 14000, 30000, 1000.0, false),
+    // Low-material ceiling for the passed-pawn-push carve-outs below, in the
+    // same units as `non_pawn_material` (eval's MAT_SCALE weights N=B=422,
+    // R=642, Q=1015, both colours). 1284 = two rooks' weight: at most one
+    // rook-equivalent per side, the 0-2 piece classes in which our own
+    // conversion measurement (ledger 2026-09-25, pawn-ending cliff) found the
+    // deficit.
+    (PASSER_NPM_MAX, 1284, 0, 3000, 100.0, false),
+    // LMR relief for those pushes, centi-ply. 100 = one ply, the step size of
+    // every binary term in the quiet battery, and exactly offsets the +1 ply
+    // the battery already adds when the opponent has under three pieces —
+    // a condition these positions nearly always meet.
+    (PASSER_PUSH_LMR_CENTI, 100, 0, 300, 15.0, false),
 );
+
+/// Non-pawn material of both colours in eval's MAT_SCALE units
+/// (N=B=422, R=642, Q=1015). Shared by the eval damp and the passer carve-out.
+#[inline]
+fn non_pawn_material(board: &Board) -> i32 {
+    popcount(board.pieces[KNIGHT as usize]) as i32 * 422
+        + popcount(board.pieces[BISHOP as usize]) as i32 * 422
+        + popcount(board.pieces[ROOK as usize]) as i32 * 642
+        + popcount(board.pieces[QUEEN as usize]) as i32 * 1015
+}
+
+/// True when a pawn of colour `us` arriving on `to` has no enemy pawn ahead of
+/// it on its own or an adjacent file (a passed pawn after the push).
+#[inline]
+fn is_passed_after_push(board: &Board, us: u8, to: u8) -> bool {
+    let file = (to & 7) as usize;
+    let rank = (to >> 3) as u32;
+    let mut files = FILES[file];
+    if file > 0 { files |= FILES[file - 1]; }
+    if file < 7 { files |= FILES[file + 1]; }
+    let ahead = if us == WHITE {
+        if rank >= 7 { 0 } else { !0u64 << (8 * (rank + 1)) }
+    } else {
+        (1u64 << (8 * rank)) - 1
+    };
+    board.pieces[PAWN as usize] & board.colors[flip_color(us) as usize] & files & ahead == 0
+}
 
 // Demoted loose knobs: cross-tune analysis found SPSA drift dominating signal
 // on these, so they were taken off the SPSA surface to improve per-parameter
@@ -2320,13 +2359,7 @@ impl SearchInfo {
         // shouldn't get dampened toward zero; pawns retain decisive value at
         // low non-pawn material counts.
         // N=422, B=422, R=642, Q=1015
-        let material = {
-            let knights = popcount(board.pieces[KNIGHT as usize]) as i32 * 422;
-            let bishops = popcount(board.pieces[BISHOP as usize]) as i32 * 422;
-            let rooks = popcount(board.pieces[ROOK as usize]) as i32 * 642;
-            let queens = popcount(board.pieces[QUEEN as usize]) as i32 * 1015;
-            knights + bishops + rooks + queens
-        };
+        let material = non_pawn_material(board);
         // `eval()` now returns the halfmove-INDEPENDENT score (material
         // scaling only). 50-move scaling is applied at every consumption
         // site (via `apply_halfmove_scale`) using the *current* halfmove.
@@ -6536,6 +6569,10 @@ fn negamax(
     // for that has never been localised.
     let mut skip_quiets = false;
 
+    // Low-material ending: passed-pawn pushes bypass quiet pruning and reduce
+    // less (see PASSER_NPM_MAX). Position-level, so computed once per node.
+    let low_material_ending = non_pawn_material(board) <= tp(&PASSER_NPM_MAX);
+
     loop {
         let mv = picker.next(board);
         if mv == NO_MOVE { break; }
@@ -6573,6 +6610,13 @@ fn negamax(
         let is_cap = board.is_capture(mv);
         let is_promo = is_promotion(mv);
 
+        // Quiet push of a pawn that is passed on arrival, in a low-material
+        // ending. These are the moves that decide pawn races; LMP, futility
+        // and SEE-quiet all skip them and quiet LMR reduces them less.
+        let passer_push = low_material_ending && !is_cap && !is_promo
+            && board.piece_type_at(from) == PAWN
+            && is_passed_after_push(board, us, to);
+
         if skip_quiets && !is_cap && !is_promo {
             trace_gate!(info, board.hash, ply, mv, "skip_quiets", depth, move_count);
             continue;
@@ -6586,7 +6630,7 @@ fn negamax(
         // Obsidian all set skipQuiets before SEE/futility.
         // Formula: (LMP_BASE + depth²) / (2 - improving); check carve at depth<4.
         if ply > 0 && !in_check && depth >= 1 && depth <= tp10(&LMP_DEPTH_10X)
-            && !is_cap && !is_promo
+            && !is_cap && !is_promo && !passer_push
             && !is_loss(best_score)
             && beta < MATE_IN_MAX_PLY  // forced-win guard: don't count-prune quiets while proving a win
             && FEAT_LMP.load(Ordering::Relaxed)
@@ -6647,7 +6691,7 @@ fn negamax(
         // Skip quiet moves when static eval + margin is below alpha. Uses shared
         // lmr_d for both gate and margin.
         if ply > 0 && static_eval > -INFINITY && !in_check
-            && !is_cap && !is_promo
+            && !is_cap && !is_promo && !passer_push
             && !is_loss(best_score)
             && beta < MATE_IN_MAX_PLY  // forced-win guard: don't futility-prune quiets while proving a win
             && FEAT_FUTILITY.load(Ordering::Relaxed)
@@ -6674,7 +6718,7 @@ fn negamax(
         // SEE quiet pruning: prune quiet moves landing on attacked squares.
         // Use lmrDepth² scaling (matching Stockfish/Berserk/Obsidian).
         if ply > 0 && !in_check
-            && !is_cap && !is_promo
+            && !is_cap && !is_promo && !passer_push
             && mv != tt_move
             && !is_loss(best_score)
             && beta < MATE_IN_MAX_PLY  // forced-win guard: don't SEE-prune quiets while proving a win
@@ -7022,6 +7066,12 @@ let singular_beta = tt_score_local - depth;
                     & !(board.pieces[PAWN as usize] | board.pieces[KING as usize]);
                 if popcount(opp_non_pawn) < 3 {
                     reduction += LMR_SCALE;
+                }
+
+                // Passed-pawn push in a low-material ending: reduce less
+                // (PASSER_PUSH_LMR_CENTI; at default it cancels the bump above).
+                if passer_push {
+                    reduction -= tp(&PASSER_PUSH_LMR_CENTI);
                 }
 
                 // Reduce less when moving a piece away from a pawn-attacked square
