@@ -188,8 +188,9 @@ tunables!(
     (FUT_LMR_DEPTH, 14, 6, 24, 2.0, false),
     // Move-count term: later quiets get a tighter futility margin. Default
     // FUT_PER_DEPTH / 8 — one depth-ply of margin per eight moves; capped at
-    // the depth term so the margin never drops below FUT_BASE. Futility is
-    // evaluated per move across the quiet tail; LMP still bulk-skips.
+    // the depth term so the margin never drops below FUT_BASE. The first quiet
+    // to fail futility sets skip_quiets (as LMP does), so this term only
+    // decides where along the tail that first failure lands.
     (FUT_MC_PER_MOVE, 13, 0, 40, 2.0, true),
     (SEE_QUIET_MULT, 16, 5, 80, 3.75, true),
     // Low-increment TM multiplier ceiling. The factor product
@@ -6556,7 +6557,7 @@ fn negamax(
     let mut captures_tried: [(u8, u8, u8); 32] = [(0, 0, 0); 32]; // (piece, to, victim)
     let mut n_captures_tried = 0usize;
 
-    // Skip-quiets flag: once LMP fires, skip remaining quiets without
+    // Skip-quiets flag: once LMP or futility fires, skip remaining quiets without
     // re-running the gates. Note this is NOT bench-neutral despite reading
     // like a pure short-circuit — it moves the bench ~22%, and the mechanism
     // for that has never been localised.
@@ -6689,10 +6690,15 @@ fn negamax(
             if futility_value <= alpha && main_hist < tp(&FUT_HIST_EXEMPT) && !board.gives_direct_check(mv) {
                 trace_gate!(info, board.hash, ply, mv, "futility", depth, move_count);
                 info.stats.futility_prunes += 1;
-                // Unlike LMP, futility is move-specific: main history and the
-                // reduced depth can differ across the ordered quiet tail. Let
-                // later quiets face their own predicate instead of assuming
-                // this first failure proves that every remaining move fails.
+                // First futility failure ends the quiet phase, as LMP does.
+                // Quiets arrive in descending ordering score and lmr_d / the
+                // move-count term only tighten along the tail, so a later
+                // quiet passing where this one failed needs a higher main
+                // history than an earlier, better-ordered move: rare enough
+                // that scoring and visiting the rest of the tail costs more
+                // than it finds. Captures and bad captures are still searched.
+                skip_quiets = true;
+                picker.skip_remaining_quiets();
                 continue;
             }
         }
