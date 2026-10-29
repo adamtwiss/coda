@@ -1732,11 +1732,11 @@ fn dual_l1_dequant(
     #[cfg(target_arch = "x86_64")]
     {
         if has_avx512 && n.is_multiple_of(16) {
-            unsafe { dual_l1_dequant_avx512(hv, qa_l1_f, qa_l1_sq, crelu, screlu) };
+            unsafe { dual_l1_dequant_avx512::<false>(hv, 0, qa_l1_f, qa_l1_sq, crelu, screlu) };
             return;
         }
         if has_avx2 && n.is_multiple_of(8) {
-            unsafe { dual_l1_dequant_avx2(hv, qa_l1_f, qa_l1_sq, crelu, screlu) };
+            unsafe { dual_l1_dequant_avx2::<false>(hv, 0, qa_l1_f, qa_l1_sq, crelu, screlu) };
             return;
         }
     }
@@ -1748,7 +1748,7 @@ fn dual_l1_dequant(
     {
         let _ = (has_avx512, has_avx2);
         if n.is_multiple_of(4) {
-            unsafe { dual_l1_dequant_neon(hv, qa_l1_f, qa_l1_sq, crelu, screlu) };
+            unsafe { dual_l1_dequant_neon::<false>(hv, 0, qa_l1_f, qa_l1_sq, crelu, screlu) };
             return;
         }
     }
@@ -1761,13 +1761,93 @@ fn dual_l1_dequant(
     }
 }
 
+// Exact `floor(x / PW_SCALE)` for 0 <= x <= PW_DIV_X_MAX as a u32
+// multiply-shift: M = ceil(2^S / d), e = M*d - 2^S. Writing x = q*d + r,
+// x*M / 2^S = q + (r + x*e / 2^S) / d, which stays below q + 1 while
+// x*e < 2^S (worst case r = d - 1). The product must also fit u32. S = 24
+// is the smallest shift that covers the whole clamp range for l1_scale up to
+// 255 (see `dual_l1_activate`); `pw_div_matches_division` checks every x.
+const PW_DIV_S: u32 = 24;
+const PW_DIV_M: u32 = ((1u64 << PW_DIV_S) as u32).div_ceil(PW_SCALE as u32);
+const PW_DIV_X_MAX: i32 = {
+    let e = PW_DIV_M as u64 * PW_SCALE as u64 - (1u64 << PW_DIV_S);
+    let exact = if e == 0 { u64::MAX } else { ((1u64 << PW_DIV_S) - 1) / e };
+    let no_wrap = u32::MAX as u64 / PW_DIV_M as u64;
+    let m = if exact < no_wrap { exact } else { no_wrap };
+    if m > i32::MAX as u64 { i32::MAX } else { m as i32 }
+};
+
+/// Integer stage + dequantisation of the dual-L1 activation in one pass:
+/// `hv[i] = (hidden32[i] / PW_SCALE).clamp(0, qa_l1)`, then
+/// [`dual_l1_dequant`] of `hv`.
+///
+/// Doing the integer stage in the dequant kernels' registers removes the
+/// `hv` round trip through memory. Written as a scalar loop, that stage stored
+/// `hv` one i32 at a time and the vector kernel then loaded it whole: a
+/// wide load over several narrow in-flight stores cannot be store-forwarded,
+/// so every evaluation waited for those stores to commit (r0224
+/// store-to-load interlock samples on that load, Zen 5).
+///
+/// Exact rewrite of the scalar stage: with `lim = qa_l1 * PW_SCALE +
+/// PW_SCALE - 1`, `floor(clamp(x, 0, lim) / PW_SCALE)` equals
+/// `(x / PW_SCALE).clamp(0, qa_l1)` for every i32 x — negative x give 0
+/// either way (`/` truncates toward zero), x in [0, lim] give a quotient
+/// already in [0, qa_l1], and x > lim give a quotient >= qa_l1 + 1 that the
+/// clamp pins to qa_l1 = floor(lim / PW_SCALE). The division is then the
+/// multiply-shift above, valid for `lim <= PW_DIV_X_MAX`; a scale outside that
+/// range takes the original two-pass path.
+#[inline]
+#[allow(clippy::too_many_arguments)]
+fn dual_l1_activate(
+    has_avx512: bool,
+    has_avx2: bool,
+    hidden32: &[i32],
+    qa_l1: i32,
+    qa_l1_f: f32,
+    qa_l1_sq: f32,
+    crelu: &mut [f32],
+    screlu: &mut [f32],
+) {
+    let n = hidden32.len();
+    assert!(n <= DUAL_L1_MAX && crelu.len() >= n && screlu.len() >= n,
+            "dual_l1_activate: n={} crelu={} screlu={}", n, crelu.len(), screlu.len());
+    let lim = qa_l1 as i64 * PW_SCALE as i64 + PW_SCALE as i64 - 1;
+    if qa_l1 >= 0 && lim <= PW_DIV_X_MAX as i64 {
+        let lim = lim as i32;
+        #[cfg(target_arch = "x86_64")]
+        {
+            if has_avx512 && n.is_multiple_of(16) {
+                unsafe { dual_l1_dequant_avx512::<true>(hidden32, lim, qa_l1_f, qa_l1_sq, crelu, screlu) };
+                return;
+            }
+            if has_avx2 && n.is_multiple_of(8) {
+                unsafe { dual_l1_dequant_avx2::<true>(hidden32, lim, qa_l1_f, qa_l1_sq, crelu, screlu) };
+                return;
+            }
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            if n.is_multiple_of(4) {
+                unsafe { dual_l1_dequant_neon::<true>(hidden32, lim, qa_l1_f, qa_l1_sq, crelu, screlu) };
+                return;
+            }
+        }
+    }
+    let mut hv = [0i32; DUAL_L1_MAX];
+    for i in 0..n {
+        hv[i] = (hidden32[i] / PW_SCALE).clamp(0, qa_l1);
+    }
+    dual_l1_dequant(has_avx512, has_avx2, &hv[..n], qa_l1_f, qa_l1_sq, crelu, screlu);
+}
+
 /// NEON sibling of [`dual_l1_dequant_avx512`], 4 neurons per step. `vdivq_f32`
 /// is a true IEEE divide on aarch64 (not the reciprocal-estimate `vrecpe`
 /// sequence), and `vcvtq_f32_s32` rounds to nearest-even under the default
 /// FPCR, so the same bit-identity argument holds here as on x86.
 #[cfg(target_arch = "aarch64")]
-unsafe fn dual_l1_dequant_neon(
+unsafe fn dual_l1_dequant_neon<const RAW: bool>(
     hv: &[i32],
+    lim: i32,
     qa_l1_f: f32,
     qa_l1_sq: f32,
     crelu: &mut [f32],
@@ -1775,13 +1855,19 @@ unsafe fn dual_l1_dequant_neon(
 ) {
     let dq = vdupq_n_f32(qa_l1_f);
     let dq2 = vdupq_n_f32(qa_l1_sq);
+    let (zero, vlim, vm) = (vdupq_n_s32(0), vdupq_n_s32(lim), vdupq_n_u32(PW_DIV_M));
     let n = hv.len();
     let src = hv.as_ptr();
     let cp = crelu.as_mut_ptr();
     let sp = screlu.as_mut_ptr();
     let mut i = 0;
     while i + 4 <= n {
-        let h = vld1q_s32(src.add(i));
+        let mut h = vld1q_s32(src.add(i));
+        if RAW {
+            h = vminq_s32(vmaxq_s32(h, zero), vlim);
+            h = vreinterpretq_s32_u32(vshrq_n_u32::<{ PW_DIV_S as i32 }>(
+                vmulq_u32(vreinterpretq_u32_s32(h), vm)));
+        }
         let sq = vmulq_s32(h, h);
         vst1q_f32(cp.add(i), vdivq_f32(vcvtq_f32_s32(h), dq));
         vst1q_f32(sp.add(i), vdivq_f32(vcvtq_f32_s32(sq), dq2));
@@ -1793,8 +1879,9 @@ unsafe fn dual_l1_dequant_neon(
 /// `hv.len()` to be a multiple of 16 and both outputs to be at least that long.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
-unsafe fn dual_l1_dequant_avx512(
+unsafe fn dual_l1_dequant_avx512<const RAW: bool>(
     hv: &[i32],
+    lim: i32,
     qa_l1_f: f32,
     qa_l1_sq: f32,
     crelu: &mut [f32],
@@ -1803,13 +1890,20 @@ unsafe fn dual_l1_dequant_avx512(
     use std::arch::x86_64::*;
     let dq = _mm512_set1_ps(qa_l1_f);
     let dq2 = _mm512_set1_ps(qa_l1_sq);
+    let (zero, vlim, vm) = (_mm512_setzero_si512(), _mm512_set1_epi32(lim), _mm512_set1_epi32(PW_DIV_M as i32));
     let n = hv.len();
     let src = hv.as_ptr();
     let cp = crelu.as_mut_ptr();
     let sp = screlu.as_mut_ptr();
     let mut i = 0;
     while i + 16 <= n {
-        let h = _mm512_loadu_si512(src.add(i) as *const __m512i);
+        let mut h = _mm512_loadu_si512(src.add(i) as *const __m512i);
+        if RAW {
+            // See `dual_l1_activate`: clamp to [0, lim], then floor-divide
+            // by PW_SCALE as an exact multiply-shift.
+            h = _mm512_min_epi32(_mm512_max_epi32(h, zero), vlim);
+            h = _mm512_srli_epi32::<PW_DIV_S>(_mm512_mullo_epi32(h, vm));
+        }
         let sq = _mm512_mullo_epi32(h, h);
         _mm512_storeu_ps(cp.add(i), _mm512_div_ps(_mm512_cvtepi32_ps(h), dq));
         _mm512_storeu_ps(sp.add(i), _mm512_div_ps(_mm512_cvtepi32_ps(sq), dq2));
@@ -1820,8 +1914,9 @@ unsafe fn dual_l1_dequant_avx512(
 /// AVX-2 sibling of [`dual_l1_dequant_avx512`], 8 neurons per step.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
-unsafe fn dual_l1_dequant_avx2(
+unsafe fn dual_l1_dequant_avx2<const RAW: bool>(
     hv: &[i32],
+    lim: i32,
     qa_l1_f: f32,
     qa_l1_sq: f32,
     crelu: &mut [f32],
@@ -1830,13 +1925,18 @@ unsafe fn dual_l1_dequant_avx2(
     use std::arch::x86_64::*;
     let dq = _mm256_set1_ps(qa_l1_f);
     let dq2 = _mm256_set1_ps(qa_l1_sq);
+    let (zero, vlim, vm) = (_mm256_setzero_si256(), _mm256_set1_epi32(lim), _mm256_set1_epi32(PW_DIV_M as i32));
     let n = hv.len();
     let src = hv.as_ptr();
     let cp = crelu.as_mut_ptr();
     let sp = screlu.as_mut_ptr();
     let mut i = 0;
     while i + 8 <= n {
-        let h = _mm256_loadu_si256(src.add(i) as *const __m256i);
+        let mut h = _mm256_loadu_si256(src.add(i) as *const __m256i);
+        if RAW {
+            h = _mm256_min_epi32(_mm256_max_epi32(h, zero), vlim);
+            h = _mm256_srli_epi32::<{ PW_DIV_S as i32 }>(_mm256_mullo_epi32(h, vm));
+        }
         let sq = _mm256_mullo_epi32(h, h);
         _mm256_storeu_ps(cp.add(i), _mm256_div_ps(_mm256_cvtepi32_ps(h), dq));
         _mm256_storeu_ps(sp.add(i), _mm256_div_ps(_mm256_cvtepi32_ps(sq), dq2));
@@ -4299,19 +4399,17 @@ impl NNUENet {
         if self.dual_l1 {
             // Dual L1 activation: CReLU(L1) concat SCReLU(L1).
             //
-            // Two stages. The integer stage below is the original expression
-            // untouched — `pw_scale` is a constant, so it is a multiply-shift
-            // rather than a divide and costs little. The dequantising stage is
-            // the expensive one and is hand-vectorised; see `dual_l1_dequant`
-            // for why it is not left to the autovectoriser.
+            // The integer stage (divide by PW_SCALE, clamp) and the
+            // dequantising stage run in one vector pass; see
+            // `dual_l1_activate` for why they are fused and why the fused
+            // integer stage is exact, and `dual_l1_dequant` for why the
+            // dequant is hand-vectorised rather than left to the
+            // autovectoriser.
             assert!(l1 <= DUAL_L1_MAX, "l1 {} exceeds DUAL_L1_MAX {}", l1, DUAL_L1_MAX);
-            let mut hv = [0i32; DUAL_L1_MAX];
-            for i in 0..l1 {
-                hv[i] = (hidden32[i] / pw_scale).clamp(0, qa_l1);
-            }
+            debug_assert_eq!(pw_scale, PW_SCALE);
             let (crelu, screlu) = l1_out.split_at_mut(l1);
-            dual_l1_dequant(self.has_avx512, self.has_avx2, &hv[..l1],
-                            qa_l1_f, qa_l1_sq, crelu, screlu);
+            dual_l1_activate(self.has_avx512, self.has_avx2, &hidden32[..l1],
+                             qa_l1, qa_l1_f, qa_l1_sq, crelu, screlu);
         } else if self.crelu_hidden.load(std::sync::atomic::Ordering::Relaxed) {
             // Clipped ReLU variant (for nets trained with .crelu() on L1/L2 in Bullet)
             for i in 0..l1 {
@@ -6933,6 +7031,62 @@ mod tests {
     /// Sweeps the whole `[0, qa_l1]` activation range the caller can produce,
     /// across several scales and lengths, and compares raw bit patterns rather
     /// than values so a signed-zero or NaN difference could not pass.
+    /// The multiply-shift in `dual_l1_activate` must equal integer division
+    /// by PW_SCALE over its whole claimed range, and that range must cover the
+    /// largest clamp limit a supported l1_scale produces (255).
+    #[test]
+    fn pw_div_matches_division() {
+        assert!(PW_DIV_X_MAX as i64 >= 255 * PW_SCALE as i64 + PW_SCALE as i64 - 1,
+                "PW_DIV_X_MAX {} too small", PW_DIV_X_MAX);
+        for x in 0..=PW_DIV_X_MAX as u32 {
+            assert_eq!((x.wrapping_mul(PW_DIV_M)) >> PW_DIV_S, x / PW_SCALE as u32, "x={x}");
+        }
+    }
+
+    /// The fused integer stage + dequant must reproduce the two-pass form
+    /// (`(x / PW_SCALE).clamp(0, qa)` then `dual_l1_dequant`) bit for bit on
+    /// raw L1 sums, including negatives, the clamp edges, quotient boundaries
+    /// and the i32 extremes, on every dispatch arm; a scale too large for the
+    /// multiply-shift must take the fallback and still match.
+    #[test]
+    fn dual_l1_activate_matches_two_pass() {
+        #[cfg(target_arch = "x86_64")]
+        let (has512, has2) = (is_x86_feature_detected!("avx512f"), is_x86_feature_detected!("avx2"));
+        #[cfg(not(target_arch = "x86_64"))]
+        let (has512, has2) = (false, false);
+        let d = PW_SCALE;
+        let mut s: u64 = 0x2545_F491_4F6C_DD1D;
+        let mut rnd = || { s ^= s << 13; s ^= s >> 7; s ^= s << 17; s };
+        for &qa in &[64i32, 255, 300, 4095] {
+            let lim = qa * d + d - 1;
+            let mut pool: Vec<i32> = vec![i32::MIN, i32::MIN + 1, -1, 0, 1, d - 1, d, d + 1,
+                lim - 1, lim, lim + 1, lim + d, i32::MAX - 1, i32::MAX];
+            for k in 0..=qa + 1 { for off in [-1, 0, 1] { pool.push(k * d + off); } }
+            for _ in 0..4096 {
+                let r = rnd();
+                pool.push(match r % 3 { 0 => r as i32, 1 => (r % (2 * lim as u64 + 1)) as i32 - lim / 2, _ => (r >> 40) as i32 });
+            }
+            let qa_f = qa as f32;
+            let qa_sq = qa_f * qa_f;
+            for &n in &[8usize, 16, 32, 64] {
+                for chunk in pool.chunks(n).filter(|c| c.len() == n) {
+                    let mut hv = vec![0i32; n];
+                    for i in 0..n { hv[i] = (chunk[i] / d).clamp(0, qa); }
+                    let (mut c_ref, mut s_ref) = (vec![0f32; n], vec![0f32; n]);
+                    super::dual_l1_dequant(false, false, &hv, qa_f, qa_sq, &mut c_ref, &mut s_ref);
+                    for &(use512, use2) in &[(has512, false), (false, has2), (false, false)] {
+                        let (mut c, mut sq) = (vec![0f32; n], vec![0f32; n]);
+                        super::dual_l1_activate(use512, use2, chunk, qa, qa_f, qa_sq, &mut c, &mut sq);
+                        for i in 0..n {
+                            assert_eq!(c[i].to_bits(), c_ref[i].to_bits(), "CReLU qa={qa} n={n} x={} 512={use512} 2={use2}", chunk[i]);
+                            assert_eq!(sq[i].to_bits(), s_ref[i].to_bits(), "SCReLU qa={qa} n={n} x={} 512={use512} 2={use2}", chunk[i]);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     #[test]
     fn dual_l1_dequant_matches_scalar() {
         #[cfg(target_arch = "x86_64")]
