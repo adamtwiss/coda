@@ -130,7 +130,12 @@ tunables!(
     // null-move fail-highs in drawn positions leaving TT bounds that are
     // later refused and re-searched. Strength-neutral in a 516-game endgame
     // match; this SPRT is the fleet read.
-    (NMP_VERIFY_DEPTH_10X, 68, 40, 200, 20.0, true),
+    // Shallow-unverified regime: a tuned 68 rounded to the same depth (7) as
+    // NMP_MIN_DEPTH_10X, so every cutoff was verified, the inversion the note
+    // above warns against. 120 is Coda's own earlier verify-depth test point
+    // (#3547). Below it, zugzwang risk is covered by the lone-piece rule at
+    // the use site instead.
+    (NMP_VERIFY_DEPTH_10X, 120, 40, 200, 20.0, true),
     (RFP_DEPTH, 17, 2, 20, 2.0, true),
     (RFP_MARGIN_IMP, 24, 0, 150, 6.0, true),
     (RFP_MARGIN_NOIMP, 32, 0, 200, 7.5, true),
@@ -672,7 +677,9 @@ tunables!(
     // shallow NMP then only sees nodes static pruning could not already cut,
     // so it no longer intercepts free cutoffs. Reordering NMP ahead of RFP
     // would require pushing this gate back up to compensate.
-    (NMP_MIN_DEPTH_10X, 65, 20, 200, 15.0, true),
+    // 30 = Coda's own pre-SPSA gate (depth >= 3, confirmed by SPRT #47), for
+    // the shallow-unverified regime (see NMP_VERIFY_DEPTH_10X).
+    (NMP_MIN_DEPTH_10X, 30, 20, 200, 15.0, true),
     (HINDSIGHT_MIN_DEPTH_10X, 26, 0, 200, 15.0, true),
     // Net output scale in percent: the final NNUE eval is multiplied by
     // PCT/100. Nets train to very different natural scales (eval RMS has
@@ -6248,8 +6255,11 @@ fn negamax(
             // Clamp mate scores to beta to avoid inflated mate distance
             let nmp_score = if is_decisive(null_score) { beta } else { null_score };
 
-            // Verification search at high depths to guard against zugzwang
-            if depth >= tp10(&NMP_VERIFY_DEPTH_10X) {
+            // Verification search to guard against zugzwang: at high depths,
+            // and at any depth when the side to move has a single non-pawn
+            // piece, where "any move beats passing" is least safe. Everywhere
+            // else below the verify depth the cutoff is taken unverified.
+            if depth >= tp10(&NMP_VERIFY_DEPTH_10X) || popcount(stm_non_pawn) == 1 {
                 info.stats.nmp_verify += 1;
                 // Set ply barrier so NMP cannot fire again inside the verification
                 // subtree. Every peer engine sets such a barrier; ours spans three
