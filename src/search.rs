@@ -466,6 +466,13 @@ tunables!(
     (PROBCUT_ROOT_MARGIN, 74, 0, 120, 8.0, false),
     (HINDSIGHT_THRESH, 133, 50, 400, 17.5, true),
     (QS_DELTA_MARGIN, 361, 100, 500, 20.0, true),
+    // QS SEE-gap futility (second stage after the delta prune) margin, as a
+    // percentage of QS_DELTA_MARGIN. Seeded at 100: the same positional
+    // allowance the delta stage grants on top of the victim's value, now
+    // granted on top of the capture's SEE gain instead. Since SEE gain never
+    // exceeds the victim's value, at 100 this stage is a strict tightening of
+    // the delta bound and only bites on contested captures.
+    (QS_SEE_GAP_MARGIN_PCT, 100, 20, 200, 10.0, true),
     // Cap on captures actually SEARCHED in qsearch (delta/SEE-pruned moves
     // are not charged against it). Counting pruned moves here would let SPSA
     // detune the cap to near-off, which is what an earlier counting bug did.
@@ -8308,10 +8315,34 @@ fn quiescence_with_depth(
             }
         }
 
-        // Skip bad captures (SEE below threshold)
-        // Negative threshold allows slightly losing captures (e.g. BxN);
-        // the value is a Coda tunable on our pawn=100 SEE scale.
-        if !see_ge(board, mv, tp(&QS_SEE_THRESHOLD)) {
+        // SEE-gap futility, second stage, fused with the SEE-threshold skip.
+        // The delta prune above bounds the capture by the victim's full value,
+        // which over-credits a contested capture (QxR defended by a pawn gains
+        // far less than a rook). This stage bounds it by the capture's SEE gain
+        // instead, in eval units via the same SEE_MATERIAL_SCALE bridge: prune
+        // when  stand_pat + gain * SCALE/100 + margin <= alpha.
+        // see_ge answers "gain >= t", so that is  gain <= k  with
+        //   k = floor((alpha - stand_pat - margin) * 100 / SCALE),
+        // i.e. !see_ge(k + 1). It is fused with the long-standing bad-capture
+        // skip, !see_ge(QS_SEE_THRESHOLD) (a negative Coda tunable on the
+        // pawn=100 SEE scale that lets slightly losing captures like BxN
+        // through): ONE see_ge at max(k + 1, threshold) decides both, since the
+        // higher bound implies the lower. Gap prunes get the delta stage's
+        // fail-soft bound raise; plain bad-SEE skips keep their old behaviour.
+        let qs_see_thr = tp(&QS_SEE_THRESHOLD);
+        let gap_margin = tp(&QS_DELTA_MARGIN) * tp(&QS_SEE_GAP_MARGIN_PCT) / 100;
+        let see_scale = tp(&SEE_MATERIAL_SCALE).max(1);
+        let gap_k = if is_promotion(mv) {
+            i32::MIN / 2
+        } else {
+            ((alpha - stand_pat - gap_margin) * 100).div_euclid(see_scale)
+        };
+        if !see_ge(board, mv, qs_see_thr.max(gap_k + 1)) {
+            if gap_k + 1 > qs_see_thr {
+                // gap_k * scale <= (alpha - stand_pat - margin) * 100, so this
+                // bound is <= alpha: no cutoff, only a tighter fail-low value.
+                best_score = best_score.max(stand_pat + gap_k * see_scale / 100 + gap_margin);
+            }
             continue;
         }
 
