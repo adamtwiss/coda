@@ -1104,6 +1104,10 @@ pub struct SearchLimits {
     /// guard applies there too (start_time is reset to the ponderhit moment).
     /// 0 = no clock concept (plain `go movetime`/depth). See SearchInfo::abs_deadline.
     pub abs_clock: u64,
+    /// Extra optimum budget (ms) paid out of the ponder bank: clock that
+    /// earlier ponder hits saved against their planned budget. Always 0
+    /// without pondering. See `PONDER_BANK_SPREAD` in uci.rs.
+    pub tm_credit_ms: u64,
 }
 
 impl Default for SearchLimits {
@@ -1126,6 +1130,7 @@ impl SearchLimits {
             movetime_floor: 0,
             min_think_ms: 0,
             abs_clock: 0,
+            tm_credit_ms: 0,
         }
     }
 }
@@ -3156,7 +3161,7 @@ pub(crate) fn helper_run(
     let placeholder = SearchLimits {
         depth: max_depth, fixed_depth: true, movetime: 0, wtime: 0, btime: 0, winc: 0, binc: 0,
         movestogo: 0, nodes: 0, infinite: false, movetime_floor: 0,
-        min_think_ms: 0, abs_clock: 0,
+        min_think_ms: 0, abs_clock: 0, tm_credit_ms: 0,
     };
     let mv = search_helper(board, info, &placeholder, thread_id);
     let ponder = if info.pv_len[0] >= 2 { info.pv_table[0][1] } else { NO_MOVE };
@@ -3271,6 +3276,24 @@ pub fn compute_tm_budgets(
     fullmove: u16,
     ponder_on: bool,
     opp_time: u64,
+) -> (u64, u64, u64, u64) {
+    compute_tm_budgets_credited(our_time, our_inc, movestogo, overhead, fullmove,
+                                ponder_on, opp_time, 0)
+}
+
+/// `compute_tm_budgets` plus `credit_ms` added to the optimum before the hard
+/// clamp: the ponder-bank payout (`SearchLimits::tm_credit_ms`). With a zero
+/// credit the result is identical to `compute_tm_budgets`.
+#[allow(clippy::too_many_arguments)]
+pub fn compute_tm_budgets_credited(
+    our_time: u64,
+    our_inc: u64,
+    movestogo: u32,
+    overhead: u64,
+    fullmove: u16,
+    ponder_on: bool,
+    opp_time: u64,
+    credit_ms: u64,
 ) -> (u64, u64, u64, u64) {
     // TM windows: opt/hard/max model with a multiplicative factor product —
     // the structure common to modern engines (SF, Obsidian, Hobbes and
@@ -3466,7 +3489,7 @@ pub fn compute_tm_budgets(
     } else {
         opt_time
     };
-    let opt_time = opt_time.max(1).min(hard_time);
+    let opt_time = (opt_time + credit_ms).max(1).min(hard_time);
 
     // soft_floor: preserved at a small value (10ms) for stockpile sleep
     // compatibility. The factor multiplier in dynamic TM block can pull
@@ -4227,8 +4250,9 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
         }
     } else if our_time > 0 {
         let (soft, hard, max_time, soft_floor) =
-            compute_tm_budgets(our_time, our_inc, limits.movestogo, info.move_overhead,
-                               board.fullmove, ponder_enabled(), opp_time);
+            compute_tm_budgets_credited(our_time, our_inc, limits.movestogo, info.move_overhead,
+                                        board.fullmove, ponder_enabled(), opp_time,
+                                        limits.tm_credit_ms);
         info.soft_limit = soft;
         info.hard_limit = hard;
         info.tm_max_time = max_time;
@@ -9352,6 +9376,7 @@ mod tests {
             movetime_floor: 0,
             min_think_ms: 0,
             abs_clock: 0,
+            tm_credit_ms: 0,
         };
 
         search(&mut board, &mut info, &limits);
@@ -9409,6 +9434,7 @@ mod tests {
             movetime_floor: 0,
             min_think_ms: 0,
             abs_clock: 0,
+            tm_credit_ms: 0,
         };
 
         search(&mut board, &mut info, &limits);
