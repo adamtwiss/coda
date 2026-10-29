@@ -306,8 +306,11 @@ tunables!(
     //     (RAMP_FM 28 / 2). The saturating form keeps a tail the linear ramp
     //     could not: both linear SPSAs (#4668 inc, #4676 no-inc) pushed the
     //     ramp longer, and its SPRTs lost at both TCs (#4674, #4675).
+    //   Current 40 / 15 from SPSAs on this form from those seeds: #4686 at
+    //   10+0.1 (39.6 / 14.7) and #4682 at 10+0 (40.1 / 16.2) agree, so one set
+    //   serves both clock paths.
     (TM_PHASE_FLOOR_100, 40, 10, 80, 4.0, false),
-    (TM_PHASE_HALF_FM, 14, 4, 50, 3.0, false),
+    (TM_PHASE_HALF_FM, 15, 4, 50, 3.0, false),
     (TM_STAB_0_100, 175, 100, 260, 8.0, false),       // stability table [0] * 1/100
     (TM_STAB_1_100, 122, 80, 180, 5.0, false),        // stability table [1]
     (TM_STAB_2_100, 90, 60, 130, 3.0, false),         // stability table [2]
@@ -3436,8 +3439,8 @@ pub fn compute_tm_budgets(
     //
     //   phase_mult = F + (1 - F) * fullmove / (fullmove + K)
     //     F = TM_PHASE_FLOOR_100 / 100, K = TM_PHASE_HALF_FM
-    //     at the defaults (F=0.40, K=14):
-    //       fm=1: 0.44x  fm=5: 0.56x  fm=10: 0.65x  fm=20: 0.75x  fm=40: 0.84x
+    //     at the defaults (F=0.40, K=15):
+    //       fm=1: 0.44x  fm=5: 0.55x  fm=10: 0.64x  fm=20: 0.74x  fm=40: 0.84x
     //
     // Both ends come from Coda's own TM quantities (see the tunable comments).
     // Skip the damp when movestogo > 0 — that path paces from the explicit
