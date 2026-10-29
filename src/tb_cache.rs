@@ -18,7 +18,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// SplitMix-style scramble of halfmove so adjacent halfmove values hash to
 /// well-separated slots (avoids clustered collisions on near-50mr positions).
 #[inline(always)]
-fn effective_key(key: u64, halfmove: u16) -> u64 {
+fn effective_key(key: u64, halfmove: u32) -> u64 {
     // SplitMix64 step on halfmove, then XOR into the Zobrist key.
     let mut h = halfmove as u64;
     h = h.wrapping_add(0x9E37_79B9_7F4A_7C15);
@@ -106,7 +106,7 @@ impl TbCache {
     /// cache a `CursedWin` that a later visit at halfmove=0 reads as a draw
     /// instead of a real win, so halfmove is mixed into the effective key.
     #[inline]
-    pub fn probe(&self, key: u64, halfmove: u16) -> Option<i32> {
+    pub fn probe(&self, key: u64, halfmove: u32) -> Option<i32> {
         if !self.enabled { return None; }
         let ekey = effective_key(key, halfmove);
         let slot = &self.slots[(ekey & self.mask) as usize];
@@ -126,7 +126,7 @@ impl TbCache {
 
     /// Store a probe result keyed by Zobrist + halfmove. No-op when disabled.
     #[inline]
-    pub fn store(&self, key: u64, halfmove: u16, wdl: i32) {
+    pub fn store(&self, key: u64, halfmove: u32, wdl: i32) {
         if !self.enabled { return; }
         let ekey = effective_key(key, halfmove);
         let slot = &self.slots[(ekey & self.mask) as usize];

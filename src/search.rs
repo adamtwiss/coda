@@ -769,7 +769,7 @@ pub static TT_CUTOFF_HALFMOVE_MAX: AtomicI32 = AtomicI32::new(89);
 /// already downgraded those whose distance exceeds the remaining
 /// `100 - halfmove` budget, so they are checked twice rather than not at all.
 #[inline]
-fn tt_halfmove_ok(tt_score: i32, halfmove: u16) -> bool {
+fn tt_halfmove_ok(tt_score: i32, halfmove: u32) -> bool {
     tt_score.abs() < tp(&TT_HM_GUARD_MARGIN)
         || (halfmove as i32) < tp(&TT_CUTOFF_HALFMOVE_MAX)
 }
@@ -2442,7 +2442,7 @@ impl SearchInfo {
 /// technique matters most, and we traced real won-position draws to it. The
 /// halving form keeps a won position won while still discouraging shuffling.
 #[inline]
-fn apply_halfmove_scale(score: i32, halfmove: u16) -> i32 {
+fn apply_halfmove_scale(score: i32, halfmove: u32) -> i32 {
     // Leave sentinel scores untouched so downstream comparisons with
     // `-INFINITY` / `MATE_SCORE - ply` keep their absolute magnitudes.
     if score <= -INFINITY + 1 || score.abs() >= MATE_IN_MAX_PLY {

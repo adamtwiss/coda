@@ -15,8 +15,8 @@ pub struct UndoInfo {
     pub captured: u8,       // PieceType of captured piece (NO_PIECE_TYPE if none)
     pub castling: u8,
     pub ep_square: u8,
-    pub halfmove: u16,
-    pub plies_from_null: u16,
+    pub halfmove: u32,
+    pub plies_from_null: u32,
     pub hash: u64,
     pub pawn_hash: u64,
     pub non_pawn_key: [u64; 2],
@@ -35,9 +35,9 @@ pub struct Board {
     pub side_to_move: Color,
     pub castling: u8,        // 4-bit castling rights
     pub ep_square: u8,       // NO_SQUARE if none
-    pub halfmove: u16,       // halfmove clock for 50-move rule
+    pub halfmove: u32,       // halfmove clock for 50-move rule
     pub fullmove: u16,       // fullmove number
-    pub plies_from_null: u16, // plies since last null move (for cuckoo cycle detection)
+    pub plies_from_null: u32, // plies since last null move (for cuckoo cycle detection)
 
     pub hash: u64,           // Zobrist hash
     pub pawn_hash: u64,      // Zobrist hash of pawns only (for correction history)

@@ -692,7 +692,7 @@ pub fn is_win(score: i32) -> bool {
 /// (`score_to_tt`) is deliberately untouched: stored scores stay
 /// exact, only the interpretation at read time is clamped.
 #[inline]
-pub fn score_from_tt(score: i32, ply: i32, halfmove: u16) -> i32 {
+pub fn score_from_tt(score: i32, ply: i32, halfmove: u32) -> i32 {
     let budget = 100 - halfmove as i32;
     if score > TB_WIN - 200 {
         // Downgrade a potentially false mate score.
