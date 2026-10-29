@@ -615,7 +615,7 @@ tunables!(
     // LMR relief for a killer quiet, in LMR_SCALE units. One ply (LMR_SCALE)
     // is the natural seed -- the same step as the whole-ply relief terms in
     // the quiet LMR block. 0 = no relief (ordering-only killers).
-    (KILLER_LMR_CENTI, 0, 0, 250, 15.0, false),
+    (KILLER_LMR_CENTI, 100, 0, 250, 15.0, false),
     // SEE gate on the quiet check bonus (a common cross-engine idea: only
     // bonus a check that is not badly losing). Without it Coda orders losing
     // check-sacs into the first-searched slot. Margin on Coda's pawn=100 scale:
