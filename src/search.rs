@@ -298,14 +298,15 @@ tunables!(
     (TM_DEFAULT_MTG, 24, 14, 40, 1.5, false),         // sudden-death moves-to-go
     // Opening-phase damp on opt (see compute_tm_budgets): a linear ramp from
     // FLOOR/100 at fullmove 0 to 1.0 at fullmove RAMP_FM, flat after.
-    //   * FLOOR 42 = round(100 * TM_STAB_4_100 / TM_STAB_0_100) = round(100 * 74/175):
+    //   * FLOOR seeded at 42 = round(100 * TM_STAB_4_100 / TM_STAB_0_100) = round(100 * 74/175):
     //     stability is 0 at search start, so an opening move runs at the top
     //     stability entry while a settled move runs at the [4+] entry. The
     //     floor cancels that excess factor on the first moves.
-    //   * RAMP_FM 24 = the TM_DEFAULT_MTG default: the damp releases fully once
-    //     one sudden-death moves-to-go horizon of the game has been played.
-    (TM_PHASE_FLOOR_100, 42, 10, 80, 4.0, false),
-    (TM_PHASE_RAMP_FM, 24, 8, 60, 3.0, false),
+    //   * RAMP_FM seeded at 24 = the TM_DEFAULT_MTG default: the damp releases
+    //     fully once one sudden-death moves-to-go horizon has been played.
+    // Current values 40 / 28 are from SPSA #4668 (6000 iters from those seeds).
+    (TM_PHASE_FLOOR_100, 40, 10, 80, 4.0, false),
+    (TM_PHASE_RAMP_FM, 28, 8, 60, 3.0, false),
     (TM_STAB_0_100, 175, 100, 260, 8.0, false),       // stability table [0] * 1/100
     (TM_STAB_1_100, 122, 80, 180, 5.0, false),        // stability table [1]
     (TM_STAB_2_100, 90, 60, 130, 3.0, false),         // stability table [2]
@@ -3459,8 +3460,8 @@ pub fn compute_tm_budgets(
     //
     //   phase_mult = clamp(F + (1 - F) * fullmove / R, F, 1.0)
     //     F = TM_PHASE_FLOOR_100 / 100, R = TM_PHASE_RAMP_FM
-    //     at the defaults (F=0.42, R=24):
-    //       fm=1: 0.44x   fm=5: 0.54x   fm=10: 0.66x   fm=20: 0.90x   fm>=24: 1.0x
+    //     at the defaults (F=0.40, R=28):
+    //       fm=1: 0.42x   fm=5: 0.51x   fm=10: 0.61x   fm=20: 0.83x   fm>=28: 1.0x
     //
     // Both ends come from Coda's own TM quantities (see the tunable comments).
     // Skip the damp when movestogo > 0 — that path paces from the explicit
