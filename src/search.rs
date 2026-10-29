@@ -153,6 +153,11 @@ tunables!(
     // cheaply pruning d12+ nodes.
     (RFP_DEEP_KNEE_10X, 47, 40, 170, 20.0, true),
     (RFP_DEEP_LINEAR, 45, 0, 200, 10.0, true),
+    // Plies to reduce the TT move at an expected cut node whose RFP cut was
+    // declined only by the quiet-TT-move guard: static eval clears beta by the
+    // full RFP margin at this depth and the TT entry is at least this deep.
+    // 1 = the smallest whole-ply step; the margin is RFP's own, unchanged.
+    (TT_QUIET_RFP_REDUCE, 1, 0, 3, 0.5, false),
     // Razoring: drop straight to qsearch when static eval is far enough below
     // alpha that a full search is unlikely to recover it. Margin scales with
     // depth, gated to shallow depths only.
@@ -6060,6 +6065,7 @@ fn negamax(
     // static pruning couldn't cut). The reorder is Elo-neutral on its own, but
     // it removes the mechanism that kills shallow NMP — NMP-first intercepts
     // free RFP cutoffs — which is what enables the min-depth de-gate below.
+    let mut tt_quiet_rfp_reduce = 0i32;
     if !in_check {
         // Razoring. 10/10 stronger engines have the
         // qsearch-verified non-PV form: when static eval is hopelessly below
@@ -6094,20 +6100,37 @@ fn negamax(
             && !is_promotion(tt_move);
         // TB/mate guard: every peer skips RFP when eval is near mate/TB range.
         // Without this, RFP could cut a node where NNUE sees forced mate. (RFP audit RFP-3)
-        if depth <= tp(&RFP_DEPTH) && ply > 0 && !tt_pv && !tt_move_is_quiet && info.excluded_move[ply_u] == NO_MOVE && FEAT_RFP.load(Ordering::Relaxed)
-            && static_eval.abs() < MATE_SCORE - 200 {
+        let root_depth = info.root_depth;
+        let rfp_margin = move || -> i32 {
             let mut margin = if improving { depth * tp(&RFP_MARGIN_IMP) } else { depth * tp(&RFP_MARGIN_NOIMP) };
             // Root-depth-aware relaxation: + depth*(root_depth-thresh)+ *coef/100.
             // Zero at STC (root_depth <= thresh); grows with both remaining
             // depth and how deep the overall search is, so deep RFP at LTC
             // demands much more confidence. One formula, one tunable set.
-            margin += (depth * (info.root_depth - tp(&RFP_ROOT_THRESH)).max(0) * tp(&RFP_ROOT_COEF)) / 100;
+            margin += (depth * (root_depth - tp(&RFP_ROOT_THRESH)).max(0) * tp(&RFP_ROOT_COEF)) / 100;
             let deep_extra = (depth - tp10(&RFP_DEEP_KNEE_10X)).max(0);
             if deep_extra > 0 {
                 margin += deep_extra * tp(&RFP_DEEP_LINEAR);
             }
             // Widen margin when opponent pawns attack our pieces (Minic/Berserk pattern)
             if has_pawn_threats { margin += margin / 3; }
+            margin
+        };
+        // The quiet-TT guard below declines exactly the RFP cut whose margin
+        // test would pass. Record that case: the TT move then gets a one-ply
+        // reduction in the move loop (TT_QUIET_RFP_REDUCE plies) instead of
+        // being searched at full depth.
+        if tt_move_is_quiet && !is_pv && cut_node
+            && depth <= tp(&RFP_DEPTH) && ply > 0 && !tt_pv && info.excluded_move[ply_u] == NO_MOVE && FEAT_RFP.load(Ordering::Relaxed)
+            && static_eval.abs() < MATE_SCORE - 200
+            && tt_hit && tt_entry.depth >= depth
+            && static_eval - rfp_margin() >= beta
+        {
+            tt_quiet_rfp_reduce = tp(&TT_QUIET_RFP_REDUCE);
+        }
+        if depth <= tp(&RFP_DEPTH) && ply > 0 && !tt_pv && !tt_move_is_quiet && info.excluded_move[ply_u] == NO_MOVE && FEAT_RFP.load(Ordering::Relaxed)
+            && static_eval.abs() < MATE_SCORE - 200 {
+            let margin = rfp_margin();
             // No qsearch confirmation of the cut: qsearch stands pat on this
             // same corrected eval, already above beta, so it can never refute
             // one (0 of 1.36M in warm-TT games). A real confirmation must search.
@@ -6696,6 +6719,7 @@ fn negamax(
         // node-end TT store are all gated on excluded_move during the
         // verification search.
         let mut singular_extension = 0i32;
+        let mut se_ran = false;
         if mv == tt_move
             && tt_move != NO_MOVE
             && ply > 0
@@ -6727,6 +6751,7 @@ fn negamax(
 let singular_beta = tt_score_local - depth;
                 let singular_depth = (depth - 1) / 2;
 
+                se_ran = true;
                 info.excluded_move[ply_u] = tt_move;
                 let singular_score = negamax(board, info, singular_beta - 1, singular_beta, singular_depth, ply, false);
                 info.excluded_move[ply_u] = NO_MOVE;
@@ -6908,6 +6933,12 @@ let singular_beta = tt_score_local - depth;
         }
 
         let mut new_depth = depth - 1 + extension + singular_extension;
+        // TT move at a node RFP would have cut but for its quiet-TT guard (see
+        // tt_quiet_rfp_reduce): reduce it, unless singular verification has
+        // already ruled on its depth.
+        if mv == tt_move && !se_ran {
+            new_depth -= tt_quiet_rfp_reduce;
+        }
 
         // Propagate double extension counter to child
         if ply_u < MAX_PLY {
