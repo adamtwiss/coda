@@ -650,8 +650,9 @@ tunables!(
     // non-pawn piece from a square no enemy pawn covers (see movepicker).
     // Seeded at half the QUIET_CHECK_BONUS default (14805 / 2 = 7402): a
     // threat is a forcing move one tempo weaker than a check, so it ranks
-    // below a quiet check but well above plain history. SPSA-movable.
-    (OFFENSE_BONUS, 7402, 0, 20000, 1000.0, false),
+    // below a quiet check but well above plain history. Now 7321 from SPSA
+    // #4680 (4000 iters from that seed).
+    (OFFENSE_BONUS, 7321, 0, 20000, 1000.0, false),
     // --- Pruning depth gates ---
     // These are sensitive to eval quality and want re-calibrating after a net
     // change, which is why they are tunable rather than hardcoded.
