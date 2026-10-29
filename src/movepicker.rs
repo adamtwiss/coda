@@ -297,6 +297,10 @@ pub struct MovePicker {
     pinned: Bitboard,
     // NMP threat square (-1 = none)
     pub threat_sq: i32,
+    /// Killer moves for this ply (search sets them after construction, like
+    /// `threat_sq`). Scored in the quiet stage only, so a killer that is
+    /// illegal here is never generated and never needs a legality check.
+    pub killers: [Move; 2],
     // Checking squares: from which squares does each piece type give direct check?
     // Indexed by piece type (0=PAWN..5=KING). Computed once per node.
     checking_sqs: [Bitboard; 6],
@@ -362,6 +366,7 @@ impl MovePicker {
             checkers,
             pinned,
             threat_sq: -1,
+            killers: [NO_MOVE; 2],
             // Deferred: computed once at the start of
             // generate_and_score_quiets — only quiet scoring consumes it,
             // so nodes that cut off before the quiet stage never pay the
@@ -403,6 +408,7 @@ impl MovePicker {
             checkers,
             pinned,
             threat_sq: -1,
+            killers: [NO_MOVE; 2],
             checking_sqs: [0; 6], // not used in QS
         }
     }
@@ -466,6 +472,7 @@ impl MovePicker {
             checkers,
             pinned,
             threat_sq: -1,
+            killers: [NO_MOVE; 2],
             checking_sqs: [0; 6], // not used in evasions
         }
     }
@@ -698,6 +705,8 @@ impl MovePicker {
         let offense_base =
             quiet_check_bonus * crate::search::OFFENSE_SCALE_PCT.load(Ordering::Relaxed) / 100;
         let offense_mover_w = crate::search::OFFENSE_MOVER_W_PCT.load(Ordering::Relaxed);
+        let killer_bonus = crate::search::KILLER_BONUS.load(Ordering::Relaxed);
+        let killers = self.killers;
         let us = board.side_to_move;
         let them = 1 - us;
         let occ = board.colors[us as usize] | board.colors[them as usize];
@@ -828,6 +837,13 @@ impl MovePicker {
                         }
                     }
                 }
+            }
+
+            // Killer lift. Quiets are never NO_MOVE, so an empty slot never matches.
+            if m == killers[0] {
+                score += killer_bonus;
+            } else if m == killers[1] {
+                score += killer_bonus / 2;
             }
 
             let idx = self.moves.len;
