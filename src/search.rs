@@ -277,17 +277,18 @@ tunables!(
     (TM_OPT_WINDOW_PCT, 73, 45, 95, 3.0, false),      // opt = computed * N/100
     (TM_INC_FRAC_PCT, 93, 40, 100, 4.0, false),       // computed += inc * N/100
     (TM_DEFAULT_MTG, 24, 14, 40, 1.5, false),         // sudden-death moves-to-go
-    // Opening-phase damp on opt (see compute_tm_budgets): a linear ramp from
-    // FLOOR/100 at fullmove 0 to 1.0 at fullmove RAMP_FM, flat after.
-    //   * FLOOR seeded at 42 = round(100 * TM_STAB_4_100 / TM_STAB_0_100) = round(100 * 74/175):
-    //     stability is 0 at search start, so an opening move runs at the top
-    //     stability entry while a settled move runs at the [4+] entry. The
-    //     floor cancels that excess factor on the first moves.
-    //   * RAMP_FM seeded at 24 = the TM_DEFAULT_MTG default: the damp releases
-    //     fully once one sudden-death moves-to-go horizon has been played.
-    // Current values 40 / 28 are from SPSA #4668 (6000 iters from those seeds).
+    // Opening-phase damp on opt (see compute_tm_budgets): a saturating ramp
+    // from FLOOR/100 at fullmove 0 towards 1.0, half released at HALF_FM.
+    //   * FLOOR 40: from SPSA #4668 on the earlier linear form (seed 42 =
+    //     round(100 * TM_STAB_4_100 / TM_STAB_0_100) = round(100 * 74/175):
+    //     an opening move runs at the top stability entry, a settled move at
+    //     the [4+] entry, and the floor cancels that excess).
+    //   * HALF_FM 14: the half-release point of that tuned linear ramp
+    //     (RAMP_FM 28 / 2). The saturating form keeps a tail the linear ramp
+    //     could not: both linear SPSAs (#4668 inc, #4676 no-inc) pushed the
+    //     ramp longer, and its SPRTs lost at both TCs (#4674, #4675).
     (TM_PHASE_FLOOR_100, 40, 10, 80, 4.0, false),
-    (TM_PHASE_RAMP_FM, 28, 8, 60, 3.0, false),
+    (TM_PHASE_HALF_FM, 14, 4, 50, 3.0, false),
     (TM_STAB_0_100, 175, 100, 260, 8.0, false),       // stability table [0] * 1/100
     (TM_STAB_1_100, 122, 80, 180, 5.0, false),        // stability table [1]
     (TM_STAB_2_100, 90, 60, 130, 3.0, false),         // stability table [2]
@@ -3382,12 +3383,12 @@ pub fn compute_tm_budgets(
     // stability is 0 at search start, so the factor multiplier is at its
     // maximum on the very first moves, and ten of those can eat an entire
     // 30+0.25 budget before the middlegame. Damping the early-game base share
-    // is a common pattern; Coda's form is a clamped linear ramp on opt:
+    // is a common pattern; Coda's form is a rational saturation on opt:
     //
-    //   phase_mult = clamp(F + (1 - F) * fullmove / R, F, 1.0)
-    //     F = TM_PHASE_FLOOR_100 / 100, R = TM_PHASE_RAMP_FM
-    //     at the defaults (F=0.40, R=28):
-    //       fm=1: 0.42x   fm=5: 0.51x   fm=10: 0.61x   fm=20: 0.83x   fm>=28: 1.0x
+    //   phase_mult = F + (1 - F) * fullmove / (fullmove + K)
+    //     F = TM_PHASE_FLOOR_100 / 100, K = TM_PHASE_HALF_FM
+    //     at the defaults (F=0.40, K=14):
+    //       fm=1: 0.44x  fm=5: 0.56x  fm=10: 0.65x  fm=20: 0.75x  fm=40: 0.84x
     //
     // Both ends come from Coda's own TM quantities (see the tunable comments).
     // Skip the damp when movestogo > 0 — that path paces from the explicit
@@ -3396,8 +3397,9 @@ pub fn compute_tm_budgets(
         opt_time_base
     } else {
         let floor = (tp(&TM_PHASE_FLOOR_100).clamp(1, 100) as f64) / 100.0;
-        let ramp_fm = tp(&TM_PHASE_RAMP_FM).max(1) as f64;
-        let phase_mult = (floor + (1.0 - floor) * fullmove as f64 / ramp_fm).clamp(floor, 1.0);
+        let half_fm = tp(&TM_PHASE_HALF_FM).max(1) as f64;
+        let fm = fullmove as f64;
+        let phase_mult = floor + (1.0 - floor) * fm / (fm + half_fm);
         ((opt_time_base as f64) * phase_mult) as u64
     };
     // Behind-on-clock damp: spend less when our clock trails the opponent's.
