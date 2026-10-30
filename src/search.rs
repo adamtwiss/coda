@@ -134,6 +134,26 @@ tunables!(
     (RFP_DEPTH, 17, 2, 20, 2.0, true),
     (RFP_MARGIN_IMP, 24, 0, 150, 6.0, true),
     (RFP_MARGIN_NOIMP, 32, 0, 200, 7.5, true),
+    // Opponent-worsening RFP relief. `improving` reads OUR trend over two
+    // plies; this reads the OPPONENT's last move: static_evals[ply-1] +
+    // static_eval > RFP_OPPW_THRESH means our eval now exceeds the negation of
+    // theirs before they moved, i.e. their move made their position worse.
+    // (Note the sign: the hindsight EXTENSION keys on the complement, sum <= 0.)
+    //
+    // When it holds, the depth*IMP/NOIMP base margin is cut by RFP_OPPW_PCT
+    // percent. Proportional to the base so it rides along with any retune of
+    // the IMP/NOIMP pair rather than fighting it as a fixed cp offset; the
+    // root-depth and deep terms are left alone (those encode how much static
+    // confidence deep nodes need, which an opponent's slip does not change).
+    //
+    // NEUTRAL at PCT=0 (bench-identical to the build without it). SPSA seed
+    // derivation, from Coda's own tuned values: `improving` takes the base
+    // from NOIMP=32 to IMP=24, a (32-24)/32 = 25% relief for a two-ply trend.
+    // Opponent-worsening is a one-ply trend, so half of that: 12.5% -> 12.
+    // Threshold seed 0 is the definitional sign boundary (no slip at all).
+    // The PCT range admits negative values so the tune can pick the sign.
+    (RFP_OPPW_PCT, 0, -25, 50, 3.0, true),
+    (RFP_OPPW_THRESH, 0, -64, 128, 8.0, true),
     // Root-depth-aware RFP relaxation (single-set, self-adapts STC<->LTC):
     // demand MORE static-eval confidence to RFP-cut as the OVERALL search
     // depth grows past RFP_ROOT_THRESH (diminishing-returns of depth — the
@@ -6097,7 +6117,18 @@ fn negamax(
         // Without this, RFP could cut a node where NNUE sees forced mate. (RFP audit RFP-3)
         if depth <= tp(&RFP_DEPTH) && ply > 0 && !tt_pv && !tt_move_is_quiet && info.excluded_move[ply_u] == NO_MOVE && FEAT_RFP.load(Ordering::Relaxed)
             && static_eval.abs() < MATE_SCORE - 200 {
-            let mut margin = if improving { depth * tp(&RFP_MARGIN_IMP) } else { depth * tp(&RFP_MARGIN_NOIMP) };
+            let base_margin = if improving { depth * tp(&RFP_MARGIN_IMP) } else { depth * tp(&RFP_MARGIN_NOIMP) };
+            let mut margin = base_margin;
+            // Opponent-worsening relief (see RFP_OPPW_PCT). Skipped after a
+            // null move: the parent passed, so there is no opponent move whose
+            // quality the eval sum could be measuring. In-check parents store
+            // -INFINITY and are excluded by the same guard hindsight uses.
+            if ply_u >= 1 && !prev_was_null
+                && info.static_evals[ply_u - 1] > -(MATE_IN_MAX_PLY)
+                && info.static_evals[ply_u - 1] + static_eval > tp(&RFP_OPPW_THRESH)
+            {
+                margin -= base_margin * tp(&RFP_OPPW_PCT) / 100;
+            }
             // Root-depth-aware relaxation: + depth*(root_depth-thresh)+ *coef/100.
             // Zero at STC (root_depth <= thresh); grows with both remaining
             // depth and how deep the overall search is, so deep RFP at LTC
