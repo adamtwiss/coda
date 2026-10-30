@@ -59,14 +59,25 @@ impl ContHist {
 }
 
 pub struct History {
-    /// Main history: [from_threatened][to_threatened][from][to]
-    /// Threat-aware 4D indexing — separate history for moves escaping/entering threats.
+    /// Main history: [stm][from_threatened][to_threatened][from][to]
+    /// Threat-aware indexing — separate history for moves escaping/entering
+    /// threats — split by the colour of the side that plays the move. Without
+    /// the stm index a white f3-g5 and a black f3-g5 share one cell although
+    /// they are unrelated propositions; Coda's capture, continuation and pawn
+    /// tables are already colour-aware through the 1-12 piece index, so main
+    /// was the only colour-blind history.
+    ///
+    /// The colour index is ALWAYS the side that plays (from, to), i.e. the
+    /// side to move at the node where the move is generated. Sites that run
+    /// between make_move and unmake_move must pass the node's saved `us`, not
+    /// `board.side_to_move` (which is then the opponent). See
+    /// `stm_split_reads_and_writes_share_one_colour_cell` for the guard.
+    ///
     /// i16 storage: the gravity update keeps every entry within ±MAX_HISTORY
-    /// (16384), so i16 is exact, and it halves the table from 64 KB to 32 KB.
-    /// The 4D read in quiet scoring is scattered (threat bits × from × to), and
-    /// at 64 KB the table alone exceeded L1D; perf showed that read as the
-    /// hottest cache-miss site in `next_slow`.
-    pub main: [[[[i16; 64]; 64]; 2]; 2],
+    /// (16384), so i16 is exact. With the stm split the table is 64 KB
+    /// (2 × 32 KB); a node only ever touches its own colour's 32 KB half,
+    /// which is the footprint the i16 narrowing was sized for.
+    pub main: [[[[[i16; 64]; 64]; 2]; 2]; 2],
     /// Capture history: [piece 1-12][to][captured_type 0-6]
     /// piece uses 1-12 indexing (slot 0 unused).
     /// captured_type uses 0-6 scheme (0=empty, 1=pawn, ..., 6=king).
@@ -75,27 +86,32 @@ pub struct History {
 }
 
 impl History {
-    /// Get main history score for a move given enemy threat bitboard.
+    /// Get main history score for a move played by `stm`, given the enemy
+    /// threat bitboard. FEAT_4D_HISTORY gates only the threat bits; the
+    /// colour split is structural and always on.
     #[inline(always)]
-    pub fn main_score(&self, from: u8, to: u8, threats: Threats) -> i32 {
+    pub fn main_score(&self, stm: u8, from: u8, to: u8, threats: Threats) -> i32 {
+        let sd = (stm & 1) as usize;
         if crate::search::FEAT_4D_HISTORY.load(std::sync::atomic::Ordering::Relaxed) {
             let ft = ((threats >> from) & 1) as usize;
             let tt = ((threats >> to) & 1) as usize;
-            self.main[ft][tt][from as usize][to as usize] as i32
+            self.main[sd][ft][tt][from as usize][to as usize] as i32
         } else {
-            self.main[0][0][from as usize][to as usize] as i32
+            self.main[sd][0][0][from as usize][to as usize] as i32
         }
     }
 
-    /// Get mutable reference to main history entry for a move given enemy threats.
+    /// Mutable main-history entry for a move played by `stm`, given enemy
+    /// threats. Must index exactly as `main_score` does.
     #[inline(always)]
-    pub fn main_entry(&mut self, from: u8, to: u8, threats: Threats) -> &mut i16 {
+    pub fn main_entry(&mut self, stm: u8, from: u8, to: u8, threats: Threats) -> &mut i16 {
+        let sd = (stm & 1) as usize;
         if crate::search::FEAT_4D_HISTORY.load(std::sync::atomic::Ordering::Relaxed) {
             let ft = ((threats >> from) & 1) as usize;
             let tt = ((threats >> to) & 1) as usize;
-            &mut self.main[ft][tt][from as usize][to as usize]
+            &mut self.main[sd][ft][tt][from as usize][to as usize]
         } else {
-            &mut self.main[0][0][from as usize][to as usize]
+            &mut self.main[sd][0][0][from as usize][to as usize]
         }
     }
 
@@ -112,7 +128,7 @@ impl History {
     }
 
     pub fn clear(&mut self) {
-        self.main = [[[[0; 64]; 64]; 2]; 2];
+        self.main = [[[[[0; 64]; 64]; 2]; 2]; 2];
         self.capture = [[[0i16; 7]; 64]; 13];
     }
 
@@ -129,10 +145,12 @@ impl History {
     /// Age all history tables by multiplying by factor/divisor (e.g. 4/5 = 0.80).
     /// Preserves useful information from prior searches while letting new data dominate.
     pub fn age(&mut self, factor: i32, divisor: i32) {
-        for t0 in self.main.iter_mut() {
-            for t1 in t0.iter_mut() {
-                for row in t1.iter_mut() {
-                    for v in row.iter_mut() { *v = (*v as i32 * factor / divisor) as i16; }
+        for side in self.main.iter_mut() {
+            for t0 in side.iter_mut() {
+                for t1 in t0.iter_mut() {
+                    for row in t1.iter_mut() {
+                        for v in row.iter_mut() { *v = (*v as i32 * factor / divisor) as i16; }
+                    }
                 }
             }
         }
@@ -718,7 +736,7 @@ impl MovePicker {
             // to 4 score-term blocks below.
             let pt = board.piece_type_at(from);
 
-            let mut score = history.main_score(from, to, self.threats);
+            let mut score = history.main_score(us, from, to, self.threats);
 
             // Continuation history: plies 1,2 at CONT_HIST_MULT weight, plies 4,6 at 1x weight.
             // Matches Obsidian/Alexandria/Berserk pattern (default 3).
@@ -889,7 +907,8 @@ impl MovePicker {
                 // Quiet: history + continuation history + pawn history
                 let piece = board.piece_at(from);
 
-                let mut s = history.main_score(from, to, self.threats);
+                // The node's side to move plays every evasion.
+                let mut s = history.main_score(board.side_to_move, from, to, self.threats);
 
                 if piece != NO_PIECE {
                     let gp = go_piece(piece);
@@ -1367,35 +1386,51 @@ mod tests {
     #[test]
     fn history_4d_flag_routes_correctly() {
         let mut h = History::boxed_zeroed();
-        // Give each table slot a distinct value so we can prove which branch ran.
-        h.main[0][0][12][28] = 1;
-        h.main[0][1][12][28] = 2;
-        h.main[1][0][12][28] = 3;
-        h.main[1][1][12][28] = 4;
+        // Give each table slot a distinct value so we can prove which branch
+        // ran. Black's half carries the same layout offset by 100 so a
+        // colour mix-up reads a distinguishable number.
+        for sd in 0..2 {
+            let base = (sd as i16) * 100;
+            h.main[sd][0][0][12][28] = base + 1;
+            h.main[sd][0][1][12][28] = base + 2;
+            h.main[sd][1][0][12][28] = base + 3;
+            h.main[sd][1][1][12][28] = base + 4;
+        }
 
         // Threats bitboard with BOTH from (12) and to (28) set:
         let threats: Threats = (1u64 << 12) | (1u64 << 28);
 
         let saved = FEAT_4D_HISTORY.load(Ordering::Relaxed);
 
-        // 4D on: lookup must see slot [1][1] = 4.
-        FEAT_4D_HISTORY.store(true, Ordering::Relaxed);
-        assert_eq!(h.main_score(12, 28, threats), 4,
-            "4D on: expected main[1][1][12][28]=4");
-        *h.main_entry(12, 28, threats) = 40;
-        assert_eq!(h.main[1][1][12][28], 40, "4D on: main_entry wrote to [1][1]");
-        h.main[1][1][12][28] = 4; // restore
+        for stm in 0..2u8 {
+            let sd = stm as usize;
+            let base = (sd as i16) * 100;
+            let other = 1 - sd;
 
-        // 4D off: lookup must always see slot [0][0] = 1 regardless of threats.
-        FEAT_4D_HISTORY.store(false, Ordering::Relaxed);
-        assert_eq!(h.main_score(12, 28, threats), 1,
-            "4D off: expected main[0][0][12][28]=1");
-        assert_eq!(h.main_score(12, 28, 0), 1,
-            "4D off: expected main[0][0] with zero threats");
-        *h.main_entry(12, 28, threats) = 10;
-        assert_eq!(h.main[0][0][12][28], 10, "4D off: main_entry wrote to [0][0]");
-        // The other slots must not have been touched by the 2D write path.
-        assert_eq!(h.main[1][1][12][28], 4, "4D off: [1][1] unchanged");
+            // 4D on: lookup must see slot [stm][1][1].
+            FEAT_4D_HISTORY.store(true, Ordering::Relaxed);
+            assert_eq!(h.main_score(stm, 12, 28, threats), (base + 4) as i32,
+                "4D on: expected main[{sd}][1][1][12][28]");
+            *h.main_entry(stm, 12, 28, threats) = base + 40;
+            assert_eq!(h.main[sd][1][1][12][28], base + 40, "4D on: main_entry wrote to [{sd}][1][1]");
+            assert_eq!(h.main[other][1][1][12][28], (other as i16) * 100 + 4,
+                "4D on: a write for stm={stm} leaked into the other colour's half");
+            h.main[sd][1][1][12][28] = base + 4; // restore
+
+            // 4D off: lookup must always see slot [stm][0][0] regardless of threats.
+            FEAT_4D_HISTORY.store(false, Ordering::Relaxed);
+            assert_eq!(h.main_score(stm, 12, 28, threats), (base + 1) as i32,
+                "4D off: expected main[{sd}][0][0][12][28]");
+            assert_eq!(h.main_score(stm, 12, 28, 0), (base + 1) as i32,
+                "4D off: expected main[{sd}][0][0] with zero threats");
+            *h.main_entry(stm, 12, 28, threats) = base + 10;
+            assert_eq!(h.main[sd][0][0][12][28], base + 10, "4D off: main_entry wrote to [{sd}][0][0]");
+            // The other slots must not have been touched by the 2D write path.
+            assert_eq!(h.main[sd][1][1][12][28], base + 4, "4D off: [{sd}][1][1] unchanged");
+            assert_eq!(h.main[other][0][0][12][28], (other as i16) * 100 + 1,
+                "4D off: a write for stm={stm} leaked into the other colour's half");
+            h.main[sd][0][0][12][28] = base + 1; // restore
+        }
 
         // Restore original flag so other tests are unaffected.
         FEAT_4D_HISTORY.store(saved, Ordering::Relaxed);
@@ -1785,6 +1820,62 @@ mod cont_hist_symmetry_tests {
             Default::default(), &mps, &mts,
         );
         assert!(mp.cont_hist_subs[0].is_none(), "null sentinel must not select a plane");
+    }
+
+    /// Score of the (from, to) move as scored by the picker for `fen`, with
+    /// `h` as main history. Quiet stage when not in check, evasion stage when
+    /// in check.
+    fn picker_score(fen: &str, h: &History, from: u8, to: u8) -> i32 {
+        init();
+        let board = Board::from_fen(fen);
+        let c = ContHist::shared_zeroed();
+        let mps = [0u8; 64];
+        let mts = [0u8; 64];
+        let mp = if board.checkers() != 0 {
+            let mut mp = MovePicker::new_evasion(
+                NO_MOVE, 0, board.checkers(), board.pinned(), h, &c, NO_MOVE, None,
+                Default::default(), &mps, &mts,
+            );
+            mp.generate_and_score_evasions(&board);
+            mp
+        } else {
+            let mut mp = MovePicker::new(
+                &board, NO_MOVE, 0, board.checkers(), board.pinned(), h, &c, NO_MOVE, None,
+                Default::default(), &mps, &mts,
+            );
+            mp.generate_and_score_quiets(&board);
+            mp
+        };
+        (0..mp.moves.len)
+            .find(|&i| move_from(mp.moves.get(i)) == from && move_to(mp.moves.get(i)) == to)
+            .map(|i| unsafe { mp.scores[i].assume_init() })
+            .unwrap_or_else(|| panic!("{fen}: move {from}->{to} was not generated"))
+    }
+
+    /// Main-history READS in the picker must use the colour of the side that
+    /// plays the move, the same index the search's cutoff WRITES use. Each
+    /// FEN pair plays the identical geometry Ke1-d1 (4 -> 3) once with White
+    /// to move and once with Black to move, so a colour-blind or
+    /// colour-swapped read returns the other half's sentinel.
+    #[test]
+    fn stm_split_reads_and_writes_share_one_colour_cell() {
+        // (white-to-move FEN, black-to-move FEN); the second pair is in
+        // check, which routes through the evasion scorer.
+        let pairs = [
+            ("k7/8/8/8/8/8/8/4K3 w - - 0 1", "K7/8/8/8/8/8/8/4k3 b - - 0 1"),
+            ("k3r3/8/8/8/8/8/8/4K3 w - - 0 1", "K3R3/8/8/8/8/8/8/4k3 b - - 0 1"),
+        ];
+        let zero = History::boxed_zeroed();
+        let mut seeded = History::boxed_zeroed();
+        // Written through main_entry, the accessor every search write uses.
+        *seeded.main_entry(0, 4, 3, 0) = 111;
+        *seeded.main_entry(1, 4, 3, 0) = 222;
+        for (w, b) in pairs {
+            let dw = picker_score(w, &seeded, 4, 3) - picker_score(w, &zero, 4, 3);
+            let db = picker_score(b, &seeded, 4, 3) - picker_score(b, &zero, 4, 3);
+            assert_eq!(dw, 111, "{w}: White's move did not read White's history half");
+            assert_eq!(db, 222, "{b}: Black's move did not read Black's history half");
+        }
     }
 }
 

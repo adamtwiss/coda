@@ -2129,7 +2129,7 @@ impl SearchInfo {
 
     #[cfg(test)]
     pub fn dirty_persistent_histories_for_test(&mut self) {
-        self.history.main[1][0][2][3] = 123;
+        self.history.main[1][1][0][2][3] = 123;
         self.history.capture[1][4][2] = -45;
         self.cont.t[1][4][2][5].store(67, Ordering::Relaxed);
         self.pawn_hist[3][1][7] = 89;
@@ -2141,14 +2141,9 @@ impl SearchInfo {
 
     #[cfg(test)]
     pub fn assert_persistent_histories_clear_for_test(&self) {
-        for a in self.history.main.iter() {
-            for b in a.iter() {
-                for c in b.iter() {
-                    for &v in c.iter() {
-                        assert_eq!(v, 0, "main history was not cleared");
-                    }
-                }
-            }
+        // Both colour halves; the dirtying helper writes into the black half.
+        for &v in self.history.main.iter().flatten().flatten().flatten().flatten() {
+            assert_eq!(v, 0, "main history was not cleared");
         }
         for a in self.history.capture.iter() {
             for b in a.iter() {
@@ -5830,7 +5825,7 @@ fn negamax(
                         if !tt_is_cap && tt_piece != NO_PIECE {
                             let bonus = history_bonus(depth);
                             History::update_history(
-                                info.history.main_entry(move_from(tt_move), move_to(tt_move), enemy_attacks),
+                                info.history.main_entry(board.side_to_move, move_from(tt_move), move_to(tt_move), enemy_attacks),
                                 bonus,
                             );
                         } else if tt_is_cap && tt_piece != NO_PIECE {
@@ -6654,7 +6649,7 @@ fn negamax(
             && FEAT_FUTILITY.load(Ordering::Relaxed)
             && lmr_d <= tp(&FUT_LMR_DEPTH)
         {
-            let main_hist = info.history.main_score(from, to, enemy_attacks);
+            let main_hist = info.history.main_score(us, from, to, enemy_attacks);
             let hist_adj = main_hist / 128;
             let threats_adj = any_threat_count * tp(&FUT_THREATS_MARGIN);
             let mc_adj = (move_count * tp(&FUT_MC_PER_MOVE)).min(lmr_d * tp(&FUT_PER_DEPTH));
@@ -7082,7 +7077,8 @@ let singular_beta = tt_score_local - depth;
                 // Main history carries twice the weight of a single
                 // continuation ply, since it aggregates over every context
                 // rather than one specific predecessor.
-                let mut hist_score = info.history.main_score(from, to, enemy_attacks) * 2;
+                // `us`, not board.side_to_move: this runs after make_move.
+                let mut hist_score = info.history.main_score(us, from, to, enemy_attacks) * 2;
                 if moved_piece != NO_PIECE {
                     let gp = go_piece(moved_piece);
                     if prev_piece_for_cont != 0 {
@@ -7325,7 +7321,7 @@ let singular_beta = tt_score_local - depth;
                     if nudge_bonus != 0 {
                         let gp_mv = go_piece(moved_piece);
                         // base = current cont_hist + main_hist / 2 (concept from Stormphrax).
-                        let main_score_v = info.history.main_score(from, to, enemy_attacks);
+                        let main_score_v = info.history.main_score(us, from, to, enemy_attacks);
                         let ch_offsets = [1usize, 2, 4, 6];
                         for &off in &ch_offsets {
                             if ply_u >= off {
@@ -7484,7 +7480,7 @@ let singular_beta = tt_score_local - depth;
 
                         // Update main history
                         History::update_history(
-                            info.history.main_entry(from, to, enemy_attacks),
+                            info.history.main_entry(us, from, to, enemy_attacks),
                             bonus,
                         );
 
@@ -7493,7 +7489,7 @@ let singular_beta = tt_score_local - depth;
                         if moved_piece != NO_PIECE {
                             let gp_mv = go_piece(moved_piece);
                             // base = current cont_hist + main_hist / 2 (concept from Stormphrax).
-                            let main_score_v = info.history.main_score(from, to, enemy_attacks);
+                            let main_score_v = info.history.main_score(us, from, to, enemy_attacks);
                             let ch_offsets = [1usize, 2, 4, 6];
                             for &off in ch_offsets.iter() {
                                 if ply_u >= off {
@@ -7530,7 +7526,7 @@ let singular_beta = tt_score_local - depth;
                             let qf = move_from(q);
                             let qt = move_to(q);
                             History::update_history(
-                                info.history.main_entry(qf, qt, enemy_attacks),
+                                info.history.main_entry(us, qf, qt, enemy_attacks),
                                 -malus,
                             );
 
@@ -7540,7 +7536,7 @@ let singular_beta = tt_score_local - depth;
                                 let q_piece = board.piece_at(qf);
                                 if q_piece != NO_PIECE {
                                     let gp_q = go_piece(q_piece);
-                                    let q_main_score = info.history.main_score(qf, qt, enemy_attacks);
+                                    let q_main_score = info.history.main_score(us, qf, qt, enemy_attacks);
                                     let ch_offsets = [1usize, 2, 4, 6];
                                     for &off in ch_offsets.iter() {
                                         if ply_u >= off {
@@ -9177,6 +9173,66 @@ mod tests {
         info.clear_persistent_histories();
 
         info.assert_persistent_histories_clear_for_test();
+    }
+
+    /// Every main-history WRITE in the search (TT-cutoff bonus, beta-cutoff
+    /// bonus, quiet malus) must key on the colour of the side that played the
+    /// move — the same colour the reads use, including the LMR and cont-hist
+    /// base reads that run between make_move and unmake_move, where
+    /// `board.side_to_move` is the OPPONENT and the node's `us` is required.
+    /// With Black reduced to a bare king, every legal Black move is a
+    /// one-square king step, so any cell in Black's half that is not a king
+    /// step is a White move written into the wrong colour. Flipping the colour
+    /// at any one of the three write sites fails this test (checked by
+    /// mutation when it was written). KBN vs K so the search runs its full
+    /// depth instead of stopping on a short mate.
+    #[test]
+    fn main_history_writes_land_in_the_movers_colour() {
+        crate::init();
+        let net_path = match super::test_net_path() {
+            Some(p) => p,
+            None => { eprintln!("Skipping main-history colour test: no NNUE net found"); return; }
+        };
+        let mut info = SearchInfo::new(16);
+        info.silent = true;
+        info.load_nnue(&net_path).expect("net load");
+        let limits = SearchLimits {
+            depth: 12,
+            fixed_depth: true,
+            infinite: true,
+            ..SearchLimits::new()
+        };
+        let mut board = Board::from_fen("8/8/8/4k3/8/8/8/1N2KB2 w - - 0 1");
+        let _ = search(&mut board, &mut info, &limits);
+
+        let king_step = |from: usize, to: usize| {
+            let (df, dr) = ((from % 8) as i32 - (to % 8) as i32, (from / 8) as i32 - (to / 8) as i32);
+            from != to && df.abs() <= 1 && dr.abs() <= 1
+        };
+        let mut black_cells = 0;
+        let mut white_non_king = 0;
+        for plane in info.history.main[1].iter().flatten() {
+            for (from, row) in plane.iter().enumerate() {
+                for (to, &v) in row.iter().enumerate() {
+                    if v != 0 {
+                        black_cells += 1;
+                        assert!(king_step(from, to),
+                            "Black's half holds {from}->{to} = {v}: not a king step, so a White move \
+                             was written under Black's colour");
+                    }
+                }
+            }
+        }
+        for plane in info.history.main[0].iter().flatten() {
+            for (from, row) in plane.iter().enumerate() {
+                for (to, &v) in row.iter().enumerate() {
+                    if v != 0 && !king_step(from, to) { white_non_king += 1; }
+                }
+            }
+        }
+        // Non-vacuity: both halves were actually exercised.
+        assert!(black_cells > 0, "search wrote nothing to Black's half");
+        assert!(white_non_king > 0, "search wrote no non-king White moves");
     }
 
     #[test]
