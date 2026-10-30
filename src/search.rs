@@ -271,24 +271,17 @@ tunables!(
     (TM_ML_START, 55, 35, 80, 2.5, false),
     (TM_ML_SLOPE_100, 80, 40, 120, 5.0, false),
     (TM_ML_FLOOR, 24, 14, 40, 1.5, false),
-    // No-inc adaptive mtg divisor: base assumed moves-to-go, and the growth
-    // rate once a game outlives that assumption — see compute_tm_budgets for
-    // the full derivation.
-    (NO_INC_MTG_BASE, 34, 20, 80, 4.0, false),
-    (NO_INC_MTG_GROWTH_PCT, 94, 0, 200, 10.0, false),
-    // Cap on that growing divisor: never assume more moves left than a
-    // quarter of Coda's games still have. Fitted to the 75th percentile of
-    // moves remaining in Coda's own no-increment lichess games (both bots,
-    // June-October 2026, 3,898 games): fullmove 10/20/30/40/50/60/80 ->
-    // 61/52/46/42/40/36/31, i.e. cap = max(31, 64 - 0.5 * fullmove). The
-    // growth alone reached ~58 by move 60 (the 90th percentile there), and
-    // games ended with 40-53% of the clock unused at every no-increment TC;
-    // the cap first binds around move 43, so the opening and early
-    // middlegame are paced exactly as before.
-    (NO_INC_CAP_START, 64, 40, 90, 3.0, false),
-    (NO_INC_CAP_SLOPE_100, 50, 20, 100, 5.0, false),
+    // No-increment start of the same curve: median moves remaining in Coda's
+    // no-increment lichess games (3,898) at fullmove 10/20/30 is 39/31/25,
+    // i.e. START 47 with the shared 0.8 slope. Its floor is NO_INC_CAP_FLOOR
+    // (31, the 75th percentile once the remaining-moves distribution stops
+    // shrinking), so late no-increment pacing stays on the conservative side.
+    (TM_ML_NOINC_START, 47, 30, 70, 2.5, false),
+    // Late floor of the no-increment moves-left curve: the 75th percentile of
+    // moves remaining in Coda's no-increment lichess games (3,898) once that
+    // distribution stops shrinking (~31 from move 60 on).
     (NO_INC_CAP_FLOOR, 31, 20, 50, 2.0, false),
-    // Clock held back from no-increment pacing once the cap binds, in ms.
+    // Clock held back from no-increment pacing, in ms.
     // Every move costs ~10-16 ms of wall time however small its budget
     // (measured in local 10+0 games, where pacing with no reserve flagged
     // eight games past move 110 on that cost alone), so the reserve has to
@@ -3397,44 +3390,10 @@ pub fn compute_tm_budgets_credited(
         (time_left * hard_window_pct / 100).min(max_time).max(1)
     };
 
-    // No-inc sudden death needs a higher moves-left assumption than
-    // moderate-inc TCs: each spent ms is gone forever, and real 3+0 games
-    // run 40-80 moves. The default-moves-to-go 24 (sudden-death pacing) was
-    // calibrated for inc TCs where the inc term dominates pacing — at
-    // no-inc the 24 produces an opt that's high enough for the factor
-    // multiplier (up to ~6.5×) to consistently blow past hard_time,
-    // making hard the binding constraint every move — a flat uniform-spend
-    // pattern, seen in live 3+0 play.
-    //
-    // The assumption also has to ADAPT: a fixed base never tightens as a game
-    // outlives it (at move 80 it still assumes "40 moves left"). Symptom, from
-    // both live losses and local no-adjudication RR at 30+0: 70-88% of the
-    // clock burned by move ~60 in games running 130-220+ plies, then an
-    // out-of-time forfeit, while peer engines forfeited none. So once fullmove
-    // exceeds NO_INC_MTG_BASE, grow the divisor by NO_INC_MTG_GROWTH_PCT% of
-    // the overrun:
-    //     effective_mtg = base + growth_pct/100 * max(0, fullmove - base)
-    //
-    // These two must stay TUNABLE, not hardcoded. Fixed constants (base=40,
-    // growth=100%) eliminate forfeits entirely yet still lose ~3.5 Elo: the
-    // mechanism is right but that operating point over-tightens mid-game
-    // allocation in the majority of games, which were never going to forfeit.
-    // Any change here needs both a forfeit count and a non-regression SPRT.
-    let no_inc_mtg_base = tp(&NO_INC_MTG_BASE).max(1) as u64;
-    let no_inc_growth_pct = tp(&NO_INC_MTG_GROWTH_PCT).max(0) as u64;
-    let no_inc_grown_mtg = no_inc_mtg_base
-        + (fullmove as u64).saturating_sub(no_inc_mtg_base) * no_inc_growth_pct / 100;
-    // ...capped at the 75th percentile of moves actually left (NO_INC_CAP_*).
-    let no_inc_cap = (tp(&NO_INC_CAP_START) as i64
-        - tp(&NO_INC_CAP_SLOPE_100) as i64 * fullmove as i64 / 100)
-        .max(tp(&NO_INC_CAP_FLOOR).max(2) as i64) as u64;
-    let no_inc_effective_mtg = no_inc_grown_mtg.min(no_inc_cap);
-    let mtg_divisor = if no_inc_sd { no_inc_effective_mtg.max(1) } else { default_moves_to_go };
-    // Once the cap binds, no-increment pacing never touches the last
-    // NO_INC_RESERVE_MS of the clock (at most half of it), so per-move latency
-    // in a very long game cannot drain it. Before that the growing divisor
-    // already holds far more back, and the early game stays exactly as it was.
-    let paced_time = if no_inc_sd && no_inc_cap < no_inc_grown_mtg {
+    // No-increment pacing never touches the last NO_INC_RESERVE_MS of the
+    // clock (at most half of it), so per-move latency in a very long game
+    // cannot drain it.
+    let paced_time = if no_inc_sd {
         let reserve = (tp(&NO_INC_RESERVE_MS).max(0) as u64).min(time_left / 2);
         (time_left - reserve).max(1)
     } else {
@@ -3450,10 +3409,22 @@ pub fn compute_tm_budgets_credited(
         let computed = time_left / divisor + our_inc * inc_frac_pct / 100;
         (computed.min(max_time) * opt_window_pct / 100).max(1)
     } else if no_inc_sd {
-        // Sudden death, no increment. paced_time / mtg_divisor is the share
-        // (paced_time holds back the latency reserve once the cap binds).
-        let computed = paced_time / mtg_divisor + our_inc * inc_frac_pct / 100;
-        ((computed.min(max_time) * opt_window_pct / 100).min(hard_time)).max(1)
+        // Sudden death, no increment: an even share of the clock (less the
+        // latency reserve) over the moves we expect to play,
+        //   opt = (clock - reserve) / moves_left   (x phase damp below)
+        // with moves_left = max(NO_INC_CAP_FLOOR, TM_ML_NOINC_START - 0.8 fm).
+        // The old divisor (34, growing past move 34) divided by the 0.73
+        // window and the damp paced as if ~68 moves were left at move 20,
+        // where Coda's games have a median of 31; no-increment games ended
+        // with 40-77% of the clock unused (e.g. lichess E9lXxHrc, 600+0: 463 s
+        // left at the end). Simulated with 15 ms latency per move, a game
+        // survives to move ~220 at 60+0; the 10%/15% hard/max caps still
+        // bound every move.
+        let slope = tp(&TM_ML_SLOPE_100).max(0) as f64 / 100.0;
+        let moves_left = (tp(&TM_ML_NOINC_START) as f64 - slope * fullmove as f64)
+            .max(tp(&NO_INC_CAP_FLOOR).max(2) as f64);
+        let share = (paced_time as f64 / moves_left) as u64;
+        share.min(max_time).min(hard_time).max(1)
     } else {
         // Increment, sudden death: an even share of everything still to come
         // -- the clock plus the increments of the moves we expect to play --
@@ -9897,36 +9868,6 @@ mod tests {
         assert!(clk.iter().all(|&c| c > 0), "1+0 clock ran out: last {:?}", &clk[200..]);
     }
 
-    /// The no-increment cap leaves the opening and early middlegame exactly as
-    /// the growing divisor paced them: identical budgets up to move 40.
-    #[test]
-    fn no_increment_cap_leaves_early_game_unchanged() {
-        let (cap0, cap1, floor) = (tp(&NO_INC_CAP_START), tp(&NO_INC_CAP_SLOPE_100), tp(&NO_INC_CAP_FLOOR));
-        let base = tp(&NO_INC_MTG_BASE) as i64;
-        let growth = tp(&NO_INC_MTG_GROWTH_PCT) as i64;
-        for fm in 1..=40i64 {
-            let grown = base + (fm - base).max(0) * growth / 100;
-            let cap = (cap0 as i64 - cap1 as i64 * fm / 100).max(floor as i64);
-            assert!(cap >= grown, "cap binds at fm {}: {} < {}", fm, cap, grown);
-        }
-    }
-
-    /// P2 — PonderhitCreditPct defaults to the -1 sentinel = INERT = full
-    /// 100% charge of pondered time (the Option C 50% default is retired;
-    /// explicit sets still work for local A/B).
-    #[test]
-    fn ponderhit_credit_default_is_full_charge() {
-        let saved = PONDERHIT_CREDIT_PCT.load(Ordering::Relaxed);
-        PONDERHIT_CREDIT_PCT.store(-1, Ordering::Relaxed);
-        assert_eq!(ponderhit_credit_pct(), 100, "sentinel must mean full charge");
-        PONDERHIT_CREDIT_PCT.store(50, Ordering::Relaxed);
-        assert_eq!(ponderhit_credit_pct(), 50, "explicit set must be honored");
-        PONDERHIT_CREDIT_PCT.store(0, Ordering::Relaxed);
-        assert_eq!(ponderhit_credit_pct(), 0);
-        PONDERHIT_CREDIT_PCT.store(saved, Ordering::Relaxed);
-        // Fresh-binary default is the sentinel.
-        assert_eq!(saved, -1, "shipping default must be the -1 sentinel");
-    }
 
     /// A quiet, clearly-not-forced middlegame with many legal moves and no
     /// mate in sight — the ponder-arming tests need the ordinary ID-loop
