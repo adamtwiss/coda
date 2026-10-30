@@ -309,8 +309,8 @@ tunables!(
     //   Current 40 / 15 from SPSAs on this form from those seeds: #4686 at
     //   10+0.1 (39.6 / 14.7) and #4682 at 10+0 (40.1 / 16.2) agree, so one set
     //   serves both clock paths.
-    (TM_PHASE_FLOOR_100, 40, 10, 80, 4.0, false),
-    (TM_PHASE_HALF_FM, 15, 4, 50, 3.0, false),
+    (TM_PHASE_FLOOR_100, 28, 10, 80, 4.0, false),
+    (TM_PHASE_HALF_FM, 19, 4, 50, 3.0, false),
     (TM_STAB_0_100, 175, 100, 260, 8.0, false),       // stability table [0] * 1/100
     (TM_STAB_1_100, 122, 80, 180, 5.0, false),        // stability table [1]
     (TM_STAB_2_100, 90, 60, 130, 3.0, false),         // stability table [2]
