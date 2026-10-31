@@ -7077,14 +7077,6 @@ let singular_beta = tt_score_local - depth;
                     reduction += LMR_SCALE;
                 }
 
-                // Reduce more when opponent has few non-pawn pieces (simpler position)
-                // Note: board is post-make_move, so side_to_move IS the opponent
-                let opp_non_pawn = board.colors[board.side_to_move as usize]
-                    & !(board.pieces[PAWN as usize] | board.pieces[KING as usize]);
-                if popcount(opp_non_pawn) < 3 {
-                    reduction += LMR_SCALE;
-                }
-
                 // Reduce less when moving a piece away from a pawn-attacked square.
                 // Pawn attacks only, as originally measured: the term was written
                 // against enemy pawn attacks and silently widened to every enemy
