@@ -365,16 +365,23 @@ tunables!(
     // (plus a further ply with no TT move); all-nodes keep +1.
     (LMR_CUTNODE_BUMP_CENTI, 271, 100, 500, 40.0, true),
     // LMR correction battery — sub-ply terms in centi-ply, needing the
-    // fractional accumulator to express. These were seeded well below their
-    // source values because Coda's ln(d)·ln(m) base already carries a
-    // move-count term that the source shape omits, so the constants would
-    // otherwise double-count. Ranges run to 0 so SPSA can kill dead terms.
+    // fractional accumulator to express. Coda's ln(d)·ln(m) base already
+    // carries a move-count term, so these stay small. Ranges run to 0 so
+    // SPSA can kill dead terms.
     (LMR_WINBETA_CENTI, 32, 0, 250, 12.0, false),
     (LMR_TTALPHA_CENTI, 25, 0, 150, 8.0, true),
     // Clock-keyed: LMR_TTALPHA_CENTI is the deep (root depth >= 17) value, the LTC walk #3709's 25; the
     // shallow value (root depth <= 14) is the STC walk #3701's 36 — see clock_blend.
     (LMR_TTALPHA_SHALLOW_CENTI, 36, 0, 150, 8.0, false),
-    (LMR_EXPECT_MULT, 20, 0, 120, 6.0, true),
+    // Eval-gap term: centi-ply of extra reduction per pawn by which static
+    // eval trails alpha, symmetric around alpha and saturating at
+    // LMR_EVAL_GAP_CAP centipawns. Seeds: one pawn (100cp, Coda's eval
+    // unit) for the cap, beyond which a node is simply "losing its window";
+    // the slope keeps the per-pawn effect Coda's previous gap term had
+    // been tuned to (~16 centi-ply per pawn), so the tree starts close to
+    // main and SPSA refines both.
+    (LMR_EVAL_GAP_CENTI, 16, 0, 60, 4.0, true),
+    (LMR_EVAL_GAP_CAP, 100, 25, 300, 15.0, false),
     // cutoff_count LMR terms. When the child ply has failed high more than
     // twice under this node, reduce late moves more (with extra at non-PV
     // all-nodes). Seeded below source values for the double-counting reason
@@ -7117,13 +7124,16 @@ let singular_beta = tt_score_local - depth;
                         reduction += clock_blend(info.root_depth, tp(&LMR_TTALPHA_CENTI), tp(&LMR_TTALPHA_SHALLOW_CENTI));
                     }
                 }
-                // (d) Quiet expectation gap: eval far below alpha → this node is
-                //     underperforming its window, reduce late quiets more (and
-                //     slightly less when eval already exceeds alpha). Continuous,
-                //     ~0.32 centi/cp at default. In-check static_eval is the
-                //     -INFINITY sentinel, so this term must remain disabled there.
+                // (d) Eval gap: static eval below alpha means this node is
+                //     underperforming its window, so late quiets need less
+                //     depth to confirm it; eval above alpha earns the mirror
+                //     relief. Linear in pawns of gap, capped symmetrically
+                //     (see LMR_EVAL_GAP_*). In-check static_eval is the
+                //     -INFINITY sentinel, so this term must stay off there.
                 if !in_check {
-                    reduction += tp(&LMR_EXPECT_MULT) * (alpha - static_eval).clamp(-65, 91) / 128;
+                    let cap = tp(&LMR_EVAL_GAP_CAP).max(1);
+                    let gap = (alpha - static_eval).clamp(-cap, cap);
+                    reduction += tp(&LMR_EVAL_GAP_CENTI) * gap / 100;
                 }
 
                 // cutoff_count: the child ply keeps failing high under
