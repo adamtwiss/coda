@@ -7522,17 +7522,10 @@ let singular_beta = tt_score_local - depth;
                         let scale_factor = num_fail_highs.min(tp10(&NFH_CAP_10X));
                         // Fixed-point divisor (stored × 10).
                         let mut bonus = raw_bonus + raw_bonus * scale_factor * 10 / NFH_DIV_10X.load(Ordering::Relaxed).max(1);
-                        // SF searched-count scale: the more moves were refuted
-                        // before this one cut, the more informative the cutoff
-                        // — scale the bonus up by moves-searched/256 at non-PV
-                        // nodes.
-                        if !is_pv {
-                            bonus += bonus * (move_count - 1).max(0) / 256;
-                        }
-                        // Also from SF: at non-PV nodes, amplify the cutoff move's
-                        // bonus by the number of moves searched before it cut off
-                        // (more competition survived = stronger signal). Best-move
-                        // bonus only — the malus is left unscaled.
+                        // At non-PV nodes, amplify the cutoff move's bonus by the
+                        // number of moves searched before it cut off (more
+                        // competition survived = stronger signal). Best-move bonus
+                        // only — the malus is left unscaled.
                         if !is_pv {
                             let siblings = (quiets_count + n_captures_tried) as i32;
                             bonus += bonus * siblings / tp(&HIST_SIBLING_DIV);
@@ -7645,11 +7638,7 @@ let singular_beta = tt_score_local - depth;
                         let raw_cap_bonus = capture_history_bonus(cap_bonus_depth);
                         let scale_factor = num_fail_highs.min(tp10(&NFH_CAP_10X));
                         // Fixed-point divisor (stored × 10).
-                        let mut cap_bonus = raw_cap_bonus + raw_cap_bonus * scale_factor * 10 / NFH_DIV_10X.load(Ordering::Relaxed).max(1);
-                        // SF searched-count scale (see quiet site above).
-                        if !is_pv {
-                            cap_bonus += cap_bonus * (move_count - 1).max(0) / 256;
-                        }
+                        let cap_bonus = raw_cap_bonus + raw_cap_bonus * scale_factor * 10 / NFH_DIV_10X.load(Ordering::Relaxed).max(1);
                         // captured_pt == NO_PIECE_TYPE here means a non-capture
                         // promotion (the only non-capture route into this branch):
                         // train slot 0 ("empty") — the slot capt_hist_score_static
