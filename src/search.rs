@@ -654,15 +654,12 @@ tunables!(
     (NULL_THREAT_ESCAPE_BONUS, 8321, 0, 30000, 1000.0, false),
     (NMP_KING_ZONE_MAX_10X, 20, 20, 90, 15.0, true),
     (PROBCUT_KING_ZONE_MAX_10X, 86, 20, 90, 15.0, true),
-    (LMR_THREAT_DIV_10X, 42, 10, 50, 15.0, true),
-    (LMR_KING_PRESSURE_DIV_10X, 78, 20, 90, 15.0, true),
     // Reduce later moves more once this node has already raised alpha N times
     // (alpha_raises reduction, a known LMR refinement). Fixed-point ×10: reduction += raises *
     // VALUE/10. Only fires at PV nodes (cut nodes break on the first fail-high
     // before alpha is raised). Default 10 = +1.0 ply (LMR_SCALE centi-ply) per
     // prior alpha-raise.
     (LMR_ALPHA_RAISE_10X, 10, 0, 40, 5.0, false),
-    (FUT_THREATS_MARGIN, 42, 0, 200, 10.0, true),
     // Continuation-history weight in quiet move ordering. Range runs to 0 so
     // SPSA can disable the term entirely rather than pinning at a floor.
     (CONT_HIST_MULT_10X, 20, 0, 80, 15.0, true),
@@ -5550,8 +5547,8 @@ fn negamax(
     let them_color = flip_color(board.side_to_move);
     let enemy_attacks: u64 = board.attacks_by_color(them_color);
 
-    // Pawn-specific threat count kept separate: RFP margin adjustment and
-    // LMR_THREAT_DIV are tuned on the pawn-only scale.
+    // Pawn-only attack map, kept separate from enemy_attacks for the LMR
+    // pawn-attacked-from-square term.
     let their_pawns = board.pieces[PAWN as usize] & board.colors[them_color as usize];
     let enemy_pawn_attacks: u64 = if them_color == WHITE {
         ((their_pawns & !0x0101010101010101u64) << 7) | ((their_pawns & !0x8080808080808080u64) << 9)
@@ -5560,11 +5557,8 @@ fn negamax(
     };
     let our_non_pawns = board.colors[board.side_to_move as usize]
         & !(board.pieces[PAWN as usize] | board.pieces[KING as usize]);
-    let has_pawn_threats = (enemy_pawn_attacks & our_non_pawns) != 0;
-    let threat_count = popcount(enemy_pawn_attacks & our_non_pawns) as i32;
-    // our_defenses signal for futility widener: count of our non-pawn
-    // pieces under any enemy attack (pawn OR piece). Widens margin in
-    // tactical positions. Uses existing enemy_attacks — no new bitboard.
+    // Count of our non-pawn pieces under any enemy attack (pawn OR piece),
+    // read by the NMP threat margin. Uses existing enemy_attacks.
     let any_threat_count = popcount(enemy_attacks & our_non_pawns) as i32;
 
     // (PV length already cleared at function entry, before early returns.)
@@ -6188,8 +6182,6 @@ fn negamax(
             if deep_extra > 0 {
                 margin += deep_extra * tp(&RFP_DEEP_LINEAR);
             }
-            // Widen margin when opponent pawns attack our pieces (Minic/Berserk pattern)
-            if has_pawn_threats { margin += margin / 3; }
             // No qsearch confirmation of the cut: qsearch stands pat on this
             // same corrected eval, already above beta, so it can never refute
             // one (0 of 1.36M in warm-TT games). A real confirmation must search.
@@ -6737,9 +6729,8 @@ fn negamax(
         {
             let main_hist = info.history.main_score(from, to, enemy_attacks);
             let hist_adj = main_hist / 128;
-            let threats_adj = any_threat_count * tp(&FUT_THREATS_MARGIN);
             let mc_adj = (move_count * tp(&FUT_MC_PER_MOVE)).min(lmr_d * tp(&FUT_PER_DEPTH));
-            let futility_value = static_eval + tp(&FUT_BASE) + lmr_d * tp(&FUT_PER_DEPTH) + hist_adj + threats_adj - mc_adj;
+            let futility_value = static_eval + tp(&FUT_BASE) + lmr_d * tp(&FUT_PER_DEPTH) + hist_adj - mc_adj;
             // Direct-check carve-out + strong-history exemption: a move that
             // gives check, or one our own history rates highly, is not futile.
             if futility_value <= alpha && main_hist < tp(&FUT_HIST_EXEMPT) && !board.gives_direct_check(mv) {
@@ -7093,11 +7084,10 @@ let singular_beta = tt_score_local - depth;
                     reduction -= LMR_SCALE;
                 }
 
-                // Evasions are eligible for LMR, but retain the same one-ply
-                // protection that Coda already gives moves which give check.
-                // In-check nodes have no usable static evaluation and usually
-                // have a narrow move set, so applying the full ordinary quiet
-                // reduction is unnecessarily aggressive.
+                // Evasions are eligible for LMR, but retain one ply of
+                // protection. In-check nodes have no usable static evaluation
+                // and usually have a narrow move set, so applying the full
+                // ordinary quiet reduction is unnecessarily aggressive.
                 if in_check {
                     reduction -= LMR_SCALE;
                 }
@@ -7120,11 +7110,6 @@ let singular_beta = tt_score_local - depth;
                 // against enemy pawn attacks and silently widened to every enemy
                 // attack when `enemy_attacks` was broadened for history indexing.
                 if enemy_pawn_attacks & (1u64 << from) != 0 {
-                    reduction -= LMR_SCALE;
-                }
-
-                // Reduce less when move gives check (Obsidian/Alexandria/Berserk pattern)
-                if gives_check {
                     reduction -= LMR_SCALE;
                 }
 
@@ -7195,20 +7180,9 @@ let singular_beta = tt_score_local - depth;
                     reduction -= complexity * LMR_SCALE / tp(&LMR_COMPLEXITY_DIV); // CONTINUOUS
                 }
 
-                // Threat-density LMR: reduce less when multiple pieces are
-                // under pawn attack. Tactical positions need deeper search.
-                // Fixed-point divisor: stored × 10. Avoids tp10 swallowing
-                // sub-integer SPSA precision on this multiplicative use.
-                reduction -= threat_count * 10 * LMR_SCALE / LMR_THREAT_DIV_10X.load(Ordering::Relaxed).max(1); // CONTINUOUS
-
-                // King-pressure LMR modifier: reduce less when enemy has
-                // many attackers on our king zone. Parent-node signal reused
-                // from NMP/ProbCut gates — tactical king positions need depth.
-                reduction -= king_zone_pressure * 10 * LMR_SCALE / LMR_KING_PRESSURE_DIV_10X.load(Ordering::Relaxed).max(1); // CONTINUOUS
-
                 // Clamp: allow up to ONE PLY of extension (the battery's
                 // reduce-less terms used to saturate at zero; a move with
-                // superb history, a check, tt_pv and a wide window can now
+                // superb history, tt_pv and a wide window can now
                 // earn deeper search rather than merely un-reduced), never
                 // reduce past depth 1. A partial ply below zero still floors
                 // to 0 at the /LMR_SCALE step, so the extension only fires
