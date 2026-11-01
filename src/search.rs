@@ -6844,7 +6844,17 @@ let singular_beta = tt_score_local - depth;
                     return 0;
                 }
 
-                if singular_score >= singular_beta && singular_beta >= beta {
+                // Multi-cut fires on the verification VALUE: an alternative
+                // that reaches beta by itself is a cutoff in its own right,
+                // whether or not the lowered singular_beta also clears beta.
+                // When singular_beta < beta the fail-soft score is still a
+                // lower bound (it cleared singular_beta), and clearing beta
+                // as well means the node fails high without the TT move.
+                // Before this, such nodes fell through to a negative
+                // extension and paid for a reduced TT-move search plus the
+                // alternatives before cutting on the same evidence.
+                let multicut_bound = singular_beta.max(beta);
+                if singular_score >= multicut_bound {
                     // Multi-cut: alternatives are also good enough — prune the whole node.
                     // Return singular_score (SF pattern) — tighter score
                     // for downstream TT propagation than singular_beta floor.
@@ -6856,9 +6866,16 @@ let singular_beta = tt_score_local - depth;
                     // singularBeta. Suppressing multicut entirely in mate
                     // shapes tested WORSE here, so keep FIRING and fix only the
                     // returned value.
+                    //
+                    // The decisive fallback returns the threshold the
+                    // verification actually proved, `multicut_bound`. When
+                    // singular_beta >= beta that is singular_beta, unchanged;
+                    // when singular_beta < beta, returning singular_beta would
+                    // report a fail-high node with a score below beta, so the
+                    // proven bound is beta.
                     info.stats.multicut += 1;
                     if is_decisive(singular_score) {
-                        return singular_beta;
+                        return multicut_bound;
                     }
                     return singular_score;
                 }
@@ -8737,7 +8754,7 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool,
     eprintln!("Singular ext:   {:>8}  (single +1 ply)", s.singular_ext);
     eprintln!("Double ext:     {:>8}  (additional +1 on top of singular)", s.double_ext);
     eprintln!("Negative ext:   {:>8}  (-1/-2/-3 fail-high reduce)", s.negative_ext);
-    eprintln!("Multi-cut:      {:>8}  (return singular_score; singular_beta if decisive)", s.multicut);
+    eprintln!("Multi-cut:      {:>8}  (return singular_score; max(singular_beta, beta) if decisive)", s.multicut);
     eprintln!("QS nodes:       {:>8}  ({:.1}% of total)", s.qnodes, s.qnodes as f64 / total_nodes as f64 * 100.0);
     if s.beta_cutoffs > 0 {
         let avg_pos = s.cutoff_movecount_sum as f64 / s.beta_cutoffs as f64;
