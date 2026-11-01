@@ -144,6 +144,21 @@ tunables!(
     // cheaply pruning d12+ nodes.
     (RFP_DEEP_KNEE_10X, 44, 40, 170, 20.0, true),
     (RFP_DEEP_LINEAR, 53, 0, 200, 10.0, true),
+    // RFP return blend, in percent. 0 returns `static_eval - margin` (the
+    // long-standing return); 100 returns the midpoint of static eval and beta.
+    // Values in between interpolate linearly between those two returns.
+    //
+    // Seed 100 is Coda's own rule for the same situation one ply lower: when
+    // qsearch's stand-pat (also a bare static eval) clears beta, it returns
+    // `(best + beta) / 2`. RFP's cut is the main-search version of "the static
+    // eval alone is already above beta", so the seed applies that rule. The
+    // two returns differ in shape: `eval - margin` returns exactly beta at the
+    // prune threshold and grows one-for-one with the surplus, whereas the
+    // midpoint returns half the surplus. Near-threshold cuts therefore return
+    // a little more and large-surplus cuts a lot less. The range goes to 0 so
+    // that SPSA can switch the blend back off. SPSA #4831 (4k iterations)
+    // moved it from 100 to 97.
+    (RFP_RET_BLEND_PCT, 97, 0, 100, 10.0, true),
     // Razoring: drop straight to qsearch when static eval is far enough below
     // alpha that a full search is unlikely to recover it. Margin scales with
     // depth, gated to shallow depths only.
@@ -6255,7 +6270,20 @@ fn negamax(
                         info.stats.rfp_audit_var_fp[var_bucket] += 1;
                     }
                 }
-                return static_eval - margin;
+                // Blend toward the stand-pat-style midpoint (RFP_RET_BLEND_PCT,
+                // see the tunable). Both ends are >= beta here, because the
+                // cut needs static_eval - margin >= beta, so any blend is
+                // still a fail-high. Decisive betas are left alone so that a
+                // mate or TB bound never gets averaged with a centipawn
+                // eval. static_eval is already outside the mate band (gate
+                // above). At 0 this is exactly the old return.
+                let ret = static_eval - margin;
+                let pct = tp(&RFP_RET_BLEND_PCT);
+                if pct != 0 && !is_decisive(beta) {
+                    let mid = (static_eval + beta) / 2;
+                    return ret + (mid - ret) * pct / 100;
+                }
+                return ret;
             }
         }
     }
