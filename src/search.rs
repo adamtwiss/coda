@@ -174,8 +174,8 @@ tunables!(
     // Futility margin: base + per-depth, compared against alpha at the
     // frontier. History adjusts the effective lmr_depth used here, so these
     // interact with the LMR history terms — retune the pair together.
-    (FUT_BASE, 84, 0, 200, 9.0, true),
-    (FUT_PER_DEPTH, 94, 40, 250, 10.5, true),
+    (FUT_BASE, 87, 0, 200, 9.0, true),
+    (FUT_PER_DEPTH, 92, 40, 250, 10.5, true),
     // Strong-history exemption for quiet futility: a quiet whose main history
     // exceeds this is never futility-pruned. It was the hardcoded literal 12000
     // sitting inside the gate at search.rs while every other term around it was
@@ -198,7 +198,7 @@ tunables!(
     // sticky tt_pv node and an improving node. 100 reuses LMR's own one-ply
     // weights unchanged, so the only new number is the scale; 0 restores the
     // node-blind table depth exactly (bench-identical to before the term).
-    (PRUNE_NODE_TERMS_PCT, 100, 0, 200, 15.0, true),
+    (PRUNE_NODE_TERMS_PCT, 99, 0, 200, 15.0, true),
     // Low-increment TM multiplier ceiling. The factor product
     // (stability×fail-low×forced×subtree×score-trend, up to ~13.8×) is only
     // clamped for no_inc; at increments that are SMALL RELATIVE TO THE CLOCK
