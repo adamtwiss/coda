@@ -192,6 +192,13 @@ tunables!(
     // evaluated per move across the quiet tail; LMP still bulk-skips.
     (FUT_MC_PER_MOVE, 13, 0, 40, 2.0, true),
     (SEE_QUIET_MULT, 16, 5, 80, 3.75, true),
+    // Node-level terms in the move-loop pruning depth (`lmr_d`, shared by
+    // futility and SEE-quiet), as a percentage of the node-level terms quiet
+    // LMR already applies: one ply less reduction each for a PV window, a
+    // sticky tt_pv node and an improving node. 100 reuses LMR's own one-ply
+    // weights unchanged, so the only new number is the scale; 0 restores the
+    // node-blind table depth exactly (bench-identical to before the term).
+    (PRUNE_NODE_TERMS_PCT, 100, 0, 200, 15.0, true),
     // Low-increment TM multiplier ceiling. The factor product
     // (stability×fail-low×forced×subtree×score-trend, up to ~13.8×) is only
     // clamped for no_inc; at increments that are SMALL RELATIVE TO THE CLOCK
@@ -6717,7 +6724,20 @@ fn negamax(
         // collapses to 1, so thresholds naturally become permissive.
         let lmr_d = if move_count > 1 && depth >= 2 {
             // Table is centi-ply; gates want integer plies (floor = old value).
-            let r = lmr_reduction((depth as usize).min(63) as i32, (move_count as usize).min(63) as i32) / LMR_SCALE;
+            let mut r_centi = lmr_reduction((depth as usize).min(63) as i32, (move_count as usize).min(63) as i32);
+            // Node-level terms. The table only knows depth and move number,
+            // but quiet LMR below already trusts three node properties to
+            // search late moves deeper: a PV window, a tt_pv node and an
+            // improving node, one ply each. A move the search would look at
+            // deeper is one the static pruning gates should be slower to
+            // discard, so the same three terms (same conditions, same
+            // one-ply LMR_SCALE weight) shorten the reduction that sets the
+            // pruning depth. Nodes with none of them are unchanged. The sum
+            // is subtracted before the floor, so a node with all three can
+            // get its full depth back but never more (the `r > 0` test).
+            let node_terms = (beta - alpha > 1) as i32 + tt_pv as i32 + improving as i32;
+            r_centi -= node_terms * LMR_SCALE * tp(&PRUNE_NODE_TERMS_PCT) / 100;
+            let r = r_centi / LMR_SCALE;
             if r > 0 { (depth - r).max(1) } else { depth }
         } else {
             depth
