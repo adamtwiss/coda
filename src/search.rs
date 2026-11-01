@@ -192,6 +192,11 @@ tunables!(
     // evaluated per move across the quiet tail; LMP still bulk-skips.
     (FUT_MC_PER_MOVE, 13, 0, 40, 2.0, true),
     (SEE_QUIET_MULT, 16, 5, 80, 3.75, true),
+    // How far a fail-low node's returned score is raised toward the highest
+    // futility value of a quiet it pruned, in percent. 100 raises it all the
+    // way (the bound the prune itself asserted, as qsearch's delta prune
+    // does); 0 leaves the searched score alone (bench-identical).
+    (FUT_RAISE_BEST_PCT, 100, 0, 100, 10.0, true),
     // Low-increment TM multiplier ceiling. The factor product
     // (stability×fail-low×forced×subtree×score-trend, up to ~13.8×) is only
     // clamped for no_inc; at increments that are SMALL RELATIVE TO THE CLOCK
@@ -6588,6 +6593,10 @@ fn negamax(
     // for that has never been localised.
     let mut skip_quiets = false;
 
+    // Highest futility value among the quiets futility pruned at this node
+    // (see the merge after the move loop). -INFINITY = none pruned.
+    let mut futility_floor = -INFINITY;
+
     loop {
         let mv = picker.next(board);
         if mv == NO_MOVE { break; }
@@ -6715,6 +6724,9 @@ fn negamax(
             if futility_value <= alpha && main_hist < tp(&FUT_HIST_EXEMPT) && !board.gives_direct_check(mv) {
                 trace_gate!(info, board.hash, ply, mv, "futility", depth, move_count);
                 info.stats.futility_prunes += 1;
+                if !is_decisive(futility_value) {
+                    futility_floor = futility_floor.max(futility_value);
+                }
                 // Unlike LMP, futility is move-specific: main history and the
                 // reduced depth can differ across the ordered quiet tail. Let
                 // later quiets face their own predicate instead of assuming
@@ -7720,6 +7732,28 @@ let singular_beta = tt_score_local - depth;
         }
         // Stalemate
         return 0;
+    }
+
+    // Futility-pruned quiets in the returned bound. A futility prune asserts
+    // "this quiet scores at most futility_value", the same kind of claim the
+    // qsearch delta prune makes for a capture, and there the pruned value is
+    // folded into best_score so the fail-soft UPPER bound covers every move,
+    // not just the searched ones. The main search did not do this, so a
+    // fail-low node returned the best SEARCHED score, a bound that ignores the
+    // pruned tail and can sit well below it. Fold the futility values in here.
+    //
+    // Merged after the loop rather than at the prune so best_move and the
+    // in-loop uses of best_score (doDeeper/doShallower, the loss gates) still
+    // see searched scores only. It can only fire at a fail-low node: every
+    // futility_value was <= alpha when pruned, and once a move raises alpha
+    // best_score >= alpha >= that value. So the result stays <= alpha_orig
+    // and the bound type is unchanged. Mate/TB guards: decisive futility
+    // values are never recorded, and a decisive best_score is left alone.
+    // Correction history reads the merged score on purpose: the upper bound
+    // that now covers the pruned quiets is the honest test of whether the
+    // static eval was over-optimistic.
+    if futility_floor > best_score && !is_decisive(best_score) {
+        best_score += (futility_floor - best_score) * tp(&FUT_RAISE_BEST_PCT) / 100;
     }
 
     // TB floor: a non-cutting winning TB hit established `tb_score` as ground
