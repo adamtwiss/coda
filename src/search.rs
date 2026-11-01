@@ -6618,6 +6618,33 @@ fn negamax(
     // for that has never been localised.
     let mut skip_quiets = false;
 
+    // PV TT-move depth floor. At a PV node the TT move is searched first and
+    // full-window, so its search IS the PV line. When that move comes from an
+    // entry we have strong reason to trust, a new_depth of 0 would hand it to
+    // qsearch, which sees captures and evasions only: a quiet TT move is then
+    // scored by the child's stand-pat, discarding exactly the line the entry
+    // vouched for. Flooring its new_depth at one ply restores a real reply
+    // search for one move per PV node, which is cheap.
+    //
+    // "Strong reason to trust" reuses Coda's own thresholds, not a new knob:
+    // - deep: `tt_entry.depth >= TT_DEEP_ENTRY_DEPTH`, the depth from which
+    //   the TT already treats an entry as expensive enough for its extra
+    //   consistency checks. The floor only bites when new_depth <= 0, i.e. at
+    //   most a ply or two of depth remains, so such an entry carries several
+    //   plies more evidence than this node is about to spend.
+    // - decisive: a mate/TB-band score, whose line can continue with a quiet
+    //   move that qsearch cannot find. `tt_entry.depth >= 1` restricts this to
+    //   main-search stores (qsearch stores at depth -1), so a capture-only
+    //   proof does not qualify.
+    // Evaluated here, before any make_move, because score_from_tt reads this
+    // node's halfmove clock.
+    let pv_tt_depth_floor = is_pv
+        && tt_hit
+        && tt_move != NO_MOVE
+        && tt_entry.depth >= 1
+        && (tt_entry.depth >= crate::tt::TT_DEEP_ENTRY_DEPTH
+            || is_decisive(score_from_tt(tt_entry.score, ply, board.halfmove)));
+
     loop {
         let mv = picker.next(board);
         if mv == NO_MOVE { break; }
@@ -7008,6 +7035,11 @@ let singular_beta = tt_score_local - depth;
 
         if new_depth < 0 {
             new_depth = 0;
+        }
+
+        // PV TT-move depth floor (see `pv_tt_depth_floor`).
+        if pv_tt_depth_floor && mv == tt_move && new_depth <= 0 {
+            new_depth = 1;
         }
 
         let score;
