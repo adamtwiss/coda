@@ -277,6 +277,19 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>) {
     // non-ponder `go` consumes this flag to apply the ponder-miss min-think
     // floor — see go-handler.
     let mut pondermiss_pending: bool = false;
+    // Ponder bank. A ponder hit plays a move that was largely searched on the
+    // opponent's clock, so it takes far less of our clock than its planned
+    // optimum (often ~0 via the instant reply). The budget formula assumes
+    // every move spends its plan, so with pondering on the clock drains much
+    // slower than paced: on lichess ~1/3 of middlegame moves cost < 0.5 s and
+    // coda_bot finished games with a third of its clock unused. The bank
+    // records what each hit saved against its plan (measured from the GUI's
+    // own clock at the next `go`) and pays it back over the next
+    // PONDER_BANK_SPREAD searched moves. Without pondering there are no hits,
+    // the bank stays 0 and the budgets are exactly as before.
+    let mut ponder_bank_ms: u64 = 0;
+    let mut last_hit = false;
+    let mut last_tm: Option<LastMoveTm> = None;
     let mut opening_book: Option<crate::book::OpeningBook> = None;
     let mut use_book = true;
     let mut syzygy: Option<std::sync::Arc<crate::tb::SyzygyTB>> = None;
@@ -378,6 +391,9 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>) {
                 println!("readyok");
             }
             "ucinewgame" => {
+                ponder_bank_ms = 0;
+                last_hit = false;
+                last_tm = None;
                 // Wait for any active search to finish before clearing state
                 if let Some(handle) = search_handle.take() {
                     suppress_bestmove.store(true, Ordering::Relaxed);
@@ -617,6 +633,7 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>) {
                                          depth, depth, score_str, pv_str);
                                 if !is_ponder {
                                     println!("bestmove {}", tb_pv[0]);
+                                    last_tm = None; // root TB move: not a searched move
                                     continue;
                                 }
                                 // During ponder: info line emitted as a seed
@@ -641,11 +658,48 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>) {
                             // built-in book.
                             println!("info depth 1 seldepth 1 score cp 0 nodes 0 nps 0 time 0 pv {}", uci);
                             println!("bestmove {}", uci);
+                            last_tm = None; // book moves never enter the ponder bank
                             continue;
                         }
                     }
                 }
                 let mut limits = parse_go(&tokens);
+                // Ponder bank: settle the previous move, then pay out.
+                {
+                    let stm = board.side_to_move;
+                    let (our_time, our_inc, opp_time) = if stm == crate::types::WHITE {
+                        (limits.wtime, limits.winc, limits.btime)
+                    } else {
+                        (limits.btime, limits.binc, limits.wtime)
+                    };
+                    if let Some(prev) = last_tm.take() {
+                        if last_hit && prev.stm == stm && our_time > 0 {
+                            let (planned, _, _, _) = crate::search::compute_tm_budgets_credited(
+                                prev.our_time, prev.our_inc, prev.movestogo, info.move_overhead,
+                                prev.fullmove, crate::search::ponder_enabled(), prev.opp_time,
+                                prev.credit);
+                            let consumed = (prev.our_time + prev.our_inc).saturating_sub(our_time);
+                            ponder_bank_ms = (ponder_bank_ms + planned).saturating_sub(consumed);
+                        }
+                    }
+                    last_hit = false;
+                    let credit = if crate::search::ponder_enabled() && our_time > 0 {
+                        ponder_bank_ms / PONDER_BANK_SPREAD
+                    } else {
+                        0
+                    };
+                    ponder_bank_ms -= credit;
+                    limits.tm_credit_ms = credit;
+                    if credit > 0 && crate::search::TM_DEBUG.load(Ordering::Relaxed) {
+                        eprintln!("PONDER_BANK credit={}ms bank_left={}ms", credit, ponder_bank_ms);
+                    }
+                    if our_time > 0 {
+                        last_tm = Some(LastMoveTm {
+                            stm, our_time, our_inc, opp_time,
+                            movestogo: limits.movestogo, fullmove: board.fullmove, credit,
+                        });
+                    }
+                }
                 if is_ponder {
                     ponder_limits = Some(limits.clone());
                     ponder_stm = board.side_to_move;
@@ -1160,9 +1214,10 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>) {
                         } else {
                             0
                         };
-                        let (soft, hard, _max_time, floor) = crate::search::compute_tm_budgets(
+                        let (soft, hard, _max_time, floor) = crate::search::compute_tm_budgets_credited(
                             our_time, our_inc, pl.movestogo, overhead, board.fullmove,
-                            crate::search::ponder_enabled(), opp_time);
+                            crate::search::ponder_enabled(), opp_time, pl.tm_credit_ms);
+                        last_hit = true;
 
                         // Instant-reply gate inputs (P1): the ponder search's
                         // completed root depth, its best-move stability, and
@@ -1628,6 +1683,27 @@ fn parse_clock_ms(tok: &str) -> u64 {
         Ok(v) if v >= 1 => v as u64,
         _ => 1,
     }
+}
+
+/// Spread of the ponder-bank payout: each searched move receives 1/N of the
+/// bank. Any N spends the savings in steady state (payout per move equals the
+/// average saving per move); N only sets how smoothly. Measured on lichess, a
+/// ponder hit lands on ~1 move in 3 (28 of 100 middlegame moves in two
+/// coda_bot games), so N = 8 spreads each hit's saving across the next two or
+/// three hits instead of dumping it on one move. Plain const, not a tunable:
+/// OB never ponders, so SPSA could only see it as a dead knob.
+const PONDER_BANK_SPREAD: u64 = 8;
+
+/// The clock and budget inputs of the last searched move, kept so the next
+/// `go` can measure what that move actually took off our clock.
+struct LastMoveTm {
+    stm: u8,
+    our_time: u64,
+    our_inc: u64,
+    opp_time: u64,
+    movestogo: u32,
+    fullmove: u16,
+    credit: u64,
 }
 
 fn parse_go(tokens: &[&str]) -> SearchLimits {
