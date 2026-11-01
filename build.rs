@@ -31,6 +31,33 @@ fn main() {
     println!("cargo:rustc-env=CODA_VERSION={version}");
     // Re-stamp when HEAD moves (branch switch / new commit) — also narrows the
     // stale-relink window that produced the #2573 wrong-bench incident.
-    println!("cargo:rerun-if-changed=.git/HEAD");
-    println!("cargo:rerun-if-changed=.git/refs/tags");
+    //
+    // HEAD alone is not enough: on a branch it only says "ref: refs/heads/main",
+    // so a `git pull` or new commit moves refs/heads/main (or packed-refs) and
+    // leaves HEAD untouched — the version stayed stale until `make clean`.
+    // Watch the ref HEAD points at and packed-refs too. Paths come from git
+    // itself so linked worktrees (whose HEAD lives elsewhere) work as well.
+    let git_path = |p: &str| {
+        Command::new("git")
+            .args(["rev-parse", "--git-path", p])
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+    };
+    let mut watch = vec!["HEAD".to_string(), "packed-refs".to_string(), "refs/tags".to_string()];
+    if let Some(r) = Command::new("git")
+        .args(["symbolic-ref", "-q", "HEAD"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+    {
+        watch.push(r); // e.g. refs/heads/main
+    }
+    for w in watch {
+        if let Some(p) = git_path(&w) {
+            println!("cargo:rerun-if-changed={p}");
+        }
+    }
 }
