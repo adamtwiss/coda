@@ -6846,11 +6846,18 @@ let singular_beta = tt_score_local - depth;
                     // Cut node with competitive alternatives — moderate reduce
                     singular_extension = competitive_se_reduction(-2, singular_score, singular_beta);
                     info.stats.negative_ext += 1;
-                } else {
-                    // All-node with competitive alternatives — mild reduce
-                    singular_extension = competitive_se_reduction(-1, singular_score, singular_beta);
-                    info.stats.negative_ext += 1;
                 }
+                // Expected all-node (or PV) with competitive alternatives and
+                // a TT score below beta: no reduction, the TT move keeps its
+                // full depth. Both remaining rungs carry evidence that the
+                // node will cut (the TT move already beats beta, or the node
+                // is expected to cut) so the TT move can be searched cheaply
+                // and an alternative relied on. Here neither holds: the node
+                // is expected to fail low, every move has to be refuted, and
+                // "an alternative reaches singular_beta" (a margin BELOW the
+                // TT score) says nothing about the TT move being any less
+                // likely to be best. Reducing it only weakens the refutation
+                // of the move most likely to matter.
             }
         }
 
