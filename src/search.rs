@@ -3473,8 +3473,8 @@ pub fn compute_tm_budgets(
     // stability is 0 at search start, so the factor multiplier is at its
     // maximum on the very first moves, and ten of those can eat an entire
     // 30+0.25 budget before the middlegame. Damping the early-game base share
-    // is a common pattern; Coda's form is a rational saturation on the clock
-    // share of opt (the increment credit is not damped, see below):
+    // is a common pattern; Coda's form is a rational saturation applied to
+    // the whole optimum:
     //
     //   phase_mult = F + (1 - F) * fullmove / (fullmove + K)
     //     F = TM_PHASE_FLOOR_100 / 100, K = TM_PHASE_HALF_FM
@@ -3491,19 +3491,12 @@ pub fn compute_tm_budgets(
         let half_fm = tp(&TM_PHASE_HALF_FM).max(1) as f64;
         let fm = fullmove as f64;
         let phase_mult = floor + (1.0 - floor) * fm / (fm + half_fm);
-        // Damp the clock share only. The increment is refilled every move,
-        // so damping it just banks it: with a tail that stays below 1.0 the
-        // clock would settle at several increments instead of spending them.
-        // Scaling opt by the clock-weighted mix keeps every clamp applied
-        // above intact; at no increment this is exactly phase_mult.
-        let clock_share = (paced_time / mtg_divisor) as f64;
-        let inc_share = (our_inc * inc_frac_pct / 100) as f64;
-        let mix = if clock_share + inc_share > 0.0 {
-            (phase_mult * clock_share + inc_share) / (clock_share + inc_share)
-        } else {
-            phase_mult
-        };
-        ((opt_time_base as f64) * mix) as u64
+        // Damp the whole optimum, increment credit included, as the damp
+        // this replaces did. Damping only the clock share left the increment
+        // undamped from move 1 and front-loaded the opening at increment TCs
+        // (#4803, 10+0.1: -7.3 vs neutral at 10+0, #4804); the late tail
+        // below 1.0 banks a few increments, as before.
+        ((opt_time_base as f64) * phase_mult) as u64
     };
     // Behind-on-clock damp: spend less when our clock trails the opponent's.
     // Applied to opt only, before the ponder bump, on every clock path
