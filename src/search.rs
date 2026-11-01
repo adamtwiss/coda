@@ -144,6 +144,20 @@ tunables!(
     // cheaply pruning d12+ nodes.
     (RFP_DEEP_KNEE_10X, 44, 40, 170, 20.0, true),
     (RFP_DEEP_LINEAR, 53, 0, 200, 10.0, true),
+    // RFP correction-magnitude widening, in percent of |correction| (the
+    // node's total correction-history adjustment, static_eval - scaled_eval).
+    // A large correction means the net and the search have disagreed about
+    // positions like this one, so the static eval that RFP cuts on deserves
+    // less trust. 0 disables the term (bench-identical to main).
+    //
+    // Seed 21 converts the exchange rate quiet LMR already uses into RFP
+    // units. LMR treats LMR_COMPLEXITY_DIV (152) cp of |correction| as one
+    // ply of lost confidence and reduces one ply less for it. One ply of RFP
+    // depth cost RFP_MARGIN_NOIMP (32 at the time) cp of margin. So 152 cp of
+    // correction is worth 32 cp of margin, and 32 / 152 ~= 21%. An SPSA run on
+    // that base held it at 21. The range runs to 0 so that SPSA can switch
+    // the term off.
+    (RFP_CORR_PCT, 21, 0, 80, 4.0, true),
     // Razoring: drop straight to qsearch when static eval is far enough below
     // alpha that a full search is unlikely to recover it. Margin scales with
     // depth, gated to shallow depths only.
@@ -6181,6 +6195,15 @@ fn negamax(
             }
             // Widen margin when opponent pawns attack our pieces (Minic/Berserk pattern)
             if has_pawn_threats { margin += margin / 3; }
+            // Correction-magnitude widening (RFP_CORR_PCT, derivation at the
+            // tunable). |static_eval - scaled_eval| is the node's total
+            // correction, the same quantity quiet LMR reads as "complexity".
+            // It is added after the pawn-threat third, so that widening keeps
+            // its size. With correction disabled, scaled_eval == static_eval
+            // and the term is 0.
+            if scaled_eval > -INFINITY {
+                margin += (static_eval - scaled_eval).abs() * tp(&RFP_CORR_PCT) / 100;
+            }
             // No qsearch confirmation of the cut: qsearch stands pat on this
             // same corrected eval, already above beta, so it can never refute
             // one (0 of 1.36M in warm-TT games). A real confirmation must search.
