@@ -176,12 +176,6 @@ tunables!(
     // interact with the LMR history terms — retune the pair together.
     (FUT_BASE, 84, 0, 200, 9.0, true),
     (FUT_PER_DEPTH, 94, 40, 250, 10.5, true),
-    // Strong-history exemption for quiet futility: a quiet whose main history
-    // exceeds this is never futility-pruned. It was the hardcoded literal 12000
-    // sitting inside the gate at search.rs while every other term around it was
-    // SPSA-tunable -- so SPSA has been optimising a formula with one frozen
-    // input. Exposing it costs nothing and is behaviour-identical at 12000.
-    (FUT_HIST_EXEMPT, 12628, 2000, 16384, 900.0, true),
     // Non-core: near-inert in warm-TT games (dead-knob audit 2026-09-24).
     // One SPSA step either way changes under 0.04% of futility prunes, so
     // in core SPSA it would only add gradient noise. Kept at its value.
@@ -6666,7 +6660,7 @@ fn negamax(
         // only saw SEE/futility survivors — a pre-filtered residual that made
         // count-pruning riskier and kept LMP_BASE blunt. SF/Berserk/
         // Obsidian all set skipQuiets before SEE/futility.
-        // Formula: (LMP_BASE + depth²) / (2 - improving); check carve at depth<4.
+        // Formula: (LMP_BASE + depth²) / (2 - improving).
         if ply > 0 && !in_check && depth >= 1 && depth <= tp10(&LMP_DEPTH_10X)
             && !is_cap && !is_promo
             && !is_loss(best_score)
@@ -6684,10 +6678,7 @@ fn negamax(
             if static_eval > -INFINITY && alpha - static_eval >= lmp_margin {
                 lmp_limit = (lmp_limit * tp(&LMP_MARGIN_PCT) / 100).max(1);
             }
-            // The gives_direct_check carve sits inside the movecount test — only
-            // pay the check-detection call when the count prune would actually
-            // fire (node-count identical).
-            if move_count > lmp_limit && (depth >= 4 || !board.gives_direct_check(mv)) {
+            if move_count > lmp_limit {
                 trace_gate!(info, board.hash, ply, mv, "lmp", depth, move_count);
                 info.stats.lmp_prunes += 1;
                 skip_quiets = true;
@@ -6740,9 +6731,8 @@ fn negamax(
             let threats_adj = any_threat_count * tp(&FUT_THREATS_MARGIN);
             let mc_adj = (move_count * tp(&FUT_MC_PER_MOVE)).min(lmr_d * tp(&FUT_PER_DEPTH));
             let futility_value = static_eval + tp(&FUT_BASE) + lmr_d * tp(&FUT_PER_DEPTH) + hist_adj + threats_adj - mc_adj;
-            // Direct-check carve-out + strong-history exemption: a move that
-            // gives check, or one our own history rates highly, is not futile.
-            if futility_value <= alpha && main_hist < tp(&FUT_HIST_EXEMPT) && !board.gives_direct_check(mv) {
+            // Direct-check carve-out: a move that gives check is not futile.
+            if futility_value <= alpha && !board.gives_direct_check(mv) {
                 trace_gate!(info, board.hash, ply, mv, "futility", depth, move_count);
                 info.stats.futility_prunes += 1;
                 // Unlike LMP, futility is move-specific: main history and the
