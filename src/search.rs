@@ -364,17 +364,14 @@ tunables!(
     // Cut-node LMR bump, in centi-ply. Cut nodes reduce by this amount
     // (plus a further ply with no TT move); all-nodes keep +1.
     (LMR_CUTNODE_BUMP_CENTI, 271, 100, 500, 40.0, true),
-    // LMR correction battery — sub-ply terms in centi-ply, needing the
-    // fractional accumulator to express. These were seeded well below their
-    // source values because Coda's ln(d)·ln(m) base already carries a
-    // move-count term that the source shape omits, so the constants would
-    // otherwise double-count. Ranges run to 0 so SPSA can kill dead terms.
-    (LMR_WINBETA_CENTI, 32, 0, 250, 12.0, false),
+    // LMR correction terms — sub-ply, in centi-ply, needing the fractional
+    // accumulator to express. Kept small because Coda's ln(d)·ln(m) base
+    // already carries a move-count term. Ranges run to 0 so SPSA can kill
+    // dead terms.
     (LMR_TTALPHA_CENTI, 25, 0, 150, 8.0, true),
     // Clock-keyed: LMR_TTALPHA_CENTI is the deep (root depth >= 17) value, the LTC walk #3709's 25; the
     // shallow value (root depth <= 14) is the STC walk #3701's 36 — see clock_blend.
     (LMR_TTALPHA_SHALLOW_CENTI, 36, 0, 150, 8.0, false),
-    (LMR_EXPECT_MULT, 20, 0, 120, 6.0, true),
     // cutoff_count LMR terms. When the child ply has failed high more than
     // twice under this node, reduce late moves more (with extra at non-PV
     // all-nodes). Seeded below source values for the double-counting reason
@@ -7104,26 +7101,13 @@ let singular_beta = tt_score_local - depth;
                     reduction -= LMR_SCALE;
                 }
 
-                // LMR correction battery.
-                // (a) Winning beta: the window is already in the proven-win band,
-                //     move precision matters less — reduce more.
-                if is_win(beta) {
-                    reduction += tp(&LMR_WINBETA_CENTI);
-                }
+                // LMR correction: TT bound already below alpha.
                 if tt_hit && tt_entry.flag != TT_FLAG_NONE {
                     let tt_score_node = score_from_tt(tt_entry.score, ply, board.halfmove);
-                    // (b) TT already says this node can't beat alpha.
+                    // TT already says this node can't beat alpha.
                     if tt_score_node <= alpha {
                         reduction += clock_blend(info.root_depth, tp(&LMR_TTALPHA_CENTI), tp(&LMR_TTALPHA_SHALLOW_CENTI));
                     }
-                }
-                // (d) Quiet expectation gap: eval far below alpha → this node is
-                //     underperforming its window, reduce late quiets more (and
-                //     slightly less when eval already exceeds alpha). Continuous,
-                //     ~0.32 centi/cp at default. In-check static_eval is the
-                //     -INFINITY sentinel, so this term must remain disabled there.
-                if !in_check {
-                    reduction += tp(&LMR_EXPECT_MULT) * (alpha - static_eval).clamp(-65, 91) / 128;
                 }
 
                 // cutoff_count: the child ply keeps failing high under
@@ -7254,12 +7238,8 @@ let singular_beta = tt_score_local - depth;
                         reduction -= LMR_SCALE;
                     }
 
-                    // Correction battery (a)-(c) — applied to noisy
-                    // moves too (computed before the quiet/noisy
-                    // split). Same tunables as the quiet block.
-                    if is_win(beta) {
-                        reduction += tp(&LMR_WINBETA_CENTI);
-                    }
+                    // TT-says-below-alpha term, applied to noisy moves
+                    // too. Same tunables as the quiet block.
                     if tt_hit && tt_entry.flag != TT_FLAG_NONE {
                         let tt_score_node = score_from_tt(tt_entry.score, ply, board.halfmove);
                         if tt_score_node <= alpha {
