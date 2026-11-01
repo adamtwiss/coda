@@ -794,8 +794,8 @@ pub fn is_loss(score: i32) -> bool {
 /// highest non-decisive score — the analogue of SF returning
 /// `TB_WIN_IN_MAX_PLY - 1`, the highest non-TB score).
 ///
-/// Applied at EVERY TT read (not just cutoff returns), so window
-/// narrowing, singular ttScore, ProbCut gating, LMR TT hints, and QS
+/// Applied at EVERY TT read (not just cutoff returns), so
+/// singular ttScore, ProbCut gating, LMR TT hints, and QS
 /// eval refinement all see the sanitized value — matching SF /
 /// PlentyChess placement. The TT STORE path
 /// (`score_to_tt`) is deliberately untouched: stored scores stay

@@ -495,9 +495,6 @@ tunables!(
     // "this structural CHANGE tends to be mis-evaluated."
     (CORR_W_TRANS, 108, 0, 400, 18.5, true),
     (FH_BLEND_DEPTH_10X, 21, 0, 80, 15.0, false),
-    // TT_DAMP_TT_WEIGHT: weight of tt_score in TT-LOWER non-PV cutoff score
-    // dampening. Formula: (W*tt_score + beta) / (W+1).
-    (TT_DAMP_TT_WEIGHT_10X, 31, 10, 100, 5.0, false),
     // PROBCUT_TT_DEPTH_SLACK: TT depth must be >= current depth - SLACK for
     // ProbCut-TT-noshot to consider the entry.
     (PROBCUT_TT_DEPTH_SLACK, 3, 0, 10, 0.5, false),
@@ -993,7 +990,6 @@ pub static FEAT_HINDSIGHT: AtomicBool = AtomicBool::new(true); // load-bearing: 
 pub static FEAT_CORRECTION: AtomicBool = AtomicBool::new(true);
 pub static FEAT_PVS: AtomicBool = AtomicBool::new(true);
 pub static FEAT_TT_CUTOFF: AtomicBool = AtomicBool::new(true);
-pub static FEAT_TT_NEARMISS: AtomicBool = AtomicBool::new(true);
 pub static FEAT_TT_STORE: AtomicBool = AtomicBool::new(true);
 // Static-eval cache: reuse TT-stored static_eval instead of calling NNUE.
 // Ablate (NO_TT_STATIC_EVAL=1) to test whether skipping evals hurts more
@@ -1020,7 +1016,7 @@ pub fn disable_all_features() {
     FEAT_FUTILITY.store(false, Ordering::Relaxed); FEAT_SEE_PRUNE.store(false, Ordering::Relaxed);
     FEAT_BAD_NOISY.store(false, Ordering::Relaxed); FEAT_EXTENSIONS.store(false, Ordering::Relaxed); FEAT_FH_BLEND.store(false, Ordering::Relaxed);
     FEAT_IIR.store(false, Ordering::Relaxed); FEAT_HINDSIGHT.store(false, Ordering::Relaxed); FEAT_CORRECTION.store(false, Ordering::Relaxed);
-    FEAT_PVS.store(false, Ordering::Relaxed); FEAT_TT_CUTOFF.store(false, Ordering::Relaxed); FEAT_TT_NEARMISS.store(false, Ordering::Relaxed);
+    FEAT_PVS.store(false, Ordering::Relaxed); FEAT_TT_CUTOFF.store(false, Ordering::Relaxed);
     FEAT_TT_STORE.store(false, Ordering::Relaxed); FEAT_TT_STATIC_EVAL.store(false, Ordering::Relaxed);
     FEAT_QS_CAPTURES.store(false, Ordering::Relaxed);
     FEAT_SINGULAR.store(false, Ordering::Relaxed); FEAT_CUCKOO.store(false, Ordering::Relaxed);
@@ -1035,7 +1031,7 @@ pub fn enable_all_features() {
     FEAT_FUTILITY.store(true, Ordering::Relaxed); FEAT_SEE_PRUNE.store(true, Ordering::Relaxed);
     FEAT_BAD_NOISY.store(true, Ordering::Relaxed); FEAT_EXTENSIONS.store(true, Ordering::Relaxed); FEAT_FH_BLEND.store(true, Ordering::Relaxed);
     FEAT_IIR.store(true, Ordering::Relaxed); FEAT_HINDSIGHT.store(true, Ordering::Relaxed); FEAT_CORRECTION.store(true, Ordering::Relaxed);
-    FEAT_PVS.store(true, Ordering::Relaxed); FEAT_TT_CUTOFF.store(true, Ordering::Relaxed); FEAT_TT_NEARMISS.store(true, Ordering::Relaxed);
+    FEAT_PVS.store(true, Ordering::Relaxed); FEAT_TT_CUTOFF.store(true, Ordering::Relaxed);
     FEAT_TT_STORE.store(true, Ordering::Relaxed); FEAT_TT_STATIC_EVAL.store(true, Ordering::Relaxed);
     FEAT_QS_CAPTURES.store(true, Ordering::Relaxed);
     FEAT_SINGULAR.store(true, Ordering::Relaxed); FEAT_CUCKOO.store(true, Ordering::Relaxed);
@@ -1263,7 +1259,6 @@ prune_stats! {
     tt_cross_gen_hits: u64,
     tt_cross_gen_cutoffs: u64,
     tt_cutoffs: u64,
-    tt_near_miss: u64,
     tt_bound_decays: u64,
     nmp_attempts: u64,
     nmp_cutoffs: u64,
@@ -2968,7 +2963,6 @@ pub(crate) fn init_feature_flags() {
             if std::env::var("ENABLE_CORRECTION").is_ok() { FEAT_CORRECTION.store(true, Ordering::Relaxed); }
             if std::env::var("ENABLE_PVS").is_ok() { FEAT_PVS.store(true, Ordering::Relaxed); }
             if std::env::var("ENABLE_TT_CUTOFF").is_ok() { FEAT_TT_CUTOFF.store(true, Ordering::Relaxed); }
-            if std::env::var("ENABLE_TT_NEARMISS").is_ok() { FEAT_TT_NEARMISS.store(true, Ordering::Relaxed); }
             if std::env::var("ENABLE_TT_STORE").is_ok() { FEAT_TT_STORE.store(true, Ordering::Relaxed); }
             if std::env::var("ENABLE_TT_STATIC_EVAL").is_ok() { FEAT_TT_STATIC_EVAL.store(true, Ordering::Relaxed); }
             if std::env::var("ENABLE_QS_CAPTURES").is_ok() { FEAT_QS_CAPTURES.store(true, Ordering::Relaxed); }
@@ -2988,7 +2982,6 @@ pub(crate) fn init_feature_flags() {
             if std::env::var("NO_CORRECTION").is_ok() { FEAT_CORRECTION.store(false, Ordering::Relaxed); }
             if std::env::var("NO_PVS").is_ok() { FEAT_PVS.store(false, Ordering::Relaxed); }
             if std::env::var("NO_TT_CUTOFF").is_ok() { FEAT_TT_CUTOFF.store(false, Ordering::Relaxed); }
-            if std::env::var("NO_TT_NEARMISS").is_ok() { FEAT_TT_NEARMISS.store(false, Ordering::Relaxed); }
             if std::env::var("NO_TT_STORE").is_ok() { FEAT_TT_STORE.store(false, Ordering::Relaxed); }
             if std::env::var("NO_TT_STATIC_EVAL").is_ok() { FEAT_TT_STATIC_EVAL.store(false, Ordering::Relaxed); }
             if std::env::var("NO_SAT_TIEBREAK").is_ok() { FEAT_SAT_TIEBREAK.store(false, Ordering::Relaxed); }
@@ -5741,10 +5734,8 @@ fn negamax(
             // Halfmove-gated TT cutoff: TT scores are stored without halfmove
             // context. Near the 50-move cliff a cached mate-in-N may be unreachable,
             // and a stored bound may be over/understated by the time we revisit.
-            // Gate ALL return-from-TT paths (direct + bounds-narrow collapse +
-            // near-miss + QS) on TT_CUTOFF_HALFMOVE_MAX. Window-narrowing is still
-            // applied — it only biases the search, while returning a stale
-            // tt_score is unsafe.
+            // Gate every return-from-TT path (the cutoff below + QS) on
+            // TT_CUTOFF_HALFMOVE_MAX: returning a stale tt_score is unsafe.
             let halfmove_ok = tt_halfmove_ok(tt_score, board.halfmove);
             // Require +1 ply of TT depth for a fail-high (LOWER) cutoff, as
             // SF/Obsidian/PlentyChess do: fail-lows accept at tt_depth>=depth
@@ -5769,8 +5760,7 @@ fn negamax(
                 // pruning, which may since have collapsed a PV window to zero.
                 // In that case the TT cutoff SHOULD fire (we're effectively at
                 // a zero window) but the stale is_pv blocks it, so recompute
-                // from the post-mate-dist window. alpha here is still
-                // alpha_orig — TT narrowing happens after this check.
+                // from the post-mate-dist window.
                 let tt_cut_is_pv = beta - alpha > 1;
                 // Wrong-bound decay. The entry is deep enough to decide this
                 // node but bounded on the other side of beta, so it cannot
@@ -5792,8 +5782,7 @@ fn negamax(
                 // the cutoff when the child's (negated) value contradicts the
                 // cutoff direction — rejects stale/one-sided deep cutoffs.
                 // Cost: one board-only make/unmake + one probe, deep cutoffs
-                // only. Reuse the result for bounds collapse too, so a rejected
-                // direct cutoff cannot immediately return through that fallback.
+                // only.
                 let child_disagrees = !tt_cut_is_pv && bound_matches && halfmove_ok
                     && tt_cutoff_child_disagrees(info, board, tt_move, tt_score, beta, depth, ply);
                 if !tt_cut_is_pv && (cut_node || !score_above_beta) && bound_matches
@@ -5853,111 +5842,6 @@ fn negamax(
                         }
                     }
                     return tt_score;
-                }
-
-                // Fall through: use TT bounds to narrow alpha/beta window at non-PV nodes.
-                // Gated on halfmove_ok for the same reason the returns below are:
-                // near the 50-move cliff the stored tt_score is untrustworthy. At a
-                // zero-window node this narrowing can only ever fully collapse the window
-                // (tt_score > alpha implies tt_score >= beta), and the collapse-return
-                // below IS halfmove-gated — so without this gate, past the halfmove
-                // threshold the node falls through with an inverted window
-                // (alpha >= beta) and searches + TT-stores a degenerate full-depth
-                // bound.
-                if halfmove_ok && !child_disagrees {
-                    match tt_entry.flag {
-                        TT_FLAG_LOWER => {
-                            if beta - alpha_orig == 1 && tt_score > alpha {
-                                alpha = tt_score;
-                            }
-                        }
-                        TT_FLAG_UPPER => {
-                            if beta - alpha_orig == 1 && tt_score < beta {
-                                beta = tt_score;
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-
-                if alpha >= beta && halfmove_ok {
-                    if tt_move != NO_MOVE {
-                        info.stats.tt_cutoffs += 1;
-                        if tt_cross_gen {
-                            info.stats.tt_cross_gen_cutoffs += 1;
-                        }
-                        // Defence-in-depth: validate tt_move (see note at first cutoff site).
-                        if ply_u <= MAX_PLY
-                            && crate::movepicker::is_pseudo_legal(board, tt_move)
-                            && board.is_legal(tt_move, board.pinned(), board.checkers())
-                        {
-                            info.pv_table[ply_u][0] = tt_move;
-                            info.pv_len[ply_u] = 1;
-                        } else if ply_u <= MAX_PLY {
-                            info.pv_len[ply_u] = 0;
-                        }
-
-                        // History bonus for TT cutoff: reinforce move ordering.
-                        // Promotions count as NOISY here. Classifying non-capture
-                        // promotions as quiet (asymmetric with tt_move_noisy)
-                        // makes promo cutoffs write main-history bonuses into
-                        // from/to cells that genuine quiets then read.
-                        // Promos are ordered in the capture stage (MVV promo bonus
-                        // + capt-hist empty slot), so the capture branch below is
-                        // the one the read side actually consults.
-                        let tt_piece = board.piece_at(move_from(tt_move));
-                        let tt_is_cap = board.is_capture(tt_move)
-                            || is_promotion(tt_move);
-                        if !tt_is_cap && tt_piece != NO_PIECE {
-                            let bonus = history_bonus(depth);
-                            History::update_history(
-                                info.history.main_entry(move_from(tt_move), move_to(tt_move), enemy_attacks),
-                                bonus,
-                            );
-                        } else if tt_is_cap && tt_piece != NO_PIECE {
-                            let bonus = capture_history_bonus(depth);
-                            let cpt_pt = board.captured_piece_type(tt_move);
-                            let ct = if move_flags(tt_move) == FLAG_EN_PASSANT {
-                                captured_type(PAWN)
-                            } else if cpt_pt != NO_PIECE_TYPE {
-                                captured_type(cpt_pt)
-                            } else {
-                                0 // empty
-                            };
-                            History::update_cont_history(
-                                &mut info.history.capture[go_piece(tt_piece)][move_to(tt_move) as usize][ct],
-                                bonus,
-                            );
-                        }
-                    } else if ply_u <= MAX_PLY {
-                        info.pv_len[ply_u] = 0;
-                    }
-                    // TT score dampening: at non-PV nodes with non-mate lower-bound cutoffs,
-                    // blend the TT score toward beta to prevent score inflation
-                    if beta - alpha_orig == 1
-                        && tt_entry.flag == TT_FLAG_LOWER
-                        && !is_decisive(tt_score)
-                    {
-                        let w10 = tp(&TT_DAMP_TT_WEIGHT_10X);
-                        return (w10 * tt_score + 10 * beta) / (w10 + 10);
-                    }
-                    return tt_score;
-                }
-            } else if tt_depth >= depth - 1
-                && beta - alpha_orig == 1
-                && !is_decisive(tt_score)
-                && FEAT_TT_NEARMISS.load(Ordering::Relaxed)
-                && halfmove_ok
-            {
-                // TT near-miss cutoffs: accept entries 1 ply short with a score margin
-                let margin = 80;
-                if tt_entry.flag == TT_FLAG_LOWER && tt_score - margin >= beta {
-                    info.stats.tt_near_miss += 1;
-                    return tt_score - margin;
-                }
-                if tt_entry.flag == TT_FLAG_UPPER && tt_score + margin <= alpha {
-                    info.stats.tt_near_miss += 1;
-                    return tt_score + margin;
                 }
             }
         }
@@ -6020,8 +5904,8 @@ fn negamax(
             //   - Gated on `!tt_hit` so we never overwrite a real entry
             //     with a shallow stub.
             //   - depth=-2 means `tt_depth >= depth` is false for any
-            //     real search depth, so this entry never triggers TT
-            //     cutoffs or alpha/beta window narrowing.
+            //     real search depth, so this entry never triggers a TT
+            //     cutoff.
             //   - flag=TT_FLAG_UPPER + score=-INFINITY makes any
             //     score read trivially rejected.
             //   - tt_move=NO_MOVE preserves IIR behaviour at this
@@ -8682,7 +8566,6 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool,
         s.tt_cutoffs as f64 / total_nodes as f64 * 100.0,
         s.tt_cross_gen_cutoffs,
         if s.tt_cutoffs > 0 { s.tt_cross_gen_cutoffs as f64 / s.tt_cutoffs as f64 * 100.0 } else { 0.0 });
-    eprintln!("TT near-miss:   {:>8}", s.tt_near_miss);
     eprintln!("TT bound decay: {:>8}  ({:.2}% of TT hits)", s.tt_bound_decays,
         if s.tt_hits > 0 { s.tt_bound_decays as f64 / s.tt_hits as f64 * 100.0 } else { 0.0 });
     // Root aspiration failures. These were accumulated but never printed, so
@@ -9047,7 +8930,7 @@ mod tests {
     }
 
     #[test]
-    fn disagreeing_child_does_not_fall_back_to_narrow_cutoff() {
+    fn disagreeing_child_blocks_tt_cutoff() {
         crate::init();
         let Some(net) = test_net_path() else { return; };
         let mut info = SearchInfo::new(16);
@@ -9064,7 +8947,7 @@ mod tests {
         assert!(tt_cutoff_child_disagrees(&info, &mut board, mv, 100, 0, 7, 1));
         assert_eq!(board.hash, hash);
         let _ = negamax(&mut board, &mut info, -1, 0, 7, 1, true);
-        assert!(info.nodes > 1, "rejected bound must not return via TT narrowing");
+        assert!(info.nodes > 1, "rejected bound must not return from the TT");
         assert_eq!(board.hash, hash);
     }
 
