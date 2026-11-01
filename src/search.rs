@@ -144,6 +144,21 @@ tunables!(
     // cheaply pruning d12+ nodes.
     (RFP_DEEP_KNEE_10X, 44, 40, 170, 20.0, true),
     (RFP_DEEP_LINEAR, 53, 0, 200, 10.0, true),
+    // RFP relief at nodes with no TT hit, as a percentage of the per-depth
+    // base margin (depth * RFP_MARGIN_IMP/NOIMP). 0 disables the relief
+    // (bench-identical to main).
+    //
+    // "No hit" means the table holds nothing for the position, not even the
+    // eval-only stub that every evaluated visit leaves. The RFP gate already
+    // reads what a hit carries, but only as vetoes (tt_pv and the quiet-TT-
+    // move guard), and nothing credits the case where the table is empty: a
+    // node that no earlier visit or iteration has given any reason to search.
+    // Like improving, this is a trust signal, so the seed gives the same
+    // relative relief that improving got when it was seeded:
+    // (RFP_MARGIN_NOIMP - RFP_MARGIN_IMP) / RFP_MARGIN_NOIMP = (32 - 24) / 32
+    // = 25%. An SPSA run on that base held it at 25. The range runs to 0 so
+    // that SPSA can switch the relief off.
+    (RFP_NO_TTHIT_PCT, 25, 0, 60, 4.0, true),
     // Razoring: drop straight to qsearch when static eval is far enough below
     // alpha that a full search is unlikely to recover it. Margin scales with
     // depth, gated to shallow depths only.
@@ -6170,6 +6185,7 @@ fn negamax(
         if depth <= tp(&RFP_DEPTH) && ply > 0 && !tt_pv && !tt_move_is_quiet && info.excluded_move[ply_u] == NO_MOVE && FEAT_RFP.load(Ordering::Relaxed)
             && static_eval.abs() < MATE_SCORE - 200 {
             let mut margin = if improving { depth * tp(&RFP_MARGIN_IMP) } else { depth * tp(&RFP_MARGIN_NOIMP) };
+            let base_margin = margin;
             // Root-depth-aware relaxation: + depth*(root_depth-thresh)+ *coef/100.
             // Zero at STC (root_depth <= thresh); grows with both remaining
             // depth and how deep the overall search is, so deep RFP at LTC
@@ -6181,6 +6197,16 @@ fn negamax(
             }
             // Widen margin when opponent pawns attack our pieces (Minic/Berserk pattern)
             if has_pawn_threats { margin += margin / 3; }
+            // First-visit relief (RFP_NO_TTHIT_PCT, derivation at the
+            // tunable): with no TT entry at all, take a share of the per-depth
+            // base margin back off. Only the base is discounted, after the
+            // pawn-threat third has been added, so the root/deep terms and
+            // the threat widening keep their full size. The tunable tops out
+            // below 100% and the base is only part of the margin, so the
+            // margin stays positive.
+            if !tt_hit {
+                margin -= base_margin * tp(&RFP_NO_TTHIT_PCT) / 100;
+            }
             // No qsearch confirmation of the cut: qsearch stands pat on this
             // same corrected eval, already above beta, so it can never refute
             // one (0 of 1.36M in warm-TT games). A real confirmation must search.
