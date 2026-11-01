@@ -192,6 +192,16 @@ tunables!(
     // evaluated per move across the quiet tail; LMP still bulk-skips.
     (FUT_MC_PER_MOVE, 13, 0, 40, 2.0, true),
     (SEE_QUIET_MULT, 16, 5, 80, 3.75, true),
+    // Futility margin bonus at a node whose static eval already exceeds
+    // alpha. Seed derivation: the futility margin is floored at FUT_BASE
+    // (the move-count term is capped at the depth term) and the only term
+    // that can push it lower is history, `main/128` >= -MAX_HISTORY/128 =
+    // -128. So an above-alpha quiet can only be futility-pruned through a
+    // history penalty larger than FUT_BASE, and a bonus of
+    // 128 - FUT_BASE (84 at seeding) = 44 is the smallest that makes every such
+    // quiet unprunable. Seeded there; 0 disables it (bench-identical), and
+    // the range stops at 128, where it covers any FUT_BASE down to 0.
+    (FUT_ABOVE_ALPHA, 44, 0, 128, 6.0, true),
     // Low-increment TM multiplier ceiling. The factor product
     // (stability×fail-low×forced×subtree×score-trend, up to ~13.8×) is only
     // clamped for no_inc; at increments that are SMALL RELATIVE TO THE CLOCK
@@ -6709,7 +6719,12 @@ fn negamax(
             let hist_adj = main_hist / 128;
             let threats_adj = any_threat_count * tp(&FUT_THREATS_MARGIN);
             let mc_adj = (move_count * tp(&FUT_MC_PER_MOVE)).min(lmr_d * tp(&FUT_PER_DEPTH));
-            let futility_value = static_eval + tp(&FUT_BASE) + lmr_d * tp(&FUT_PER_DEPTH) + hist_adj + threats_adj - mc_adj;
+            // A node whose static eval is already above alpha is one the
+            // margin above treats as merely "close"; the stand-pat says it
+            // is passing. Give its quiets FUT_ABOVE_ALPHA more margin so a
+            // history penalty alone does not discard them.
+            let above_alpha_adj = if static_eval > alpha { tp(&FUT_ABOVE_ALPHA) } else { 0 };
+            let futility_value = static_eval + tp(&FUT_BASE) + lmr_d * tp(&FUT_PER_DEPTH) + hist_adj + threats_adj - mc_adj + above_alpha_adj;
             // Direct-check carve-out + strong-history exemption: a move that
             // gives check, or one our own history rates highly, is not futile.
             if futility_value <= alpha && main_hist < tp(&FUT_HIST_EXEMPT) && !board.gives_direct_check(mv) {
