@@ -379,9 +379,9 @@ tunables!(
     // unit) for the cap, beyond which a node is simply "losing its window";
     // the slope keeps the per-pawn effect Coda's previous gap term had
     // been tuned to (~16 centi-ply per pawn), so the tree starts close to
-    // main and SPSA refines both.
-    (LMR_EVAL_GAP_CENTI, 16, 0, 60, 4.0, true),
-    (LMR_EVAL_GAP_CAP, 100, 25, 300, 15.0, false),
+    // main; the values are SPSA-tuned from those seeds.
+    (LMR_EVAL_GAP_CENTI, 17, 0, 60, 4.0, true),
+    (LMR_EVAL_GAP_CAP, 97, 25, 300, 15.0, false),
     // cutoff_count LMR terms. When the child ply has failed high more than
     // twice under this node, reduce late moves more (with extra at non-PV
     // all-nodes). Seeded below source values for the double-counting reason
