@@ -775,15 +775,6 @@ pub fn is_loss(score: i32) -> bool {
     score <= -(TB_WIN - 200)
 }
 
-/// True for a proven win for the side to move: mate-delivering OR a
-/// tablebase win. Mirror of `is_loss`; used by gates
-/// whose intent is "the outcome here is already decided in our favour, so
-/// precision matters less" (e.g. LMR winning-beta reduce-more).
-#[inline]
-pub fn is_win(score: i32) -> bool {
-    score >= TB_WIN - 200
-}
-
 /// Adjust mate and TB scores from TT retrieval (subtract ply; see
 /// `score_to_tt` for the band-threshold rationale) AND downgrade
 /// potentially false decisive scores near the 50-move-rule cliff
