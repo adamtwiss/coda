@@ -387,6 +387,30 @@ tunables!(
     // above. The >2 threshold is fixed, not a knob.
     (LMR_CUTOFF_CNT_CENTI, 61, 0, 250, 12.0, true),
     (LMR_CUTOFF_ALLNODE_CENTI, 21, 0, 150, 8.0, true),
+    // Linear move-count term on top of the ln(d)*ln(m) table, in MILLI-ply per
+    // move (centi-ply needs a finer step: a per-move term is a few centi-ply).
+    // The log*log slope in m decays as 1/m, so late moves see almost no
+    // further growth; this term keeps reductions rising with move number.
+    // Seed derivation: measured over `coda bench`, quiet moves reaching the
+    // LMR battery have a mean move_count of 12.55. Sizing the term so that at
+    // that mean it equals LMR_TTALPHA_CENTI (32, the existing sub-ply
+    // correction-term scale in this battery) gives 32/12.55 = 2.55 centi-ply
+    // per move = 25 milli-ply. 0 = disabled (bench-identical).
+    (LMR_MC_MILLI, 25, 0, 80, 5.0, false),
+    // The tt_pv reduce-less term, promoted from a flat LMR_SCALE (100 = one
+    // ply, its long-standing value; #3418 tested a flat 150 and lost).
+    (LMR_TTPV_CENTI, 100, 0, 200, 12.0, false),
+    // Refinements of the tt_pv relief, centi-ply, each 0 = disabled:
+    //   ABOVE: extra relief when the TT score is above alpha. This is the
+    //          mirror of LMR_TTALPHA_CENTI (TT score <= alpha reduces more),
+    //          so the seed is that term's value, 32.
+    //   DEEP:  extra relief when the TT entry is at least as deep as this
+    //          node. Seed 25 = LMR_TTPV_CENTI / 4, so with both refinements
+    //          firing the relief is 157 — about the 150 #3418 tested FLAT —
+    //          i.e. the refinement concentrates the extra relief on the
+    //          entries that earned it rather than adding it everywhere.
+    (LMR_TTPV_ABOVE_CENTI, 32, 0, 120, 8.0, false),
+    (LMR_TTPV_DEEP_CENTI, 25, 0, 120, 8.0, false),
     // Minimum depth at which singular extension is attempted. Too low and
     // singular_depth is itself too shallow to judge singularity reliably.
     (SE_DEPTH_10X, 40, 40, 200, 20.0, true),
@@ -7209,8 +7233,22 @@ let singular_beta = tt_score_local - depth;
                 // Reduce less when position was previously a PV node (Alexandria/Obsidian/Seer pattern).
                 // Sticky: once a position is searched as PV, tt_pv stays set even at non-PV nodes.
                 if tt_pv {
-                    reduction -= LMR_SCALE;
+                    reduction -= tp(&LMR_TTPV_CENTI);
+                    // Refined tt_pv relief: more when the TT entry agrees the
+                    // node beats alpha, and more when it was searched at least
+                    // as deep as we are now.
+                    if tt_hit && tt_entry.flag != TT_FLAG_NONE {
+                        if score_from_tt(tt_entry.score, ply, board.halfmove) > alpha {
+                            reduction -= tp(&LMR_TTPV_ABOVE_CENTI);
+                        }
+                        if tt_entry.depth >= depth {
+                            reduction -= tp(&LMR_TTPV_DEEP_CENTI);
+                        }
+                    }
                 }
+
+                // Linear move-count term (milli-ply per move -> centi-ply).
+                reduction += move_count * tp(&LMR_MC_MILLI) / 10;
 
                 // LMR correction: TT bound already below alpha.
                 if tt_hit && tt_entry.flag != TT_FLAG_NONE {
