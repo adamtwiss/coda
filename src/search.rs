@@ -357,7 +357,7 @@ tunables!(
     // quiet history to produce an equivalent reduction magnitude. Both are
     // continuous (`R -= hist / DIV`), not stepped.
     (LMR_HIST_DIV_CAP, 4124, 1000, 20000, 1500.0, true),
-    (LMR_C_QUIET, 181, 40, 300, 13.0, true),
+    (LMR_C_QUIET, 184, 40, 300, 13.0, true),
     (LMR_C_CAP, 256, 80, 350, 12.5, true),
     // Two independent degrees of freedom on the LMR curve, both in centi-ply
     // (they need the fractional accumulator to express):
@@ -368,7 +368,7 @@ tunables!(
     //             inflation `r += r*NUM/(256d+285)`, so proportionally MORE
     //             reduction shallow and LESS deep. A flat +1-ply all-node
     //             bump is the wrong shape for this.
-    (LMR_BASE_CENTI, 50, 0, 120, 6.0, true),
+    (LMR_BASE_CENTI, 51, 0, 120, 6.0, true),
     (LMR_ALLNODE_DECAY_NUM, 307, 0, 1600, 80.0, true),
     // Cut-node LMR bump, in centi-ply. Cut nodes reduce by this amount
     // (plus a further ply with no TT move); all-nodes keep +1.
@@ -399,7 +399,7 @@ tunables!(
     (LMR_MC_MILLI, 25, 0, 80, 5.0, false),
     // The tt_pv reduce-less term, promoted from a flat LMR_SCALE (100 = one
     // ply, its long-standing value; #3418 tested a flat 150 and lost).
-    (LMR_TTPV_CENTI, 100, 0, 200, 12.0, false),
+    (LMR_TTPV_CENTI, 97, 0, 200, 12.0, false),
     // Refinements of the tt_pv relief, centi-ply, each 0 = disabled:
     //   ABOVE: extra relief when the TT score is above alpha. This is the
     //          mirror of LMR_TTALPHA_CENTI (TT score <= alpha reduces more),
@@ -409,8 +409,8 @@ tunables!(
     //          firing the relief is 157 — about the 150 #3418 tested FLAT —
     //          i.e. the refinement concentrates the extra relief on the
     //          entries that earned it rather than adding it everywhere.
-    (LMR_TTPV_ABOVE_CENTI, 32, 0, 120, 8.0, false),
-    (LMR_TTPV_DEEP_CENTI, 25, 0, 120, 8.0, false),
+    (LMR_TTPV_ABOVE_CENTI, 33, 0, 120, 8.0, false),
+    (LMR_TTPV_DEEP_CENTI, 26, 0, 120, 8.0, false),
     // Minimum depth at which singular extension is attempted. Too low and
     // singular_depth is itself too shallow to judge singularity reliably.
     (SE_DEPTH_10X, 40, 40, 200, 20.0, true),
