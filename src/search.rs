@@ -489,6 +489,17 @@ tunables!(
     // are not charged against it). Counting pruned moves here would let SPSA
     // detune the cap to near-off, which is what an earlier counting bug did.
     (QS_MAX_CAPTURES, 3, 2, 32, 2.0, false),
+    // Recapture exemptions in the qsearch capture loop (0 = off, 1 = on). A
+    // capture landing on the square the previous move landed on continues an
+    // exchange that is already in progress, so cutting it off by budget or by
+    // the stand-pat + victim bound would score the node mid-exchange — the
+    // situation qsearch exists to avoid. _FUT skips delta pruning for such a
+    // capture, _MC skips the QS_MAX_CAPTURES budget for it (promotions are
+    // already exempt from both, by the same reasoning). SEE pruning still
+    // applies: a recapture that loses material is not resolving anything.
+    // Binary switches for ablation, not SPSA targets, hence non-core.
+    (QS_RECAP_EXEMPT_FUT, 1, 0, 1, 0.5, false),
+    (QS_RECAP_EXEMPT_MC, 1, 0, 1, 0.5, false),
     (CORR_W_PAWN, 126, 100, 600, 25.0, true),
     (CORR_W_NP, 133, 0, 400, 17.5, true),
     // There is deliberately no minor-key or major-key correction source:
@@ -8402,10 +8413,20 @@ fn quiescence_with_depth(
     let mut best_move = NO_MOVE;
     let mut qs_move_count = 0i32;
     let qs_max_caps = tp(&QS_MAX_CAPTURES);
+    // Landing square of the move that led here, for the recapture exemptions.
+    // A null move (NO_MOVE on the undo stack) or the root has no exchange in
+    // progress; 64 matches no square.
+    let recap_sq = match board.undo_stack.last() {
+        Some(u) if u.mv != NO_MOVE => move_to(u.mv),
+        _ => 64,
+    };
+    let recap_fut = tp(&QS_RECAP_EXEMPT_FUT) != 0;
+    let recap_mc = tp(&QS_RECAP_EXEMPT_MC) != 0;
 
     loop {
         let mv = picker.next(board);
         if mv == NO_MOVE { break; }
+        let is_recap = move_to(mv) == recap_sq;
 
         // Legality: every other move loop (negamax, QS evasions, probcut)
         // filters illegal moves; this one didn't. A capture by an absolutely
@@ -8427,12 +8448,13 @@ fn quiescence_with_depth(
         if qs_move_count >= qs_max_caps
             && !is_loss(best_score)
             && !is_promotion(mv)
+            && !(recap_mc && is_recap)
         {
             continue;
         }
 
         // Delta pruning: skip captures that can't possibly raise alpha
-        if !is_promotion(mv) {
+        if !is_promotion(mv) && !(recap_fut && is_recap) {
             let cap_to = move_to(mv);
             let cap_pt = if move_flags(mv) == FLAG_EN_PASSANT {
                 PAWN
