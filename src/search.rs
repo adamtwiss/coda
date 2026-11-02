@@ -356,9 +356,9 @@ tunables!(
     // capture history is single-source, so it needs a smaller divisor than
     // quiet history to produce an equivalent reduction magnitude. Both are
     // continuous (`R -= hist / DIV`), not stepped.
-    (LMR_HIST_DIV_CAP, 4124, 1000, 20000, 1500.0, true),
+    (LMR_HIST_DIV_CAP, 3576, 1000, 20000, 1500.0, true),
     (LMR_C_QUIET, 181, 40, 300, 13.0, true),
-    (LMR_C_CAP, 256, 80, 350, 12.5, true),
+    (LMR_C_CAP, 255, 80, 350, 12.5, true),
     // Capture-LMR victim relief, in centi-ply per pawn (100 SEE units) of
     // victim value ABOVE a pawn: `R -= (see_value(victim) - see_value(PAWN))
     // * VICTIM_CENTI / 100`. Pawn captures get nothing, so the term is purely
@@ -377,7 +377,7 @@ tunables!(
     // reach the battery: mean |capt_hist relief| = 50.6 centi, mean excess
     // victim value = 0.99 pawns (non-zero on 25% of them), so 50.6 / 0.99
     // = 51 centi per pawn. The range tops out at the full rate.
-    (LMR_CAP_VICTIM_CENTI, 51, 0, 92, 4.0, true),
+    (LMR_CAP_VICTIM_CENTI, 50, 0, 92, 4.0, true),
     // Capture LMR at PV nodes, as a percentage of the capture-table value.
     // Captures used to be reduced at non-PV nodes only, so 0 = off
     // (bench-identical). Seed: quiet LMR at PV nodes takes its table less one
