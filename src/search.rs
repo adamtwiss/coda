@@ -564,7 +564,7 @@ tunables!(
     //   seed 100 maps one ply of history-driven reduction there to one bonus
     //   ply here.
     // 0 = off for both.
-    (HIST_TT_BEST_CENTI, 50, 0, 200, 15.0, false),
+    (HIST_TT_BEST_CENTI, 48, 0, 200, 15.0, false),
     (HIST_PARENT_STAT_PCT, 100, 0, 300, 20.0, false),
     // PV/quiet/correction-aware double-extension margin (Stockfish shape).
     //
@@ -775,10 +775,10 @@ tunables!(
     // 59: the beta-cutoff update writes main, every cont ply and pawn history
     // with ONE uniform bonus (and the capture bonus at the same depth), so the
     // fail-low reward keeps that parity with its existing ply-1 rate. 0 = off.
-    (FL_PREV_MAIN_PCT, 59, 0, 150, 10.0, false),
-    (FL_PREV_CONT_PCT, 59, 0, 150, 10.0, false),
-    (FL_PREV_PAWN_PCT, 59, 0, 150, 10.0, false),
-    (FL_PREV_CAP_PCT, 59, 0, 150, 10.0, false),
+    (FL_PREV_MAIN_PCT, 60, 0, 150, 10.0, false),
+    (FL_PREV_CONT_PCT, 57, 0, 150, 10.0, false),
+    (FL_PREV_PAWN_PCT, 61, 0, 150, 10.0, false),
+    (FL_PREV_CAP_PCT, 63, 0, 150, 10.0, false),
     // Fail-low surprise: extra bonus depth (centi-plies, one ply = one
     // HIST_BONUS_MULT step of the bonus) for every destination above,
     // including the existing ply-1 write.
@@ -790,8 +790,8 @@ tunables!(
     //   parent's move did better than the parent's own eval expected.
     // Seeds 100 = one bonus ply, the unit of each existing cutoff boost
     // (eval <= best, improving). 0 = off.
-    (FL_LATE_CENTI, 100, 0, 300, 20.0, false),
-    (FL_BELOW_EVAL_CENTI, 100, 0, 300, 20.0, false),
+    (FL_LATE_CENTI, 105, 0, 300, 20.0, false),
+    (FL_BELOW_EVAL_CENTI, 102, 0, 300, 20.0, false),
     (FL_BELOW_PARENT_EVAL_CENTI, 100, 0, 300, 20.0, false),
     // Fail-low surprise from the parent move's stored stat score (the LMR
     // history sum, see `stat_stack`): extra centi-plies =
@@ -799,7 +799,7 @@ tunables!(
     // LMR_HIST_DIV stat units cost a move one ply of LMR reduction, so at 100
     // each ply the parent's history took off that move is paid back as one
     // ply of bonus depth when the move nevertheless worked. 0 = off.
-    (FL_PARENT_STAT_PCT, 100, 0, 300, 20.0, false),
+    (FL_PARENT_STAT_PCT, 96, 0, 300, 20.0, false),
     // Cross-MOVE score-trend TM coefficient (×1e-4). Folds the deterioration
     // across MOVES (prev-`go` final score − current running score) into the
     // score-trend multiplier, giving more time when the position has been
