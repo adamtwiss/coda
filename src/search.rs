@@ -384,7 +384,7 @@ tunables!(
     // flat ply. Instrumented bench: the mean quiet-table value over late PV
     // quiets is 242 centi, so quiets keep (242 - 100) / 242 = 59% of their
     // table at PV on average; PV captures get that same proportion.
-    (LMR_CAP_PV_PCT, 59, 0, 100, 5.0, true),
+    (LMR_CAP_PV_PCT, 0, 0, 100, 5.0, true),
     // Two independent degrees of freedom on the LMR curve, both in centi-ply
     // (they need the fractional accumulator to express):
     //
