@@ -549,6 +549,23 @@ tunables!(
     // (quiets+caps searched)/HIST_SIBLING_DIV — a move that cut off after
     // more competition proved itself more strongly.
     (HIST_SIBLING_DIV, 167, 64, 1024, 40.0, true),
+    // Quiet beta-cutoff bonus, extra bonus depth in centi-plies (one ply =
+    // one HIST_BONUS_MULT step), added to the raw bonus before the
+    // fail-high-count and sibling scalings. Applied outside the
+    // HIST_BONUS_MAX clamp so it stays live at saturated depths.
+    // - HIST_TT_BEST_CENTI: the cutting move is the TT move. Seed 50 = half
+    //   the one-ply unit of each existing boost (eval <= best, improving):
+    //   those mark a cutoff nothing predicted, while a TT-move cut was
+    //   predicted by the TT, and TT-move cuts are the bulk of all cuts, so a
+    //   full ply would rescale the whole table.
+    // - HIST_PARENT_STAT_PCT: the parent's move had poor history (negative
+    //   stored stat score). Extra = max(0, -stat) * PCT / LMR_HIST_DIV;
+    //   LMR_HIST_DIV stat units = one ply of LMR reduction at the parent, so
+    //   seed 100 maps one ply of history-driven reduction there to one bonus
+    //   ply here.
+    // 0 = off for both.
+    (HIST_TT_BEST_CENTI, 50, 0, 200, 15.0, false),
+    (HIST_PARENT_STAT_PCT, 100, 0, 300, 20.0, false),
     // PV/quiet/correction-aware double-extension margin (Stockfish shape).
     //
     // dext_margin = DEXT_MARGIN_PV   * is_pv
@@ -748,6 +765,41 @@ tunables!(
     // Fail-low prior-countermove cont-hist bonus, % of history_bonus(depth)
     // (SF fail-low history harvesting).
     (FAIL_LOW_PREV_BONUS_PCT, 59, 0, 150, 15.0, false),
+    // Fail-low prior-move reward, extra destinations. When a node fails low
+    // the opponent's move into it worked; FAIL_LOW_PREV_BONUS_PCT already
+    // credits that move's cont-hist ply 1. These spread the same reward to
+    // the parent move's main history (MAIN), its cont-hist plies 2/4/6
+    // (CONT), its pawn history (PAWN) and, when the parent move was a
+    // capture, its capture history (CAP, on capture_history_bonus). Each is a
+    // % of the (surprise-boosted) depth bonus. Seeds = FAIL_LOW_PREV_BONUS_PCT's
+    // 59: the beta-cutoff update writes main, every cont ply and pawn history
+    // with ONE uniform bonus (and the capture bonus at the same depth), so the
+    // fail-low reward keeps that parity with its existing ply-1 rate. 0 = off.
+    (FL_PREV_MAIN_PCT, 59, 0, 150, 10.0, false),
+    (FL_PREV_CONT_PCT, 59, 0, 150, 10.0, false),
+    (FL_PREV_PAWN_PCT, 59, 0, 150, 10.0, false),
+    (FL_PREV_CAP_PCT, 59, 0, 150, 10.0, false),
+    // Fail-low surprise: extra bonus depth (centi-plies, one ply = one
+    // HIST_BONUS_MULT step of the bonus) for every destination above,
+    // including the existing ply-1 write.
+    // - LATE: the parent searched this move with an LMR reduction, i.e.
+    //   Coda's own search had classed it as late.
+    // - BELOW_EVAL: best_score < this node's static eval; the fail-low
+    //   mirror of the cutoff site's "static_eval <= best_score" depth boost.
+    // - BELOW_PARENT_EVAL: best_score < -(parent's static eval), i.e. the
+    //   parent's move did better than the parent's own eval expected.
+    // Seeds 100 = one bonus ply, the unit of each existing cutoff boost
+    // (eval <= best, improving). 0 = off.
+    (FL_LATE_CENTI, 100, 0, 300, 20.0, false),
+    (FL_BELOW_EVAL_CENTI, 100, 0, 300, 20.0, false),
+    (FL_BELOW_PARENT_EVAL_CENTI, 100, 0, 300, 20.0, false),
+    // Fail-low surprise from the parent move's stored stat score (the LMR
+    // history sum, see `stat_stack`): extra centi-plies =
+    //   max(0, -stat) * FL_PARENT_STAT_PCT / LMR_HIST_DIV.
+    // LMR_HIST_DIV stat units cost a move one ply of LMR reduction, so at 100
+    // each ply the parent's history took off that move is paid back as one
+    // ply of bonus depth when the move nevertheless worked. 0 = off.
+    (FL_PARENT_STAT_PCT, 100, 0, 300, 20.0, false),
     // Cross-MOVE score-trend TM coefficient (×1e-4). Folds the deterioration
     // across MOVES (prev-`go` final score − current running score) into the
     // score-trend multiplier, giving more time when the position has been
@@ -1696,6 +1748,18 @@ pub struct SearchInfo {
     moved_piece_stack: [u8; MAX_PLY + 1],
     /// Per-ply move destination square. Used alongside moved_piece_stack.
     moved_to_stack: [u8; MAX_PLY + 1],
+    /// Per-ply stat score of the move made at this ply: the quiet history sum
+    /// LMR reads (main*2 + cont ply 1 + cont ply 2 / 2 + pawn), 0 for
+    /// captures, promotions, null moves and ProbCut moves. A child reads its
+    /// parent's slot for the history-bonus surprise terms. Kept separate from
+    /// moved_piece_stack, which already serves three index roles.
+    stat_stack: [i32; MAX_PLY + 1],
+    /// Per-ply enemy-attack map (`enemy_attacks`) of the node at this ply, so a
+    /// child can address its parent move's 4D main-history slot.
+    threats_stack: [u64; MAX_PLY + 1],
+    /// Per-ply pawn-history index (`ph_idx`) of the node at this ply, so a
+    /// child can address its parent move's pawn-history slot.
+    ph_stack: [u16; MAX_PLY + 1],
     /// Pawn history: [pawn_hash & (PAWN_HIST_SIZE - 1)][piece 1-12][to_square] (slot 0 unused)
     pawn_hist: Box<[[[i16; 64]; 13]; PAWN_HIST_SIZE]>,
     /// Correction-history tables, shared by all threads of a search.
@@ -1821,6 +1885,9 @@ impl SearchInfo {
             cutoff_count: [0; MAX_PLY + 4],
             moved_piece_stack: [0; MAX_PLY + 1],
             moved_to_stack: [0; MAX_PLY + 1],
+            stat_stack: [0; MAX_PLY + 1],
+            threats_stack: [0; MAX_PLY + 1],
+            ph_stack: [0; MAX_PLY + 1],
             pv_table: [[NO_MOVE; MAX_PLY + 1]; MAX_PLY + 1],
             pv_len: [0; MAX_PLY + 1],
             multipv: 1,
@@ -3816,6 +3883,9 @@ pub(crate) fn search_helper(board: &mut Board, info: &mut SearchInfo, _limits: &
     info.double_ext_count = [0; MAX_PLY + 1];
     info.cutoff_count = [0; MAX_PLY + 4];
     info.moved_to_stack = [0; MAX_PLY + 1];
+    info.stat_stack = [0; MAX_PLY + 1];
+    info.threats_stack = [0; MAX_PLY + 1];
+    info.ph_stack = [0; MAX_PLY + 1];
     info.pv_table = [[NO_MOVE; MAX_PLY + 1]; MAX_PLY + 1];
     info.pv_len = [0; MAX_PLY + 1];
     info.nodes = 0;
@@ -4181,6 +4251,9 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     info.double_ext_count = [0; MAX_PLY + 1];
     info.cutoff_count = [0; MAX_PLY + 4];
     info.moved_to_stack = [0; MAX_PLY + 1];
+    info.stat_stack = [0; MAX_PLY + 1];
+    info.threats_stack = [0; MAX_PLY + 1];
+    info.ph_stack = [0; MAX_PLY + 1];
     info.pv_table = [[NO_MOVE; MAX_PLY + 1]; MAX_PLY + 1];
     info.pv_len = [0; MAX_PLY + 1];
     // Clear TM state
@@ -6259,6 +6332,7 @@ fn negamax(
                     if ply_u <= MAX_PLY {
                         info.moved_piece_stack[ply_u] = 0;
                         info.moved_to_stack[ply_u] = 0;
+                        info.stat_stack[ply_u] = 0;
                     }
                     let null_score = -negamax(board, info, -beta, -beta + 1, depth - r, ply + 1, !cut_node);
                     if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
@@ -6334,6 +6408,7 @@ fn negamax(
         if ply_u <= MAX_PLY {
             info.moved_piece_stack[ply_u] = 0;
             info.moved_to_stack[ply_u] = 0;
+            info.stat_stack[ply_u] = 0;
         }
         let null_score = -negamax(board, info, -beta, -beta + 1, depth - r, ply + 1, !cut_node);
         if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
@@ -6516,6 +6591,7 @@ fn negamax(
             if pc_moved_piece != NO_PIECE && ply_u <= MAX_PLY {
                 info.moved_piece_stack[ply_u] = go_piece(pc_moved_piece) as u8;
                 info.moved_to_stack[ply_u] = move_to(mv);
+                info.stat_stack[ply_u] = 0; // ProbCut moves are captures
             }
 
             // Cheap qsearch verification before expensive negamax (Stockfish pattern)
@@ -6596,6 +6672,13 @@ fn negamax(
 
     // Pawn history pointer for this position's pawn structure
     let ph_idx = (board.pawn_hash as usize) & (PAWN_HIST_SIZE - 1);
+    // Publish this node's history addressing for the children: a child that
+    // fails low rewards the move made here in main and pawn history, which
+    // are keyed on THIS node's threats and pawn structure.
+    if ply_u <= MAX_PLY {
+        info.threats_stack[ply_u] = enemy_attacks;
+        info.ph_stack[ply_u] = ph_idx as u16;
+    }
 
     // Use MovePicker for staged move generation
     let prev_move = if !board.undo_stack.is_empty() {
@@ -6966,6 +7049,33 @@ let singular_beta = tt_score_local - depth;
             info.moved_piece_stack[ply_u] = go_piece(moved_piece) as u8;
             info.moved_to_stack[ply_u] = to;
         }
+        // Stat score: the quiet history sum LMR reduces on. Main history
+        // carries twice the weight of a single continuation ply, since it
+        // aggregates over every context rather than one specific
+        // predecessor; ply-2 is weighted at half to avoid over-scaling the
+        // total. Computed here, before make_move, for every quiet so the child
+        // can read it (stat_stack) — LMR below reuses the same value. The
+        // pawn-history slot is the node-level ph_idx (this position's pawn
+        // structure), the same slot the cutoff update writes.
+        let stat_score = if !is_cap && !is_promo {
+            let mut hs = info.history.main_score(from, to, enemy_attacks) * 2;
+            if moved_piece != NO_PIECE {
+                let gp = go_piece(moved_piece);
+                if prev_piece_for_cont != 0 {
+                    hs += info.cont.t[prev_piece_for_cont][prev_to_for_cont as usize][gp][to as usize].load(std::sync::atomic::Ordering::Relaxed) as i32;
+                }
+                if prev2_piece_for_cont != 0 {
+                    hs += info.cont.t[prev2_piece_for_cont][prev2_to_for_cont as usize][gp][to as usize].load(std::sync::atomic::Ordering::Relaxed) as i32 / 2;
+                }
+                hs += info.pawn_hist[ph_idx][gp][to as usize] as i32;
+            }
+            hs
+        } else {
+            0
+        };
+        if ply_u <= MAX_PLY {
+            info.stat_stack[ply_u] = stat_score;
+        }
         let captured_pt = if is_cap {
             board.captured_piece_type(mv)
         } else {
@@ -7231,30 +7341,12 @@ let singular_beta = tt_score_local - depth;
                     }
                 }
 
-                // Continuous history adjustment: good history reduces less, bad more
-                // Uses main history + ply-1 + ply-2 continuation history (consensus).
-                // Ply-2 weighted at half to avoid over-scaling the total.
-                // Main history carries twice the weight of a single
-                // continuation ply, since it aggregates over every context
-                // rather than one specific predecessor.
-                let mut hist_score = info.history.main_score(from, to, enemy_attacks) * 2;
-                if moved_piece != NO_PIECE {
-                    let gp = go_piece(moved_piece);
-                    if prev_piece_for_cont != 0 {
-                        hist_score += info.cont.t[prev_piece_for_cont][prev_to_for_cont as usize][gp][to as usize].load(std::sync::atomic::Ordering::Relaxed) as i32;
-                    }
-                    if prev2_piece_for_cont != 0 {
-                        hist_score += info.cont.t[prev2_piece_for_cont][prev2_to_for_cont as usize][gp][to as usize].load(std::sync::atomic::Ordering::Relaxed) as i32 / 2;
-                    }
-                    // Pawn history: pawn-structure-aware move quality (SF/Alexandria pattern).
-                    // Uses the node-level ph_idx (parent pawn hash) — this code runs
-                    // post-make_move, and board.pawn_hash here is the CHILD hash, which
-                    // for pawn moves reads an unrelated bucket (a write/read
-                    // mismatch).
-                    hist_score += info.pawn_hist[ph_idx][gp][to as usize] as i32;
-                }
+                // Continuous history adjustment: good history reduces less, bad
+                // more. `stat_score` (computed before make_move) is main*2 +
+                // cont ply 1 + cont ply 2 / 2 + pawn history.
                 // CONTINUOUS: sub-ply history adjustment (a +8000 history at
                 // DIV=12000 now subtracts 0.67 ply instead of 0).
+                let hist_score = stat_score;
                 let hist_adj = hist_score * LMR_SCALE / tp(&LMR_HIST_DIV);
                 reduction -= hist_adj;
 
@@ -7609,7 +7701,21 @@ let singular_beta = tt_score_local - depth;
                             + if improving { 1 } else { 0 };
                         // numFailHighs multiplicative scaling (Starzix pattern)
                         // — more cascades = stronger cutoff confidence.
-                        let raw_bonus = history_bonus(bonus_depth);
+                        // Surprise terms (see HIST_TT_BEST_CENTI /
+                        // HIST_PARENT_STAT_PCT): extra bonus depth in
+                        // centi-plies, one ply = one HIST_BONUS_MULT step,
+                        // added outside the HIST_BONUS_MAX clamp. Both 0 =
+                        // the plain depth bonus.
+                        let mut extra_centi = 0;
+                        if mv == tt_move {
+                            extra_centi += tp(&HIST_TT_BEST_CENTI);
+                        }
+                        if ply_u >= 1 {
+                            extra_centi += (-info.stat_stack[ply_u - 1]).max(0)
+                                * tp(&HIST_PARENT_STAT_PCT) / tp(&LMR_HIST_DIV).max(1);
+                        }
+                        let raw_bonus = history_bonus(bonus_depth)
+                            + tp(&HIST_BONUS_MULT) * extra_centi / 100;
                         let scale_factor = num_fail_highs.min(tp10(&NFH_CAP_10X));
                         // Fixed-point divisor (stored × 10).
                         let mut bonus = raw_bonus + raw_bonus * scale_factor * 10 / NFH_DIV_10X.load(Ordering::Relaxed).max(1);
@@ -7869,6 +7975,11 @@ let singular_beta = tt_score_local - depth;
     // nothing from them (history updates would fire only on beta cutoffs and
     // TT cutoffs). Indexing mirrors the TT-cutoff cont-hist malus site
     // (moved_piece_stack, pre-move pieces).
+    // Beyond that ply-1 write the reward also reaches the parent move's main
+    // history, cont plies 2/4/6, pawn history (or its capture history if it
+    // was a capture), and grows with how surprising the fail-low was; each
+    // part has its own FL_* tunable and all at 0 reproduce the ply-1-only
+    // update.
     // NOTE: SF's gate fires only when no move raised alpha
     // (they set their best-move only on alpha raises). Coda tracks a fail-soft
     // best_move below alpha too, so the equivalent condition here is the
@@ -7880,24 +7991,104 @@ let singular_beta = tt_score_local - depth;
     {
         let stack_len = board.undo_stack.len();
         if stack_len >= 2 {
-            let opp_undo = &board.undo_stack[stack_len - 1];
-            let our_undo = &board.undo_stack[stack_len - 2];
-            if opp_undo.mv != NO_MOVE && opp_undo.captured == NO_PIECE_TYPE
-                && our_undo.mv != NO_MOVE
+            let opp_mv = board.undo_stack[stack_len - 1].mv;
+            let opp_captured = board.undo_stack[stack_len - 1].captured;
+            let our_mv = board.undo_stack[stack_len - 2].mv;
+            let opp_gp = info.moved_piece_stack[ply_u - 1] as usize;
+            let opp_to = info.moved_to_stack[ply_u - 1] as usize;
+            if opp_mv != NO_MOVE
+                && opp_gp > 0 && opp_gp < crate::movepicker::CONT_PLANES
+                && opp_to < 64
             {
-                let opp_gp = info.moved_piece_stack[ply_u - 1] as usize;
-                let our_gp = info.moved_piece_stack[ply_u - 2] as usize;
-                let opp_to = info.moved_to_stack[ply_u - 1] as usize;
-                let our_to = info.moved_to_stack[ply_u - 2] as usize;
-                if opp_gp > 0 && opp_gp < crate::movepicker::CONT_PLANES
-                    && our_gp > 0 && our_gp < crate::movepicker::CONT_PLANES
-                    && opp_to < 64 && our_to < 64
-                {
-                    let bonus = history_bonus(depth) * tp(&FAIL_LOW_PREV_BONUS_PCT) / 100;
-                    History::update_shared_cont(
-                        &info.cont.t[our_gp][our_to][opp_gp][opp_to],
-                        bonus,
-                    );
+                // Surprise: extra bonus depth in centi-plies (one ply = one
+                // bonus-slope step), larger the less this fail-low was
+                // expected. Every term is 0 by default-off tunable; all at 0
+                // leave the plain depth bonus. See the FL_* tunables.
+                let mut extra_centi = 0;
+                // The parent searched its move LMR-reduced: late in its list.
+                if info.reductions[ply_u - 1] > 0 {
+                    extra_centi += tp(&FL_LATE_CENTI);
+                }
+                // The parent's move had poor history (negative stat score).
+                extra_centi += (-info.stat_stack[ply_u - 1]).max(0)
+                    * tp(&FL_PARENT_STAT_PCT) / tp(&LMR_HIST_DIV).max(1);
+                // The search came in below our own static eval.
+                if !in_check && best_score < static_eval {
+                    extra_centi += tp(&FL_BELOW_EVAL_CENTI);
+                }
+                // ... and below what the parent's eval expected of its move.
+                let parent_eval = info.static_evals[ply_u - 1];
+                if parent_eval > -INFINITY + 1 && best_score < -parent_eval {
+                    extra_centi += tp(&FL_BELOW_PARENT_EVAL_CENTI);
+                }
+
+                if opp_captured == NO_PIECE_TYPE {
+                    let base = history_bonus(depth) + tp(&HIST_BONUS_MULT) * extra_centi / 100;
+                    let our_gp = info.moved_piece_stack[ply_u - 2] as usize;
+                    let our_to = info.moved_to_stack[ply_u - 2] as usize;
+                    if our_mv != NO_MOVE
+                        && our_gp > 0 && our_gp < crate::movepicker::CONT_PLANES
+                        && our_to < 64
+                    {
+                        let bonus = base * tp(&FAIL_LOW_PREV_BONUS_PCT) / 100;
+                        History::update_shared_cont(
+                            &info.cont.t[our_gp][our_to][opp_gp][opp_to],
+                            bonus,
+                        );
+                    }
+                    // The other destinations take genuine quiets only: a
+                    // non-capture promotion trains capture history at the
+                    // cutoff site (the `!is_promo` gate there), so it gets
+                    // no main/cont/pawn reward here either.
+                    if !is_promotion(opp_mv) {
+                        // Main history, at the parent's own threat map.
+                        let main_pct = tp(&FL_PREV_MAIN_PCT);
+                        if main_pct > 0 {
+                            History::update_history(
+                                info.history.main_entry(move_from(opp_mv), opp_to as u8, info.threats_stack[ply_u - 1]),
+                                base * main_pct / 100,
+                            );
+                        }
+                        // Continuation plies 2, 4, 6 relative to the parent
+                        // move (ply 1 is the write above).
+                        let cont_pct = tp(&FL_PREV_CONT_PCT);
+                        if cont_pct > 0 {
+                            let b = base * cont_pct / 100;
+                            for &off in [2usize, 4, 6].iter() {
+                                if ply_u > off {
+                                    let ctx = ply_u - 1 - off;
+                                    let cp = info.moved_piece_stack[ctx] as usize;
+                                    let ct = info.moved_to_stack[ctx] as usize;
+                                    if cp > 0 && cp < crate::movepicker::CONT_PLANES && ct < 64 {
+                                        History::update_shared_cont(
+                                            &info.cont.t[cp][ct][opp_gp][opp_to],
+                                            b,
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                        // Pawn history, at the parent's pawn structure.
+                        let pawn_pct = tp(&FL_PREV_PAWN_PCT);
+                        if pawn_pct > 0 {
+                            let ph = info.ph_stack[ply_u - 1] as usize;
+                            let v = info.pawn_hist[ph][opp_gp][opp_to] as i32;
+                            let clamped = (base * pawn_pct / 100).clamp(-16384, 16384);
+                            let new_v = v + clamped - v * clamped.abs() / 16384;
+                            info.pawn_hist[ph][opp_gp][opp_to] = new_v.clamp(-32000, 32000) as i16;
+                        }
+                    }
+                } else {
+                    // The parent's move was a capture: reward its capture
+                    // history, on the capture bonus slope.
+                    let cap_pct = tp(&FL_PREV_CAP_PCT);
+                    if cap_pct > 0 {
+                        let base = capture_history_bonus(depth) + tp(&CAP_HIST_MULT) * extra_centi / 100;
+                        History::update_cont_history(
+                            &mut info.history.capture[opp_gp][opp_to][captured_type(opp_captured)],
+                            base * cap_pct / 100,
+                        );
+                    }
                 }
             }
         }
