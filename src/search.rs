@@ -198,6 +198,21 @@ tunables!(
     // evaluated per move across the quiet tail; LMP still bulk-skips.
     (FUT_MC_PER_MOVE, 12, 0, 40, 2.0, true),
     (SEE_QUIET_MULT, 16, 5, 80, 3.75, true),
+    // Endgame endpoint of SEE_QUIET_MULT (which is the middlegame endpoint),
+    // blended on `phase_material` between PHASE_MAT_LO and PHASE_MAT_HI. Same
+    // range and c_end as SEE_QUIET_MULT. Default = SEE_QUIET_MULT's default,
+    // so the blend is bench-identical until this is moved. Non-core.
+    (SEE_QUIET_MULT_END, 16, 5, 80, 3.75, false),
+    // Phase-blend ramp on `phase_material` (full board = 7974), shared by the
+    // LMP_BASE and SEE_QUIET_MULT endgame endpoints. At or below LO the
+    // endgame endpoint applies, at or above HI the middlegame one.
+    // LO = 2128: the median non-pawn material of the endgame book the endgame
+    // endpoints were tuned on (endgames_cdb95105: p10 = 1688, median = p90 =
+    // 2128), so the tuned endgame values apply exactly where they were tuned.
+    // HI = 4500: a placeholder midpoint between LO and the full board, to be
+    // chosen by SPRT. HI <= LO degrades to a binary step at LO. Non-core.
+    (PHASE_MAT_HI, 4500, 0, 7974, 400.0, false),
+    (PHASE_MAT_LO, 2128, 0, 7974, 400.0, false),
     // Low-increment TM multiplier ceiling. The factor product
     // (stability×fail-low×forced×subtree×score-trend, up to ~13.8×) is only
     // clamped for no_inc; at increments that are SMALL RELATIVE TO THE CLOCK
@@ -429,6 +444,12 @@ tunables!(
     // `(BASE + d²·DEPTH) / (2 - improving)`. BASE dominates at shallow depth
     // and sets how many quiets survive at d=1.
     (LMP_BASE_10X, 54, 10, 150, 20.0, true),
+    // Endgame endpoint of LMP_BASE_10X (the middlegame endpoint), blended on
+    // `phase_material` via PHASE_MAT_LO/HI. The blend runs on the raw _10X
+    // values and then takes the same rounding as `tp10`, so with END == mid
+    // the result is bit-identical. Default = LMP_BASE_10X's default (bench-
+    // identical until moved); same range and c_end. Non-core.
+    (LMP_BASE_END_10X, 54, 10, 150, 20.0, false),
     // Non-core: near-inert in warm-TT games (dead-knob audit 2026-09-24).
     // One step down changes 0.02% of LMP prunes and one step up none: the
     // move-count limit already outgrows the move list at these depths.
@@ -978,8 +999,43 @@ fn tp(param: &AtomicI32) -> i32 {
 /// precision and retain decimal progress across tune cycles.
 #[inline(always)]
 pub fn tp10(param: &AtomicI32) -> i32 {
-    let v = param.load(Ordering::Relaxed);
-    if v >= 0 { (v + 5) / 10 } else { (v - 5) / 10 }
+    round10(param.load(Ordering::Relaxed))
+}
+
+/// Non-pawn material on the board, both colours, in the eval material-scaling
+/// units: N=B=422, R=642, Q=1015. The full starting set is
+/// 2·(2·422 + 2·422 + 2·642 + 1015) = 7974. Single definition shared by the
+/// eval material scaling (`MAT_SCALE_BASE`) and the phase-blended quiet
+/// pruning in negamax, so both read the same notion of game phase.
+#[inline(always)]
+pub fn phase_material(board: &Board) -> i32 {
+    let knights = popcount(board.pieces[KNIGHT as usize]) as i32 * 422;
+    let bishops = popcount(board.pieces[BISHOP as usize]) as i32 * 422;
+    let rooks = popcount(board.pieces[ROOK as usize]) as i32 * 642;
+    let queens = popcount(board.pieces[QUEEN as usize]) as i32 * 1015;
+    knights + bishops + rooks + queens
+}
+
+/// Phase blend between a middlegame and an endgame endpoint on
+/// `phase_material`: `mid` at material >= PHASE_MAT_HI, `end` at material <=
+/// PHASE_MAT_LO, a linear integer ramp between. With HI <= LO the ramp is
+/// degenerate and it becomes a step at LO (material > LO is middlegame).
+/// When `end == mid` the result is `mid` for every material, so the blend is
+/// bench-neutral until the endgame endpoint is moved.
+#[inline]
+fn phase_blend(material: i32, mid: i32, end: i32) -> i32 {
+    let hi = tp(&PHASE_MAT_HI);
+    let lo = tp(&PHASE_MAT_LO);
+    if hi <= lo {
+        return if material > lo { mid } else { end };
+    }
+    if material >= hi {
+        mid
+    } else if material <= lo {
+        end
+    } else {
+        end + (mid - end) * (material - lo) / (hi - lo)
+    }
 }
 
 /// Clock-keyed blend on iteration depth — the LMP/SE root-depth template, bounded. Returns the
@@ -2387,14 +2443,9 @@ impl SearchInfo {
         // Halogen pattern — non-pawn material only). Pawn-up endgames
         // shouldn't get dampened toward zero; pawns retain decisive value at
         // low non-pawn material counts.
-        // N=422, B=422, R=642, Q=1015
-        let material = {
-            let knights = popcount(board.pieces[KNIGHT as usize]) as i32 * 422;
-            let bishops = popcount(board.pieces[BISHOP as usize]) as i32 * 422;
-            let rooks = popcount(board.pieces[ROOK as usize]) as i32 * 642;
-            let queens = popcount(board.pieces[QUEEN as usize]) as i32 * 1015;
-            knights + bishops + rooks + queens
-        };
+        // Weights and definition live in `phase_material` (shared with the
+        // phase-blended quiet pruning in negamax).
+        let material = phase_material(board);
         // `eval()` now returns the halfmove-INDEPENDENT score (material
         // scaling only). 50-move scaling is applied at every consumption
         // site (via `apply_halfmove_scale`) using the *current* halfmove.
@@ -6659,6 +6710,15 @@ fn negamax(
     // for that has never been localised.
     let mut skip_quiets = false;
 
+    // Phase-blended shallow quiet-pruning knobs (LMP base, SEE quiet
+    // multiplier), resolved once per node: 4 popcounts on the node's board.
+    // Endgames want harder shallow quiet pruning than middlegames; see
+    // PHASE_MAT_LO/HI in `tunables!`.
+    let phase_mat = phase_material(board);
+    let lmp_base = round10(phase_blend(phase_mat,
+        LMP_BASE_10X.load(Ordering::Relaxed), LMP_BASE_END_10X.load(Ordering::Relaxed)));
+    let see_quiet_mult = phase_blend(phase_mat, tp(&SEE_QUIET_MULT), tp(&SEE_QUIET_MULT_END));
+
     // PV TT-move depth floor. At a PV node the TT move is searched first and
     // full-window, so its search IS the PV line. When that move comes from an
     // entry we have strong reason to trust, a new_depth of 0 would hand it to
@@ -6741,7 +6801,7 @@ fn negamax(
             && beta < MATE_IN_MAX_PLY  // forced-win guard: don't count-prune quiets while proving a win
             && FEAT_LMP.load(Ordering::Relaxed)
         {
-            let mut lmp_limit = (tp10(&LMP_BASE_10X) + depth * depth) / (2 - improving as i32);
+            let mut lmp_limit = (lmp_base + depth * depth) / (2 - improving as i32);
             // Predictive margin dimension: a static eval already far below alpha
             // is the best in-node signal that this will fail low, so spend fewer
             // quiets on it. Guarded on static_eval being real (it is -INFINITY
@@ -6830,7 +6890,7 @@ fn negamax(
             && beta < MATE_IN_MAX_PLY  // forced-win guard: don't SEE-prune quiets while proving a win
             && FEAT_SEE_PRUNE.load(Ordering::Relaxed)
         {
-            let see_quiet_threshold = -tp(&SEE_QUIET_MULT) * lmr_d * lmr_d;
+            let see_quiet_threshold = -see_quiet_mult * lmr_d * lmr_d;
             if !see_ge(board, mv, see_quiet_threshold) {
                 trace_gate!(info, board.hash, ply, mv, "see_quiet", depth, move_count);
                 info.stats.see_prunes += 1;
