@@ -356,9 +356,28 @@ tunables!(
     // capture history is single-source, so it needs a smaller divisor than
     // quiet history to produce an equivalent reduction magnitude. Both are
     // continuous (`R -= hist / DIV`), not stepped.
-    (LMR_HIST_DIV_CAP, 4124, 1000, 20000, 1500.0, true),
+    (LMR_HIST_DIV_CAP, 3576, 1000, 20000, 1500.0, true),
     (LMR_C_QUIET, 181, 40, 300, 13.0, true),
-    (LMR_C_CAP, 256, 80, 350, 12.5, true),
+    (LMR_C_CAP, 255, 80, 350, 12.5, true),
+    // Capture-LMR victim relief, in centi-ply per pawn (100 SEE units) of
+    // victim value ABOVE a pawn: `R -= (see_value(victim) - see_value(PAWN))
+    // * VICTIM_CENTI / 100`. Pawn captures get nothing, so the term is purely
+    // differential (higher-value victims reduce less) and never adds
+    // reduction. 0 = off (bench-identical).
+    //
+    // Unit, from BNFP's victim/capt_hist exchange rate (the BNFP_VICTIM_PCT /
+    // BNFP_CAPT_HIST_DIV pair, +1.2 when merged): one SEE unit is
+    // SEE_MATERIAL_SCALE/100 = 2.11 eval units, one eval unit is worth
+    // BNFP_CAPT_HIST_DIV = 18 capt_hist units, and capture LMR spends one
+    // ply per LMR_HIST_DIV_CAP (4124 when seeded) capt_hist units. So 100 SEE units at
+    // that full rate = 100 * 2.11 * 18 / 4124 = 0.92 ply = 92 centi.
+    //
+    // Seed 51 (55% of that rate) makes the new term match the existing
+    // capt_hist term at the mean. Instrumented bench, non-PV captures that
+    // reach the battery: mean |capt_hist relief| = 50.6 centi, mean excess
+    // victim value = 0.99 pawns (non-zero on 25% of them), so 50.6 / 0.99
+    // = 51 centi per pawn. The range tops out at the full rate.
+    (LMR_CAP_VICTIM_CENTI, 50, 0, 92, 4.0, true),
     // Two independent degrees of freedom on the LMR curve, both in centi-ply
     // (they need the fractional accumulator to express):
     //
@@ -7306,7 +7325,8 @@ let singular_beta = tt_score_local - depth;
 
         // LMR for captures: use separate capture LMR table with capture history adjustments
         if is_cap && !is_promo && move_count > 1 && mv != tt_move && FEAT_LMR.load(Ordering::Relaxed) {
-            // Only reduce at non-PV nodes (zero window search)
+            // Only reduce at non-PV nodes (zero window search). Reducing PV
+            // captures by a share of the table was measured and lost.
             if beta - alpha == 1 {
                 let d = (depth as usize).min(63);
                 let m = (move_count as usize).min(63);
@@ -7335,6 +7355,14 @@ let singular_beta = tt_score_local - depth;
                         let ct = if flags == FLAG_EN_PASSANT { captured_type(PAWN) } else { captured_type(captured_pt) };
                         let capt_hist_val = info.history.capture[go_piece(moved_piece)][to as usize][ct] as i32;
                         reduction -= capt_hist_val * LMR_SCALE / tp(&LMR_HIST_DIV_CAP); // CONTINUOUS
+                    }
+
+                    // Victim-value relief: a capture of a higher-value piece
+                    // reduces less. Units and seed derivation at the
+                    // LMR_CAP_VICTIM_CENTI tunable. EP and pawn victims give 0.
+                    if captured_pt != NO_PIECE_TYPE {
+                        let excess = (see_value(captured_pt) - see_value(PAWN)).max(0);
+                        reduction -= excess * tp(&LMR_CAP_VICTIM_CENTI) / 100; // CONTINUOUS
                     }
 
                     // Reduce less for captures that give check
