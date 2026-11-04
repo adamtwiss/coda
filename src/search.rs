@@ -301,18 +301,20 @@ tunables!(
     // i.e. START 47 with the shared 0.8 slope. Its floor is NO_INC_CAP_FLOOR
     // (31, the 75th percentile once the remaining-moves distribution stops
     // shrinking), so late no-increment pacing stays on the conservative side.
-    (TM_ML_NOINC_START, 47, 30, 70, 2.5, false),
+    // Live values from SPSA #4825 (10+0, 3000 iters) seeded at the data-fitted
+    // 47 / 31 / 1650: START 46, NO_INC_CAP_FLOOR 29, NO_INC_RESERVE_MS 1590.
+    (TM_ML_NOINC_START, 46, 30, 70, 2.5, false),
     // Late floor of the no-increment moves-left curve: the 75th percentile of
     // moves remaining in Coda's no-increment lichess games (3,898) once that
     // distribution stops shrinking (~31 from move 60 on).
-    (NO_INC_CAP_FLOOR, 31, 20, 50, 2.0, false),
+    (NO_INC_CAP_FLOOR, 29, 20, 50, 2.0, false),
     // Clock held back from no-increment pacing, in ms.
     // Every move costs ~10-16 ms of wall time however small its budget
     // (measured in local 10+0 games, where pacing with no reserve flagged
     // eight games past move 110 on that cost alone), so the reserve has to
     // carry the long tail: 15 ms x 110 moves, the 99th percentile of moves
     // still to play at fullmove 40-60 in the same lichess games = 1650 ms.
-    (NO_INC_RESERVE_MS, 1650, 0, 4000, 100.0, false),
+    (NO_INC_RESERVE_MS, 1590, 0, 4000, 100.0, false),
     // TM window + factor constants. Coda's own parameters, tuned and validated
     // on Coda's own search and net; provenance in
     // docs/license_analysis_2026-07-13.md. All non-core, for the reason given
