@@ -793,6 +793,18 @@ tunables!(
     // Fail-low prior-countermove cont-hist bonus, % of history_bonus(depth)
     // (SF fail-low history harvesting).
     (FAIL_LOW_PREV_BONUS_PCT, 59, 0, 150, 15.0, false),
+    // Parent early-quiet cont-hist malus, % of the TT-cutoff cont-hist malus
+    // magnitude. When an ordinary beta cutoff refutes the parent's move and
+    // that move was a quiet the parent searched first (or second, right
+    // after its TT move), the parent ordered a refutable quiet at the top:
+    // penalise it in the same cont-hist cell the TT-cutoff malus uses. It is
+    // the cutoff-side mirror of FAIL_LOW_PREV_BONUS_PCT just above.
+    //
+    // Default 100: a beta cutoff in the child is the same evidence a TT
+    // cutoff carries ("this position is already refuted for the mover"),
+    // so it gets the same magnitude, and SPSA can scale it from there.
+    // 0 disables the mechanism (bench-identical).
+    (PARENT_EARLY_QUIET_MALUS_PCT, 100, 0, 200, 10.0, false),
     // Cross-MOVE score-trend TM coefficient (×1e-4). Folds the deterioration
     // across MOVES (prev-`go` final score − current running score) into the
     // score-trend multiplier, giving more time when the position has been
@@ -1776,6 +1788,11 @@ pub struct SearchInfo {
     moved_piece_stack: [u8; MAX_PLY + 1],
     /// Per-ply move destination square. Used alongside moved_piece_stack.
     moved_to_stack: [u8; MAX_PLY + 1],
+    /// Per-ply flag: the move made at this ply was a quiet searched first
+    /// (move_count 1), or second right after the TT move. Read by the child
+    /// at a beta cutoff (PARENT_EARLY_QUIET_MALUS_PCT). Written wherever
+    /// moved_piece_stack is; false for null moves and ProbCut captures.
+    early_quiet_stack: [bool; MAX_PLY + 1],
     /// Pawn history: [pawn_hash & (PAWN_HIST_SIZE - 1)][piece 1-12][to_square] (slot 0 unused)
     pawn_hist: Box<[[[i16; 64]; 13]; PAWN_HIST_SIZE]>,
     /// Correction-history tables, shared by all threads of a search.
@@ -1901,6 +1918,7 @@ impl SearchInfo {
             cutoff_count: [0; MAX_PLY + 4],
             moved_piece_stack: [0; MAX_PLY + 1],
             moved_to_stack: [0; MAX_PLY + 1],
+            early_quiet_stack: [false; MAX_PLY + 1],
             pv_table: [[NO_MOVE; MAX_PLY + 1]; MAX_PLY + 1],
             pv_len: [0; MAX_PLY + 1],
             multipv: 1,
@@ -3891,6 +3909,7 @@ pub(crate) fn search_helper(board: &mut Board, info: &mut SearchInfo, _limits: &
     info.double_ext_count = [0; MAX_PLY + 1];
     info.cutoff_count = [0; MAX_PLY + 4];
     info.moved_to_stack = [0; MAX_PLY + 1];
+    info.early_quiet_stack = [false; MAX_PLY + 1];
     info.pv_table = [[NO_MOVE; MAX_PLY + 1]; MAX_PLY + 1];
     info.pv_len = [0; MAX_PLY + 1];
     info.nodes = 0;
@@ -4256,6 +4275,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     info.double_ext_count = [0; MAX_PLY + 1];
     info.cutoff_count = [0; MAX_PLY + 4];
     info.moved_to_stack = [0; MAX_PLY + 1];
+    info.early_quiet_stack = [false; MAX_PLY + 1];
     info.pv_table = [[NO_MOVE; MAX_PLY + 1]; MAX_PLY + 1];
     info.pv_len = [0; MAX_PLY + 1];
     // Clear TM state
@@ -6334,6 +6354,7 @@ fn negamax(
                     if ply_u <= MAX_PLY {
                         info.moved_piece_stack[ply_u] = 0;
                         info.moved_to_stack[ply_u] = 0;
+                        info.early_quiet_stack[ply_u] = false;
                     }
                     let null_score = -negamax(board, info, -beta, -beta + 1, depth - r, ply + 1, !cut_node);
                     if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
@@ -6409,6 +6430,7 @@ fn negamax(
         if ply_u <= MAX_PLY {
             info.moved_piece_stack[ply_u] = 0;
             info.moved_to_stack[ply_u] = 0;
+            info.early_quiet_stack[ply_u] = false;
         }
         let null_score = -negamax(board, info, -beta, -beta + 1, depth - r, ply + 1, !cut_node);
         if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
@@ -6592,6 +6614,9 @@ fn negamax(
                 info.moved_piece_stack[ply_u] = go_piece(pc_moved_piece) as u8;
                 info.moved_to_stack[ply_u] = move_to(mv);
             }
+            if ply_u <= MAX_PLY {
+                info.early_quiet_stack[ply_u] = false;
+            }
 
             // Cheap qsearch verification before expensive negamax (Stockfish pattern)
             let mut score = -quiescence(board, info, -candidate_beta, -candidate_beta + 1, ply + 1);
@@ -6704,6 +6729,8 @@ fn negamax(
     // Track quiet moves searched before beta cutoff for history penalty
     let mut quiets_tried = [NO_MOVE; 64];
     let mut quiets_count = 0usize;
+    // Whether move_count 1 at this node was the TT move (early_quiet_stack).
+    let mut first_was_tt = false;
 
     // Track captures searched before beta cutoff for capture history penalty
     let mut captures_tried: [(u8, u8, u8); 32] = [(0, 0, 0); 32]; // (piece, to, victim)
@@ -7049,6 +7076,11 @@ let singular_beta = tt_score_local - depth;
         if moved_piece != NO_PIECE && ply_u <= MAX_PLY {
             info.moved_piece_stack[ply_u] = go_piece(moved_piece) as u8;
             info.moved_to_stack[ply_u] = to;
+        }
+        if move_count == 1 && mv == tt_move { first_was_tt = true; }
+        if ply_u <= MAX_PLY {
+            info.early_quiet_stack[ply_u] = !is_cap && !is_promo
+                && (move_count == 1 || (move_count == 2 && first_was_tt));
         }
         let captured_pt = if is_cap {
             board.captured_piece_type(mv)
@@ -7684,6 +7716,35 @@ let singular_beta = tt_score_local - depth;
                     }
                     info.stats.cutoff_movecount_sum += move_count as u64;
                     info.stats.cutoff_movecount_sq_sum += (move_count as u64) * (move_count as u64);
+
+                    // Parent early-quiet malus: the parent's move was a quiet
+                    // it searched first (or second, after its TT move) and it
+                    // was refuted here, so the parent mis-ordered it. Same cell
+                    // and same magnitude as the TT-cutoff cont-hist malus
+                    // above (the TT cutoff is the probe-time form of this
+                    // cutoff), scaled by PARENT_EARLY_QUIET_MALUS_PCT. Skipped
+                    // in singular verification, whose cutoffs are against
+                    // singular_beta, not the real beta.
+                    let peq_pct = tp(&PARENT_EARLY_QUIET_MALUS_PCT);
+                    if peq_pct > 0 && ply_u >= 2 && ply_u <= MAX_PLY
+                        && info.early_quiet_stack[ply_u - 1]
+                        && info.excluded_move[ply_u] == NO_MOVE
+                    {
+                        let opp_gp = info.moved_piece_stack[ply_u - 1] as usize;
+                        let our_gp = info.moved_piece_stack[ply_u - 2] as usize;
+                        let opp_to = info.moved_to_stack[ply_u - 1] as usize;
+                        let our_to = info.moved_to_stack[ply_u - 2] as usize;
+                        if opp_gp > 0 && opp_gp < crate::movepicker::CONT_PLANES
+                            && our_gp > 0 && our_gp < crate::movepicker::CONT_PLANES
+                            && opp_to < 64 && our_to < 64
+                        {
+                            let malus = -((155 * depth).min(385)) * peq_pct / 100;
+                            History::update_shared_cont(
+                                &info.cont.t[our_gp][our_to][opp_gp][opp_to],
+                                malus,
+                            );
+                        }
+                    }
 
                     // Beta cutoff - update history for quiet moves.
                     // The !is_promo gate matters: letting non-capture promotions
