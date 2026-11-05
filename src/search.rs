@@ -126,11 +126,14 @@ tunables!(
     (RFP_MARGIN_IMP, 25, 0, 150, 6.0, true),
     (RFP_MARGIN_NOIMP, 36, 0, 200, 7.5, true),
     // Endgame endpoints of the two RFP margins, blended on `phase_material`
-    // with the shared PHASE_MAT_LO/HI split (see SEE_QUIET_MULT_END). Defaults
-    // equal the middlegame values, so the split is bench-neutral until an
-    // endgame-book SPSA moves them. Same ranges and c_end. Non-core.
-    (RFP_MARGIN_IMP_END, 25, 0, 150, 6.0, false),
-    (RFP_MARGIN_NOIMP_END, 36, 0, 200, 7.5, false),
+    // with the shared PHASE_MAT_LO/HI split (see SEE_QUIET_MULT_END). Same
+    // ranges and c_end as the middlegame values. 29 / 38 are from an SPSA on
+    // an endgame-only book (#4922, started at the middlegame 25 / 36): both
+    // rose, so endgames want WIDER RFP margins, i.e. less static pruning.
+    // The futility terms tuned alongside stayed within control noise and
+    // were not split. Non-core.
+    (RFP_MARGIN_IMP_END, 29, 0, 150, 6.0, false),
+    (RFP_MARGIN_NOIMP_END, 38, 0, 200, 7.5, false),
     // Root-depth-aware RFP relaxation (single-set, self-adapts STC<->LTC):
     // demand MORE static-eval confidence to RFP-cut as the OVERALL search
     // depth grows past RFP_ROOT_THRESH (diminishing-returns of depth — the
@@ -188,10 +191,6 @@ tunables!(
     // interact with the LMR history terms — retune the pair together.
     (FUT_BASE, 85, 0, 200, 9.0, true),
     (FUT_PER_DEPTH, 96, 40, 250, 10.5, true),
-    // Endgame endpoints of the futility margin terms, same phase split and
-    // bench-neutral defaults as RFP_MARGIN_*_END. Non-core.
-    (FUT_BASE_END, 85, 0, 200, 9.0, false),
-    (FUT_PER_DEPTH_END, 96, 40, 250, 10.5, false),
     // Strong-history exemption for quiet futility: a quiet whose main history
     // exceeds this is never futility-pruned. It was the hardcoded literal 12000
     // sitting inside the gate at search.rs while every other term around it was
@@ -6738,8 +6737,6 @@ fn negamax(
     let lmp_base = round10(phase_blend(phase_mat,
         LMP_BASE_10X.load(Ordering::Relaxed), LMP_BASE_END_10X.load(Ordering::Relaxed)));
     let see_quiet_mult = phase_blend(phase_mat, tp(&SEE_QUIET_MULT), tp(&SEE_QUIET_MULT_END));
-    let fut_base = phase_blend(phase_mat, tp(&FUT_BASE), tp(&FUT_BASE_END));
-    let fut_per_depth = phase_blend(phase_mat, tp(&FUT_PER_DEPTH), tp(&FUT_PER_DEPTH_END));
 
     // PV TT-move depth floor. At a PV node the TT move is searched first and
     // full-window, so its search IS the PV line. When that move comes from an
@@ -6888,8 +6885,8 @@ fn negamax(
             let main_hist = info.history.main_score(from, to, enemy_attacks);
             let hist_adj = main_hist / 128;
             let threats_adj = any_threat_count * tp(&FUT_THREATS_MARGIN);
-            let mc_adj = (move_count * tp(&FUT_MC_PER_MOVE)).min(lmr_d * fut_per_depth);
-            let futility_value = static_eval + fut_base + lmr_d * fut_per_depth + hist_adj + threats_adj - mc_adj;
+            let mc_adj = (move_count * tp(&FUT_MC_PER_MOVE)).min(lmr_d * tp(&FUT_PER_DEPTH));
+            let futility_value = static_eval + tp(&FUT_BASE) + lmr_d * tp(&FUT_PER_DEPTH) + hist_adj + threats_adj - mc_adj;
             // Direct-check carve-out + strong-history exemption: a move that
             // gives check, or one our own history rates highly, is not futile.
             if futility_value <= alpha && main_hist < tp(&FUT_HIST_EXEMPT) && !board.gives_direct_check(mv) {
