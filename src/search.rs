@@ -594,6 +594,37 @@ tunables!(
     // (quiets+caps searched)/HIST_SIBLING_DIV — a move that cut off after
     // more competition proved itself more strongly.
     (HIST_SIBLING_DIV, 167, 64, 1024, 40.0, true),
+    // Cutoff-time continuation-history update shape (bonus to the cutoff
+    // quiet, malus to the quiets tried before it).
+    //
+    // CH_W{1,2,3,4,6}_PCT: per-ply scale, in percent, on the amount written
+    // into the cont-hist cell reached through the move N plies back. 100 is
+    // the uniform update Coda has always used at plies 1/2/4/6, so those
+    // defaults reproduce it. Ply 3 (the opponent's move before our previous
+    // one) was not updated at all before; its default sits between ply 2's
+    // and ply 4's weights (both 100), so 100. CH_W3_PCT=0 restores the old
+    // {1,2,4,6} set exactly. All plies share ONE table indexed by the prior
+    // move, so a ply-3 write also feeds the ply-1/2/4/6 reads elsewhere.
+    (CH_W1_PCT, 100, 0, 200, 10.0, false),
+    (CH_W2_PCT, 100, 0, 200, 10.0, false),
+    (CH_W3_PCT, 100, 0, 200, 10.0, false),
+    (CH_W4_PCT, 100, 0, 200, 10.0, false),
+    (CH_W6_PCT, 100, 0, 200, 10.0, false),
+    // Agreement: the cutoff move's bonus at each ply grows by
+    // CH_AGREE_STEP_PCT percent for every EARLIER ply (in 1,2,3,4,6 order)
+    // whose cell for this move was already positive. At most 4 earlier plies
+    // can agree, so the ceiling is 1 + 4*step. Default 8 caps it at 1.32x,
+    // about half the extra amplification of the numFailHighs cascade
+    // ceiling at defaults (1 + NFH_CAP/NFH_DIV = 1 + 3.3/4.9 ~ 1.67x):
+    // agreement is a weaker, more indirect confidence signal than repeated
+    // fail-highs, so it should amplify less. 0 disables. Bonus only; the
+    // malus is unscaled.
+    (CH_AGREE_STEP_PCT, 8, 0, 40, 4.0, false),
+    // In-check reach: when the cutoff node is in check, only update plies
+    // 1..=CH_CHECK_REACH. An evasion is forced by the opponent's last moves,
+    // so deeper context explains it poorly. Default 2 (the two most recent
+    // moves, which the LMR history read also limits itself to); 6 disables.
+    (CH_CHECK_REACH, 2, 1, 6, 1.0, false),
     // PV/quiet/correction-aware double-extension margin (Stockfish shape).
     //
     // dext_margin = DEXT_MARGIN_PV   * is_pv
@@ -7725,31 +7756,17 @@ let singular_beta = tt_score_local - depth;
                             bonus,
                         );
 
-                        // Update continuation history at plies 1, 2, 4, 6
-                        // Ply-1 at full bonus, plies 2/4/6 at half bonus (Obsidian pattern)
+                        // Update continuation history at plies 1, 2, 3, 4, 6
+                        // with per-ply weights, agreement scaling and an
+                        // in-check reach limit (see update_cutoff_cont_hist).
+                        // base = current cont_hist + main_hist / 2 (concept from Stormphrax).
                         if moved_piece != NO_PIECE {
-                            let gp_mv = go_piece(moved_piece);
-                            // base = current cont_hist + main_hist / 2 (concept from Stormphrax).
                             let main_score_v = info.history.main_score(from, to, enemy_attacks);
-                            let ch_offsets = [1usize, 2, 4, 6];
-                            for &off in ch_offsets.iter() {
-                                if ply_u >= off {
-                                    let prior_piece = info.moved_piece_stack[ply_u - off] as usize;
-                                    let prior_to = info.moved_to_stack[ply_u - off] as usize;
-                                    if prior_piece > 0 && prior_piece < crate::movepicker::CONT_PLANES && prior_to < 64 {
-                                        // B1: uniform bonus (see LMR nudge site above).
-                                        let ch_bonus = bonus;
-                                        let cur_cont = info.cont.t[prior_piece][prior_to][gp_mv][to as usize].load(std::sync::atomic::Ordering::Relaxed) as i32;
-                                        let base = cur_cont + main_score_v / 2;
-                                        History::update_cont_history_with_base(
-                                            &info.cont.t[prior_piece][prior_to][gp_mv][to as usize],
-                                            cur_cont,
-                                            base,
-                                            ch_bonus,
-                                        );
-                                    }
-                                }
-                            }
+                            update_cutoff_cont_hist(
+                                &info.cont, &info.moved_piece_stack, &info.moved_to_stack,
+                                ply_u, go_piece(moved_piece), to as usize,
+                                main_score_v, bonus, in_check, true,
+                            );
                         }
 
                         // Update pawn history
@@ -7771,32 +7788,19 @@ let singular_beta = tt_score_local - depth;
                                 -malus,
                             );
 
-                            // Penalize continuation history at plies 1, 2, 4, 6.
+                            // Penalize continuation history at the same plies,
+                            // with the same per-ply weights and in-check reach as
+                            // the bonus but no agreement scaling.
                             // T6: base uses qf,qt move's main_score (the move being malused).
                             {
                                 let q_piece = board.piece_at(qf);
                                 if q_piece != NO_PIECE {
-                                    let gp_q = go_piece(q_piece);
                                     let q_main_score = info.history.main_score(qf, qt, enemy_attacks);
-                                    let ch_offsets = [1usize, 2, 4, 6];
-                                    for &off in ch_offsets.iter() {
-                                        if ply_u >= off {
-                                            let prior_piece = info.moved_piece_stack[ply_u - off] as usize;
-                                            let prior_to = info.moved_to_stack[ply_u - off] as usize;
-                                            if prior_piece > 0 && prior_piece < crate::movepicker::CONT_PLANES && prior_to < 64 {
-                                                // B1: uniform penalty (see bonus site above).
-                                                let ch_pen = -malus;
-                                                let cur_cont = info.cont.t[prior_piece][prior_to][gp_q][qt as usize].load(std::sync::atomic::Ordering::Relaxed) as i32;
-                                                let base = cur_cont + q_main_score / 2;
-                                                History::update_cont_history_with_base(
-                                                    &info.cont.t[prior_piece][prior_to][gp_q][qt as usize],
-                                                    cur_cont,
-                                                    base,
-                                                    ch_pen,
-                                                );
-                                            }
-                                        }
-                                    }
+                                    update_cutoff_cont_hist(
+                                        &info.cont, &info.moved_piece_stack, &info.moved_to_stack,
+                                        ply_u, go_piece(q_piece), qt as usize,
+                                        q_main_score, -malus, in_check, false,
+                                    );
                                 }
                             }
 
@@ -8056,6 +8060,56 @@ let singular_beta = tt_score_local - depth;
     }
 
     best_score
+}
+
+/// Continuation-history plies written at a beta cutoff, in agreement order.
+const CUTOFF_CH_PLIES: [usize; 5] = [1, 2, 3, 4, 6];
+
+/// Cutoff-time continuation-history update for one quiet move `(gp, to)`:
+/// writes `amount` (bonus if positive, malus if negative) into the cell
+/// reached through each prior move at `CUTOFF_CH_PLIES`, scaled per ply by
+/// CH_W*_PCT. A ply whose weight is 0 is skipped entirely. When `in_check`,
+/// plies beyond CH_CHECK_REACH are skipped. When `agree`, each ply's amount
+/// is further scaled by `1 + CH_AGREE_STEP_PCT% * n`, where `n` counts the
+/// earlier plies (already visited in this call) whose cell for this move was
+/// positive BEFORE being updated. Gravity base = cell + main_score / 2, as
+/// before.
+#[inline(always)]
+fn update_cutoff_cont_hist(
+    cont: &crate::movepicker::ContHist,
+    piece_stack: &[u8; MAX_PLY + 1],
+    to_stack: &[u8; MAX_PLY + 1],
+    ply_u: usize,
+    gp: usize,
+    to: usize,
+    main_score: i32,
+    amount: i32,
+    in_check: bool,
+    agree: bool,
+) {
+    let weights = [
+        tp(&CH_W1_PCT), tp(&CH_W2_PCT), tp(&CH_W3_PCT), tp(&CH_W4_PCT), tp(&CH_W6_PCT),
+    ];
+    let reach = if in_check { tp(&CH_CHECK_REACH) as usize } else { usize::MAX };
+    let step = if agree { tp(&CH_AGREE_STEP_PCT) } else { 0 };
+    let mut n_agree = 0i32;
+    for (i, &off) in CUTOFF_CH_PLIES.iter().enumerate() {
+        if off > reach || ply_u < off { break; }
+        let w = weights[i];
+        if w == 0 { continue; }
+        let prior_piece = piece_stack[ply_u - off] as usize;
+        let prior_to = to_stack[ply_u - off] as usize;
+        if prior_piece == 0 || prior_piece >= crate::movepicker::CONT_PLANES || prior_to >= 64 {
+            continue;
+        }
+        let cell = &cont.t[prior_piece][prior_to][gp][to];
+        let cur = cell.load(Ordering::Relaxed) as i32;
+        let mut amt = amount;
+        if w != 100 { amt = amt * w / 100; }
+        if n_agree > 0 { amt += amt * step * n_agree / 100; }
+        if cur > 0 { n_agree += 1; }
+        History::update_cont_history_with_base(cell, cur, cur + main_score / 2, amt);
+    }
 }
 
 /// History bonus: linear depth-based bonus for history updates.
