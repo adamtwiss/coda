@@ -579,6 +579,22 @@ tunables!(
     (HIST_MALUS_MULT, 503, 50, 900, 40.0, true),
     (HIST_MALUS_OFFSET, 30, 0, 400, 25.0, false),
     (HIST_MALUS_MAX, 1136, 500, 4000, 175.0, true),
+    // Quiet-malus rank decay. At a quiet beta cutoff the first quiet tried
+    // before the cutoff move takes the full malus; each later one keeps
+    // QUIET_MALUS_DECAY_PCT percent of the previous one's share, never
+    // dropping below QUIET_MALUS_FLOOR_PCT of the full malus. A quiet the
+    // picker ranked early that then failed is stronger evidence of
+    // mis-ordering than one ranked late, which was expected to fail.
+    //
+    // Floor 46 = HIST_BONUS_MULT / HIST_MALUS_MULT (230 / 503): late quiets
+    // fall to roughly the bonus slope rather than the steeper malus slope,
+    // so they still lose ground but no faster than a cutoff move gains it.
+    // Decay 82: 0.82^4 = 0.45, so the full-to-floor ramp spans the first
+    // four failed quiets — the ranks where nearly all quiet cutoffs land
+    // (bench: 71% of quiet cutoffs are quiet-rank 1, mean rank 1.62).
+    // DECAY_PCT = 100 disables the mechanism (bench-identical).
+    (QUIET_MALUS_DECAY_PCT, 82, 50, 100, 4.0, false),
+    (QUIET_MALUS_FLOOR_PCT, 46, 0, 100, 5.0, false),
     (CAP_HIST_MALUS_MULT, 297, 50, 900, 40.0, true),
     (CAP_HIST_MALUS_BASE, 42, 0, 400, 25.0, false),
     (CAP_HIST_MALUS_MAX, 2294, 500, 4000, 175.0, true),
@@ -7761,8 +7777,17 @@ let singular_beta = tt_score_local - depth;
                             info.pawn_hist[ph_idx][gp][to as usize] = new_v.clamp(-32000, 32000) as i16;
                         }
 
-                        // Penalize all quiet moves tried before the cutoff move
+                        // Penalize all quiet moves tried before the cutoff move.
+                        // The malus decays with try order (QUIET_MALUS_DECAY_PCT
+                        // per step, floored at QUIET_MALUS_FLOOR_PCT): an early
+                        // quiet that failed was mis-ordered more than a late one.
+                        let decay_pct = tp(&QUIET_MALUS_DECAY_PCT);
+                        let floor_pct = tp(&QUIET_MALUS_FLOOR_PCT);
+                        let full_malus = malus;
+                        let mut share_pct = 100i32;
                         for i in 0..quiets_count.saturating_sub(1) {
+                            let malus = full_malus * share_pct / 100;
+                            share_pct = (share_pct * decay_pct / 100).max(floor_pct);
                             let q = quiets_tried[i];
                             let qf = move_from(q);
                             let qt = move_to(q);
