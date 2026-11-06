@@ -238,7 +238,18 @@ pub fn convert_v7(
     hl_crelu: bool,
     pawn_pairs: bool,
     l1_raw: bool,
+    hidden_gate: crate::nnue::HiddenGate,
 ) -> Result<(), String> {
+    use crate::nnue::HiddenGate;
+    // Gated L2 (trainer --hidden-gate): l2 emits a gate half and a value half,
+    // so its weight/bias arrays carry 2*l2_size output rows (gate rows first).
+    // Only defined for a shared (unbucketed) L2 in a pairwise net.
+    let gated = hidden_gate != HiddenGate::None;
+    if gated && (l2_size == 0 || bucketed_hidden || !use_pairwise) {
+        return Err("--hidden-gate requires a pairwise net with a shared (unbucketed) L2 \
+                    (--hidden2 > 0, no --bucketed-hidden)".to_string());
+    }
+    let l2_rows_mul = if gated { 2 } else { 1 };
     // Pawn-pair features extend the THREAT feature space (see nnue.rs), so they
     // occupy l0 columns immediately after the threat block and cannot exist
     // without it.
@@ -255,7 +266,9 @@ pub fn convert_v7(
     // Bucketed: Bullet bakes output buckets into hidden layer dimensions
     // Unbucketed: hidden layers are shared, only output is bucketed
     let bl1 = if bucketed_hidden { NNUE_OUTPUT_BUCKETS * l1_size } else { l1_size };
-    let bl2 = if bucketed_hidden { NNUE_OUTPUT_BUCKETS * l2_size } else { l2_size };
+    // Stored L2 output rows: doubled for a gated L2 (the layer that feeds the
+    // output still has l2_size units — the gate product halves it again).
+    let bl2 = l2_rows_mul * if bucketed_hidden { NNUE_OUTPUT_BUCKETS * l2_size } else { l2_size };
     // i16 hidden: all hidden layer weights/biases are i16 (GoChess-style)
     // f32 hidden (default): l1b is f32, l2/l3 are f32
     let hbytes = if int16_hidden { 2 } else { 4 }; // bytes per hidden weight/bias element
@@ -515,7 +528,7 @@ pub fn convert_v7(
     // is the intended fail-loud behavior for format mismatch.
     // v11 adds an arch_flags2 byte (pawn-pair block). See nnue.rs for why it is
     // a new byte rather than a ninth meaning for a bit in the first flags byte.
-    let version = if num_pawn_pairs > 0 || l1_raw { 11u32 }
+    let version = if num_pawn_pairs > 0 || l1_raw || gated { 11u32 }
         else if num_threats > 0 { 10u32 } else if dual_l1 { 8u32 } else { 7u32 };
     let mut buf = Vec::new();
     write_u32_le(&mut buf, NNUE_MAGIC);
@@ -580,11 +593,13 @@ pub fn convert_v7(
     //   bit 0: has_pawn_pair, followed by a u32 feature count
     //   bits 1-3: reserved (must be 0)
     //   bit 4: raw L1 readout, [l1_size] f32 after the output bias
-    //   bits 5-7: reserved (must be 0)
+    //   bits 5-6: hidden gate mode (0 none, 1 pair, 2 sq); L2 arrays double
+    //   bit 7: reserved (must be 0)
     if version >= 11 {
         let mut arch_flags2 = 0u8;
         if num_pawn_pairs > 0 { arch_flags2 |= 1; }
         if l1_raw { arch_flags2 |= 16; }
+        arch_flags2 |= hidden_gate.to_arch_flags2_bits();
         buf.push(arch_flags2);
         if num_pawn_pairs > 0 {
             write_u32_le(&mut buf, num_pawn_pairs as u32);
@@ -606,8 +621,8 @@ pub fn convert_v7(
     for &w in &l1_weights { write_i16_le(&mut buf, w); } // [L1_input][BUCKETS*L1]
     for &b in &l1_biases { write_i16_le(&mut buf, b); }   // [BUCKETS*L1]
     if l2_size > 0 {
-        for &w in &l2_weights { write_i16_le(&mut buf, w); } // [L1][BUCKETS*L2]
-        for &b in &l2_biases { write_i16_le(&mut buf, b); }   // [BUCKETS*L2]
+        for &w in &l2_weights { write_i16_le(&mut buf, w); } // [L1][BUCKETS*L2] (×2 rows if gated)
+        for &b in &l2_biases { write_i16_le(&mut buf, b); }   // [BUCKETS*L2] (×2 rows if gated)
     }
     for &w in &output_weights { write_i16_le(&mut buf, w); } // [BUCKETS][L2]
     for &b in &output_bias { write_i32_le(&mut buf, b); }     // [BUCKETS]
@@ -621,6 +636,11 @@ pub fn convert_v7(
 
     let dual_str = if dual_l1 { " dual" } else { "" };
     let threat_str = if num_threats > 0 { format!(" threats={}", num_threats) } else { String::new() };
-    println!("Saved {} ({} bytes, v{}{}{} FT={} L1={} L2={})", output_path, buf.len(), version, dual_str, threat_str, h, l1_size, l2_size);
+    let gate_str = match hidden_gate {
+        HiddenGate::None => "",
+        HiddenGate::Pair => " gate=pair",
+        HiddenGate::Sq => " gate=sq",
+    };
+    println!("Saved {} ({} bytes, v{}{}{}{} FT={} L1={} L2={})", output_path, buf.len(), version, dual_str, threat_str, gate_str, h, l1_size, l2_size);
     Ok(())
 }

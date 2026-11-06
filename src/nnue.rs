@@ -432,6 +432,68 @@ impl KbLayout {
     }
 }
 
+/// Gate mode of the second hidden layer (arch_flags2 bits 5-6).
+///
+/// A gated L2 lets one learned feature SCALE another rather than only being
+/// summed with it: L2 emits `2 * l2` pre-activations, the first `l2` a gate
+/// `g` and the next `l2` a value `v`, and the layer's output is their
+/// elementwise product, which then feeds the output layer exactly as an
+/// ungated L2's activations would. It is the same product-of-two-clipped-halves
+/// primitive the feature transformer's pairwise stage already uses, applied one
+/// layer later. Because the gate is clipped to [0, 1], a gate pinned at 1
+/// reproduces the ungated layer exactly.
+///   - `Pair`: `crelu(g) * crelu(v)`
+///   - `Sq`:   `screlu(g) * crelu(v)` — squared gate, so it opens more softly
+/// with crelu = clamp(x, 0, 1) and screlu = crelu², both in float.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum HiddenGate {
+    None = 0,
+    Pair = 1,
+    Sq = 2,
+}
+
+/// arch_flags2 bit position / mask of the 2-bit hidden-gate field.
+pub const ARCH2_GATE_SHIFT: u8 = 5;
+pub const ARCH2_GATE_MASK: u8 = 0b11 << ARCH2_GATE_SHIFT;
+
+impl HiddenGate {
+    pub fn from_name(name: &str) -> Result<Self, String> {
+        match name {
+            "none" => Ok(HiddenGate::None),
+            "pair" => Ok(HiddenGate::Pair),
+            "sq" => Ok(HiddenGate::Sq),
+            other => Err(format!("unknown hidden gate {other:?}; expected none | pair | sq")),
+        }
+    }
+
+    /// Decode the gate field of an arch_flags2 byte. Field value 3 is
+    /// reserved and rejected rather than guessed at.
+    pub fn from_arch_flags2(flags: u8) -> Option<Self> {
+        match (flags & ARCH2_GATE_MASK) >> ARCH2_GATE_SHIFT {
+            0 => Some(HiddenGate::None),
+            1 => Some(HiddenGate::Pair),
+            2 => Some(HiddenGate::Sq),
+            _ => None,
+        }
+    }
+
+    pub fn to_arch_flags2_bits(self) -> u8 {
+        (self as u8) << ARCH2_GATE_SHIFT
+    }
+
+    /// Apply the gate to one (gate, value) pre-activation pair.
+    #[inline(always)]
+    pub fn apply(self, g: f32, v: f32) -> f32 {
+        let gc = g.clamp(0.0, 1.0);
+        let vc = v.clamp(0.0, 1.0);
+        match self {
+            HiddenGate::None => vc,
+            HiddenGate::Pair => gc * vc,
+            HiddenGate::Sq => (gc * gc) * vc,
+        }
+    }
+}
+
 // Quantization
 const QA: i32 = 255;  // accumulator scale (CReLU/SCReLU clip max)
 const QB: i32 = 64;   // output weight scale
@@ -2973,6 +3035,13 @@ pub struct NNUENet {
     /// values L1 already computes, so it costs `l1` multiply-adds per eval.
     pub has_l1_raw: bool,
     pub l1_raw_w: Vec<f32>,
+    /// Gated L2 (see [`HiddenGate`]). When not `None`, `l2_weights_f` /
+    /// `l2_biases_f` hold `l2_rows = 2 * l2_size` output rows (gate rows
+    /// first, then value rows) while `l2_size` stays the width the output
+    /// layer reads. Shared (unbucketed) L2 only.
+    pub hidden_gate: HiddenGate,
+    /// Output-row stride of `l2_weights_f` (= `l2_size`, or `2 * l2_size` gated).
+    pub l2_rows: usize,
     // v9 threat features
     pub threat_weights: AlignedVec<i8>,  // [num_threat_features × hidden_size] i8 weights, 64-B rows, hugepage-backed
     pub num_threat_features: usize,
@@ -3097,6 +3166,7 @@ impl NNUENet {
         let mut bucketed_hidden = false; // bit 3: output buckets baked into L1/L2 dims
         let mut dual_l1 = false; // bit 4: dual L1 activation (CReLU+SCReLU, v8)
         let mut has_l1_raw = false; // arch_flags2 bit 4 (v11)
+        let mut hidden_gate = HiddenGate::None; // arch_flags2 bits 5-6 (v11)
         // bit 5 is context-dependent:
         //   - extended_kb=0: consensus_buckets (legacy 16-bucket encoding)
         //   - extended_kb=1: hl_crelu (hidden-layer CReLU, vs default SCReLU)
@@ -3240,11 +3310,15 @@ impl NNUENet {
                 //             research nets that never shipped; leaving them
                 //             reserved keeps those nets refused, not misread)
                 //   bit 4: raw L1 readout (see `has_l1_raw`)
-                //   bits 5-7: reserved, must be zero
+                //   bits 5-6: hidden gate mode, a 2-bit field (see `HiddenGate`):
+                //             0 none, 1 pair, 2 sq, 3 reserved (rejected)
+                //   bit 7: reserved, must be zero
                 if version >= 11 {
                     let arch_flags2 = read_u8(reader)?;
                     has_l1_raw = arch_flags2 & 16 != 0;
-                    if arch_flags2 & !(1 | 16) != 0 {
+                    hidden_gate = HiddenGate::from_arch_flags2(arch_flags2).ok_or_else(|| format!(
+                        "reserved hidden-gate mode in arch_flags2 (0x{:02x})", arch_flags2))?;
+                    if arch_flags2 & !(1 | 16 | ARCH2_GATE_MASK) != 0 {
                         return Err(format!(
                             "unknown arch_flags2 bits set (0x{:02x}); this net uses an \
                              architecture feature this build does not implement",
@@ -3379,12 +3453,17 @@ impl NNUENet {
         // Read L2 hidden layer weights (v7/v8)
         // Dual L1 activation: L2 input = l1_size * 2 (CReLU + SCReLU concatenated)
         let l2_input_size = if dual_l1 { l1_size * 2 } else { l1_size };
+        // A gated L2 stores a gate half and a value half: twice the output rows.
+        if hidden_gate != HiddenGate::None && (l2_size == 0 || bucketed_hidden || !use_pairwise) {
+            return Err("gated L2 requires a pairwise net with a shared (unbucketed) L2".to_string());
+        }
+        let l2_rows = if hidden_gate != HiddenGate::None { 2 * bl2 } else { bl2 };
         let mut l2_weights_raw = Vec::new();
         let mut l2_biases_raw = Vec::new();
         if l2_size > 0 {
-            l2_weights_raw = vec![0i16; l2_input_size * bl2];
+            l2_weights_raw = vec![0i16; l2_input_size * l2_rows];
             read_i16_slice(reader, &mut l2_weights_raw)?;
-            l2_biases_raw = vec![0i16; bl2];
+            l2_biases_raw = vec![0i16; l2_rows];
             read_i16_slice(reader, &mut l2_biases_raw)?;
         }
 
@@ -3425,7 +3504,11 @@ impl NNUENet {
         let (king_bucket_tbl, king_mirror_tbl) = compute_king_buckets(kb_layout);
 
         let activation = if use_pairwise { "pairwise" } else if use_screlu { "SCReLU" } else { "CReLU" };
-        let dual_str = if dual_l1 { " dual" } else { "" };
+        let dual_str = match hidden_gate {
+            HiddenGate::None => if dual_l1 { " dual" } else { "" },
+            HiddenGate::Pair => if dual_l1 { " dual gate=pair" } else { " gate=pair" },
+            HiddenGate::Sq => if dual_l1 { " dual gate=sq" } else { " gate=sq" },
+        };
         let bucket_str = match kb_layout {
             KbLayout::Uniform   => "",
             KbLayout::Consensus => " consensus-kb",
@@ -3664,6 +3747,8 @@ impl NNUENet {
             dual_l1,
             has_l1_raw,
             l1_raw_w,
+            hidden_gate,
+            l2_rows,
             threat_weights,
             num_threat_features,
             has_threats,
@@ -4327,6 +4412,9 @@ impl NNUENet {
 
         // L2 or output
         if self.l2_per_bucket > 0 {
+            if self.hidden_gate != HiddenGate::None {
+                return self.gated_l2_output(&l1_out[..l1_out_count], bucket, raw_f);
+            }
             let l2_pb = self.l2_per_bucket;
             let l2_total = self.l2_size;
             let l2_off = if self.bucketed_hidden { bucket * l2_pb } else { 0 };
@@ -4464,6 +4552,66 @@ impl NNUENet {
         let out_w = &self.out_weights_f[bucket * l1_pb..bucket * l1_pb + l1_pb];
         let mut out_f = self.out_bias_f[bucket];
         for i in 0..l1 { out_f += l1_out[i] * out_w[i]; }
+        ((out_f + raw_f) * EVAL_SCALE as f32) as i32
+    }
+
+    /// One L2 half: `out[k] = biases[off + k] + Σ_i l1_out[i] · W[i·rows + off + k]`
+    /// for `k < n`. Uses the same kernels, in the same summation order, as the
+    /// ungated L2 (32-wide SIMD where present, else the skip-zero scalar loop),
+    /// so a gated net's value half is computed bit-identically to an ungated
+    /// L2 with the same weights.
+    #[inline(always)]
+    fn l2_half(&self, l1_out: &[f32], off: usize, n: usize, out: &mut [f32]) {
+        let rows = self.l2_rows;
+        let w = &self.l2_weights_f;
+        let b = &self.l2_biases_f;
+        debug_assert!(out.len() >= n && off + n <= rows);
+        #[cfg(target_arch = "x86_64")]
+        if n == 32 && self.has_avx512 {
+            unsafe { l2_fmadd_avx512_x32(l1_out, l1_out.len(), w, rows, off, b, out.as_mut_ptr()); }
+            return;
+        } else if n == 32 && self.has_avx2 {
+            unsafe { l2_fmadd_avx2_x32(l1_out, l1_out.len(), w, rows, off, b, out.as_mut_ptr()); }
+            return;
+        }
+        #[cfg(target_arch = "aarch64")]
+        if n == 32 && self.has_neon {
+            unsafe { l2_fmadd_neon_x32(l1_out, l1_out.len(), w, rows, off, b, out.as_mut_ptr()); }
+            return;
+        }
+        out[..n].copy_from_slice(&b[off..off + n]);
+        for (i, &x) in l1_out.iter().enumerate() {
+            if x == 0.0 { continue; }
+            let row = &w[i * rows + off..i * rows + off + n];
+            for k in 0..n { out[k] += x * row[k]; }
+        }
+    }
+
+    /// Gated L2 + output layer (see [`HiddenGate`]). `l1_out` is the activated
+    /// L1 output (dual-concatenated when `dual_l1`); `raw_f` the raw L1 readout
+    /// term. Returns centipawns exactly as the ungated tail does.
+    #[inline(never)]
+    fn gated_l2_output(&self, l1_out: &[f32], bucket: usize, raw_f: f32) -> i32 {
+        let l2 = self.l2_per_bucket;
+        assert!(l2 <= NNUE_L2_BUF, "l2 {} exceeds NNUE_L2_BUF {}", l2, NNUE_L2_BUF);
+        let mut g = [0.0f32; NNUE_L2_BUF];
+        let mut h2 = [0.0f32; NNUE_L2_BUF];
+        self.l2_half(l1_out, 0, l2, &mut g);   // gate rows [0, l2)
+        self.l2_half(l1_out, l2, l2, &mut h2); // value rows [l2, 2*l2)
+        let gate = self.hidden_gate;
+        for k in 0..l2 { h2[k] = gate.apply(g[k], h2[k]); }
+        let out_w = &self.out_weights_f[bucket * l2..bucket * l2 + l2];
+        let bias = self.out_bias_f[bucket];
+        // Same output-dot dispatch as the ungated tail, so the canonical
+        // association (see `dot_out_canonical`) holds for gated nets too.
+        #[cfg(target_arch = "x86_64")]
+        let out_f = if self.has_avx2 && l2 == 32 {
+            unsafe { dot_fmadd_avx2_x32(&h2[..32], &out_w[..32], bias) }
+        } else {
+            dot_out_canonical(&h2[..l2], &out_w[..l2], bias)
+        };
+        #[cfg(not(target_arch = "x86_64"))]
+        let out_f = dot_out_canonical(&h2[..l2], &out_w[..l2], bias);
         ((out_f + raw_f) * EVAL_SCALE as f32) as i32
     }
 
@@ -9101,5 +9249,269 @@ mod tests {
         eprintln!("  rows with any |w| > 127: {} of {} ({:.2}%)", sat_rows, rows, 100.0 * sat_rows as f64 / rows as f64);
         let above = (hist[4] + hist[5]) as f64;
         eprintln!("  weights outside i8 range: {:.4}%", 100.0 * above / n);
+    }
+}
+
+/// Gated-L2 (`HiddenGate`) agreement tests. A synthetic Bullet-layout
+/// `quantised.bin` is written in memory, put through the real converter and
+/// loader, and the engine's gated tail is checked against a float reference
+/// that reads the weights back in the TRAINER's layout. Weights are chosen on
+/// the converter's quantisation grids so conversion is lossless and any
+/// disagreement is a layout or arithmetic error, not rounding.
+#[cfg(test)]
+mod hidden_gate_tests {
+    use super::*;
+    use crate::bullet_convert;
+
+    const H: usize = 256; // FT width
+    const L1: usize = 16;
+    const L2: usize = 32;
+    const OB: usize = NNUE_OUTPUT_BUCKETS;
+    const L2_IN: usize = 2 * L1; // dual L1
+
+    struct Rng(u64);
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            self.0 ^= self.0 << 13; self.0 ^= self.0 >> 7; self.0 ^= self.0 << 17; self.0
+        }
+        fn int(&mut self, lo: i32, hi: i32) -> i32 { lo + (self.next() % (hi - lo + 1) as u64) as i32 }
+        fn unit(&mut self) -> f32 { (self.next() % 1_000_001) as f32 / 1_000_000.0 }
+    }
+
+    /// Float hidden weights in the trainer's saved layout (column-major, so
+    /// `w[i * rows + k]` is input `i` -> output `k`).
+    struct Hidden {
+        l2w: Vec<f32>, // [L2_IN][l2_rows]
+        l2b: Vec<f32>, // [l2_rows]
+        l3w: Vec<f32>, // [L2][OB]
+        l3b: Vec<f32>, // [OB]
+        l1rw: Vec<f32>,
+    }
+
+    /// Serialise a Bullet quantised.bin for the production recipe shape
+    /// (pairwise, int8 L1, dual, raw L1 readout, no threats) with the given
+    /// hidden weights; FT/L1 weights come from `seed` so two calls with the
+    /// same seed share everything up to the L2 input.
+    fn write_bin(path: &std::path::Path, seed: u64, hid: &Hidden) {
+        let mut r = Rng(seed);
+        let mut b: Vec<u8> = Vec::new();
+        let psq = 16 * 768;
+        for _ in 0..psq * H { b.extend_from_slice(&(r.int(-30, 30) as i16).to_le_bytes()); }
+        for _ in 0..H { b.extend_from_slice(&(r.int(60, 200) as i16).to_le_bytes()); }
+        for _ in 0..H * L1 { b.push(r.int(-60, 60) as i8 as u8); }
+        for _ in 0..L1 { b.extend_from_slice(&(r.int(-64, 64) as f32 / 64.0).to_le_bytes()); }
+        for &x in hid.l2w.iter().chain(&hid.l2b).chain(&hid.l3w).chain(&hid.l3b).chain(&hid.l1rw) {
+            b.extend_from_slice(&x.to_le_bytes());
+        }
+        std::fs::write(path, b).unwrap();
+    }
+
+    fn random_hidden(seed: u64, l2_rows: usize) -> Hidden {
+        let mut r = Rng(seed);
+        // On the converter's grids: L2 at 1/64, L3 weights 1/64, L3 bias 1/4096.
+        Hidden {
+            l2w: (0..L2_IN * l2_rows).map(|_| r.int(-48, 48) as f32 / 64.0).collect(),
+            l2b: (0..l2_rows).map(|_| r.int(-32, 64) as f32 / 64.0).collect(),
+            l3w: (0..L2 * OB).map(|_| r.int(-64, 64) as f32 / 64.0).collect(),
+            l3b: (0..OB).map(|_| r.int(-2048, 2048) as f32 / 4096.0).collect(),
+            l1rw: (0..L1).map(|_| r.int(-64, 64) as f32 / 256.0).collect(),
+        }
+    }
+
+    fn convert(bin: &std::path::Path, out: &std::path::Path, gate: HiddenGate) -> NNUENet {
+        bullet_convert::convert_v7(
+            bin.to_str().unwrap(), out.to_str().unwrap(),
+            true, true, L1, L2, true, false, H, false, true,
+            bullet_convert::KbLayout::Consensus, 16, 0, true, false, true, gate,
+        ).expect("convert");
+        NNUENet::load(out.to_str().unwrap()).expect("load")
+    }
+
+    fn tmp(name: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("coda_gate_{}_{}", std::process::id(), name))
+    }
+
+    /// Trainer-side float reference of the gated tail: `l2_rows = 2*L2`,
+    /// rows [0, L2) gate, [L2, 2*L2) value, output = l3 · gate(g, v) + l3b + raw.
+    fn reference(hid: &Hidden, gate: HiddenGate, x: &[f32], bucket: usize, raw: f32) -> f64 {
+        let rows = 2 * L2;
+        let crelu = |t: f64| t.clamp(0.0, 1.0);
+        let mut out = hid.l3b[bucket] as f64;
+        for k in 0..L2 {
+            let mut g = hid.l2b[k] as f64;
+            let mut v = hid.l2b[L2 + k] as f64;
+            for i in 0..L2_IN {
+                g += x[i] as f64 * hid.l2w[i * rows + k] as f64;
+                v += x[i] as f64 * hid.l2w[i * rows + L2 + k] as f64;
+            }
+            let a = match gate {
+                HiddenGate::Pair => crelu(g) * crelu(v),
+                HiddenGate::Sq => crelu(g) * crelu(g) * crelu(v),
+                HiddenGate::None => unreachable!(),
+            };
+            out += a * hid.l3w[k * OB + bucket] as f64;
+        }
+        (out + raw as f64) * EVAL_SCALE as f64
+    }
+
+    #[test]
+    fn hidden_gate_flag_roundtrip() {
+        for g in [HiddenGate::None, HiddenGate::Pair, HiddenGate::Sq] {
+            let bits = g.to_arch_flags2_bits();
+            assert_eq!(bits & !ARCH2_GATE_MASK, 0);
+            // Other arch_flags2 bits must not disturb the field.
+            assert_eq!(HiddenGate::from_arch_flags2(bits | 1 | 16), Some(g));
+        }
+        assert_eq!(HiddenGate::from_arch_flags2(ARCH2_GATE_MASK), None);
+    }
+
+    /// The engine's gated tail (loaded through the real converter + loader)
+    /// matches the float reference on random L1 activations, for both modes.
+    #[test]
+    fn gated_tail_matches_float_reference() {
+        let _space = crate::threats::FEATURE_SPACE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::init();
+        for (gi, gate) in [HiddenGate::Pair, HiddenGate::Sq].into_iter().enumerate() {
+            let hid = random_hidden(0x9e37_79b9 + gi as u64, 2 * L2);
+            let (bin, out) = (tmp(&format!("ref{gi}.bin")), tmp(&format!("ref{gi}.nnue")));
+            write_bin(&bin, 7, &hid);
+            // Every dispatch tier the gated tail can take on this host: native,
+            // AVX-2 without AVX-512, and the scalar fallback.
+            for tier in 0..3 {
+            let mut net = convert(&bin, &out, gate);
+            if tier >= 1 { net.has_avx512 = false; }
+            if tier >= 2 { net.has_avx2 = false; net.has_neon = false; }
+            assert_eq!(net.hidden_gate, gate);
+            assert_eq!(net.l2_rows, 2 * L2);
+            assert_eq!(net.l2_per_bucket, L2);
+
+            let mut r = Rng(12345 + gi as u64);
+            let mut max_err = 0.0f64;
+            let mut gated_units = 0usize; // sanity: the gate must actually bite
+            for trial in 0..400 {
+                // Dual layout: crelu half then its square; ~30% exact zeros.
+                let mut x = [0.0f32; L2_IN];
+                for i in 0..L1 {
+                    let c = if r.int(0, 9) < 3 { 0.0 } else { r.unit() };
+                    x[i] = c;
+                    x[L1 + i] = c * c;
+                }
+                let bucket = trial % OB;
+                let raw = (r.int(-100, 100) as f32) / 400.0;
+                let got = net.gated_l2_output(&x, bucket, raw);
+                let want = reference(&hid, gate, &x, bucket, raw);
+                let err = (got as f64 - want.trunc()).abs();
+                max_err = max_err.max(err);
+                assert!(err <= 1.0,
+                    "{:?} trial {}: engine {} vs reference {:.4}", gate, trial, got, want);
+                for k in 0..L2 {
+                    let mut g = hid.l2b[k];
+                    for i in 0..L2_IN { g += x[i] * hid.l2w[i * 2 * L2 + k]; }
+                    if g > 0.0 && g < 1.0 { gated_units += 1; }
+                }
+            }
+            eprintln!("{:?} tier {}: max |engine - reference| = {} cp over 400 vectors, \
+                       {} partially-open gate units", gate, tier, max_err, gated_units);
+            assert!(gated_units > 1000, "test vectors never exercised a partial gate");
+            }
+            let _ = std::fs::remove_file(&bin);
+            let _ = std::fs::remove_file(&out);
+        }
+    }
+
+    fn eval_fen(net: &NNUENet, fen: &str) -> i32 {
+        use crate::threat_accum::ThreatStack;
+        let b = crate::board::Board::from_fen(fen);
+        let mut acc = NNUEAccumulator::new(net.hidden_size);
+        let mut ts = ThreatStack::new(net.hidden_size);
+        ts.active = net.has_threats;
+        crate::eval::evaluate_nnue(&b, net, &mut acc, &ts)
+    }
+
+    const FENS: [&str; 6] = [
+        "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+        "r1bqkb1r/pppp1ppp/2n2n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4",
+        "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+        "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",
+        "6k1/5ppp/8/8/8/8/5PPP/3R2K1 b - - 0 1",
+        "4k3/8/8/8/8/8/8/4K2Q w - - 0 1",
+    ];
+
+    /// End to end through the full forward pass: a gate pinned open (gate rows
+    /// zero-weight, bias >= 1, so crelu and screlu both read exactly 1) must
+    /// reproduce the ungated net built from the value rows, bit for bit.
+    /// This pins the routing, the value-half layout and the output tail.
+    #[test]
+    fn saturated_gate_reproduces_ungated_net() {
+        let _space = crate::threats::FEATURE_SPACE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::init();
+        let base = random_hidden(424242, L2);
+        let (ubin, unet) = (tmp("u.bin"), tmp("u.nnue"));
+        write_bin(&ubin, 99, &base);
+        let ungated = convert(&ubin, &unet, HiddenGate::None);
+        let _ = std::fs::remove_file(&ubin);
+        let _ = std::fs::remove_file(&unet);
+
+        // Gated net: gate rows 0 weight / bias 2.0, value rows = the ungated L2.
+        let rows = 2 * L2;
+        let mut l2w = vec![0.0f32; L2_IN * rows];
+        for i in 0..L2_IN {
+            for k in 0..L2 { l2w[i * rows + L2 + k] = base.l2w[i * L2 + k]; }
+        }
+        let mut l2b = vec![2.0f32; rows];
+        l2b[L2..].copy_from_slice(&base.l2b);
+        let gated_hid = Hidden { l2w, l2b, l3w: base.l3w.clone(), l3b: base.l3b.clone(), l1rw: base.l1rw.clone() };
+
+        for (gi, gate) in [HiddenGate::Pair, HiddenGate::Sq].into_iter().enumerate() {
+            let (gbin, gnet) = (tmp(&format!("g{gi}.bin")), tmp(&format!("g{gi}.nnue")));
+            write_bin(&gbin, 99, &gated_hid);
+            let gated = convert(&gbin, &gnet, gate);
+            let _ = std::fs::remove_file(&gbin);
+            let _ = std::fs::remove_file(&gnet);
+            let mut distinct = std::collections::BTreeSet::new();
+            for fen in FENS {
+                let (u, g) = (eval_fen(&ungated, fen), eval_fen(&gated, fen));
+                eprintln!("{:?} {:<70} ungated {:+6} gated {:+6}", gate, fen, u, g);
+                assert_eq!(u, g, "{:?}: saturated gate diverged from ungated on {}", gate, fen);
+                distinct.insert(u);
+            }
+            assert!(distinct.len() > 2, "evals degenerate — test would not catch a layout error");
+        }
+    }
+
+    /// A gate that is NOT saturated must change the evaluation, and the two
+    /// modes must differ from each other — guards against the gate being
+    /// silently ignored somewhere on the full forward path.
+    #[test]
+    fn live_gate_changes_full_eval() {
+        let _space = crate::threats::FEATURE_SPACE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::init();
+        let hid = random_hidden(777, 2 * L2);
+        let mut evals = Vec::new();
+        for (gi, gate) in [HiddenGate::Pair, HiddenGate::Sq].into_iter().enumerate() {
+            let (bin, out) = (tmp(&format!("live{gi}.bin")), tmp(&format!("live{gi}.nnue")));
+            write_bin(&bin, 5, &hid);
+            let net = convert(&bin, &out, gate);
+            let _ = std::fs::remove_file(&bin);
+            let _ = std::fs::remove_file(&out);
+            evals.push(FENS.iter().map(|f| eval_fen(&net, f)).collect::<Vec<_>>());
+        }
+        eprintln!("pair {:?}\nsq   {:?}", evals[0], evals[1]);
+        assert_ne!(evals[0], evals[1], "pair and sq gates produced identical evals");
+    }
+
+    /// A gated L2 is defined for a shared L2 only; the converter must refuse a bucketed one.
+    #[test]
+    fn converter_rejects_gate_on_bucketed_l2() {
+        let hid = random_hidden(1, 2 * L2);
+        let (bin, out) = (tmp("bk.bin"), tmp("bk.nnue"));
+        write_bin(&bin, 1, &hid);
+        let r = bullet_convert::convert_v7(
+            bin.to_str().unwrap(), out.to_str().unwrap(),
+            true, true, L1, L2, true, true, H, false, true,
+            bullet_convert::KbLayout::Consensus, 16, 0, true, false, true, HiddenGate::Pair);
+        let _ = std::fs::remove_file(&bin);
+        let _ = std::fs::remove_file(&out);
+        assert!(r.is_err());
     }
 }

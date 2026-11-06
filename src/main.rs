@@ -576,6 +576,11 @@ enum Commands {
         /// learned read of the unclamped L1 pre-activations. Sets arch_flags2 bit 4.
         #[arg(long)]
         l1_raw: bool,
+        /// Net was trained with a gated second hidden layer (trainer
+        /// --hidden-gate pair|sq): L2 emits a gate half and a value half whose
+        /// product feeds the output. Sets arch_flags2 bits 5-6. Default none.
+        #[arg(long, default_value = "none")]
+        hidden_gate: String,
         /// Source output bucket count (default 8, set to 2 for 2-bucket nets)
         #[arg(long, default_value_t = 8)]
         output_buckets: usize,
@@ -1403,7 +1408,7 @@ fn main() {
             run_binpack_material(&input, max);
         }
 
-        Some(Commands::ConvertBullet { input, output, screlu, pairwise, hidden, hidden2, int8l1, bucketed_hidden, ft_size, int16_hidden, dual, consensus_buckets, kb_layout, kb_count, threats, output_buckets, hl_crelu, pawn_pairs, l1_raw }) => {
+        Some(Commands::ConvertBullet { input, output, screlu, pairwise, hidden, hidden2, int8l1, bucketed_hidden, ft_size, int16_hidden, dual, consensus_buckets, kb_layout, kb_count, threats, output_buckets, hl_crelu, pawn_pairs, l1_raw, hidden_gate }) => {
             // Resolve king bucket layout and count. Explicit --kb-layout wins;
             // --consensus-buckets is the legacy path for 16-bucket consensus.
             let layout = if !kb_layout.is_empty() {
@@ -1417,9 +1422,17 @@ fn main() {
                 bullet_convert::KbLayout::Uniform
             };
             let count = if kb_count > 0 { kb_count } else { layout.default_count() };
+            let gate = match nnue::HiddenGate::from_name(&hidden_gate) {
+                Ok(g) => g,
+                Err(e) => { eprintln!("Error: {}", e); std::process::exit(1); }
+            };
+            if gate != nnue::HiddenGate::None && hidden == 0 {
+                eprintln!("Error: --hidden-gate requires a hidden-layer net (--hidden > 0)");
+                std::process::exit(1);
+            }
 
             let result = if hidden > 0 {
-                bullet_convert::convert_v7(&input, &output, screlu, pairwise, hidden, hidden2, int8l1, bucketed_hidden, ft_size, int16_hidden, dual, layout, count, threats, hl_crelu, pawn_pairs, l1_raw)
+                bullet_convert::convert_v7(&input, &output, screlu, pairwise, hidden, hidden2, int8l1, bucketed_hidden, ft_size, int16_hidden, dual, layout, count, threats, hl_crelu, pawn_pairs, l1_raw, gate)
             } else {
                 bullet_convert::convert_v5(&input, &output, screlu, pairwise, output_buckets, layout, count)
             };
@@ -1645,6 +1658,7 @@ fn run_check_net(net_path: &str) {
     let mut arch = format!("FT={}", net.hidden_size);
     if net.l1_size > 0 { arch += &format!(" L1={}", net.l1_size); }
     if net.l2_size > 0 { arch += &format!(" L2={}", net.l2_size); }
+    if net.hidden_gate != nnue::HiddenGate::None { arch += &format!(" gate={:?}", net.hidden_gate); }
     if net.use_screlu { arch += " SCReLU"; }
     if net.use_pairwise { arch += " pairwise"; }
     if net.l1_scale == 64 { arch += " int8L1"; }
@@ -2017,7 +2031,7 @@ fn run_dump_net_stats(net_path: &str, per_bucket: bool, per_kb: bool, histogram:
 
     // L2 weights — float
     if net.l2_per_bucket > 0 {
-        let bl2 = net.l2_size;
+        let bl2 = net.l2_rows; // stored L2 rows (doubled for a gated L2)
         let l2_input = if net.dual_l1 { net.l1_per_bucket * 2 } else { net.l1_per_bucket };
         // l2_weights_f scale: divided by qa_l1 already
         let l2w_scaled: Vec<i64> = net.l2_weights_f.iter().map(|&w| (w * 1000.0).round() as i64).collect();
