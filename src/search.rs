@@ -3645,11 +3645,19 @@ fn select_smp_candidate(cands: &[SmpCandidate], allow_helper: bool) -> Option<us
         return None;
     }
 
+    // Electorate: only threads that completed the deepest iteration in the
+    // pool may vote or be chosen (a proven mate keeps its override). A
+    // shallower thread has not seen what the deeper search saw; a T=4
+    // self-play probe (19k moves) found a shallower helper overriding with a
+    // different move on 2.1% of moves, usually one ply behind.
+    let max_depth = cands.iter().map(|c| c.depth).max().unwrap();
+    let eligible = |c: &SmpCandidate| c.depth == max_depth || c.score >= MATE_IN_MAX_PLY;
+
     // Sum depth-weighted votes per move. The offset keeps the lowest-scoring
     // candidate's vote positive, so depth still breaks equal-score choices.
-    let min_score = cands.iter().map(|c| c.score).min().unwrap();
+    let min_score = cands.iter().filter(|c| eligible(c)).map(|c| c.score).min().unwrap();
     let mut votes: Vec<(Move, i64)> = Vec::with_capacity(cands.len());
-    for c in cands {
+    for c in cands.iter().filter(|c| eligible(c)) {
         let weight = c.depth as i64 * (c.score as i64 - min_score as i64 + 14);
         if let Some(entry) = votes.iter_mut().find(|(m, _)| *m == c.mv) {
             entry.1 += weight;
@@ -3665,8 +3673,11 @@ fn select_smp_candidate(cands: &[SmpCandidate], allow_helper: bool) -> Option<us
             .unwrap_or(0)
     };
 
-    let mut best = 0usize;
-    for i in 1..cands.len() {
+    let mut best = cands.iter().position(|c| eligible(c)).unwrap();
+    for i in (best + 1)..cands.len() {
+        if !eligible(&cands[i]) {
+            continue;
+        }
         let (score, mv, depth) = (cands[i].score, cands[i].mv, cands[i].depth);
         let (best_score, best_move) = (cands[best].score, cands[best].mv);
         if best_score >= MATE_IN_MAX_PLY {
@@ -3844,6 +3855,20 @@ fn search_smp_inner(board: &mut Board, info: &mut SearchInfo, limits: &SearchLim
     // pv_table[0][0] == returned bestmove and can emit the ponder. Main's own PV
     // is already in info and richer, so leave it when main wins.
     let winner_mv = cands[best].mv;
+    // PROBE (local only): log override stats for the deepest-depth electorate question.
+    if std::env::var("CODA_SMP_PROBE").is_ok() {
+        use std::io::Write;
+        let max_d = cands.iter().map(|c| c.depth).max().unwrap_or(0);
+        let main_d = cands.iter().find(|c| c.is_main).map(|c| c.depth).unwrap_or(-1);
+        let w = &cands[best];
+        let path = format!("/tmp/coda_smp_probe_{}.log", std::process::id());
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+            let _ = writeln!(f, "override={} same_move_as_main={} win_depth={} max_depth={} main_depth={} shallower={}",
+                !w.is_main as u8,
+                (w.mv == main_move) as u8,
+                w.depth, max_d, main_d, (w.depth < max_d) as u8);
+        }
+    }
     if !cands[best].is_main {
         info.pv_table[0][0] = winner_mv;
         info.last_score = cands[best].score;
@@ -9376,7 +9401,7 @@ mod tests {
             SmpCandidate {
                 mv: helper_move,
                 score: 100,
-                depth: 8,
+                depth: 12,
                 sel_depth: 14,
                 ponder: NO_MOVE,
                 is_main: false,
@@ -9384,7 +9409,7 @@ mod tests {
             SmpCandidate {
                 mv: helper_move,
                 score: 100,
-                depth: 8,
+                depth: 12,
                 sel_depth: 14,
                 ponder: NO_MOVE,
                 is_main: false,
@@ -9393,6 +9418,16 @@ mod tests {
 
         assert_eq!(select_smp_candidate(&cands, false), Some(0));
         assert_ne!(select_smp_candidate(&cands, true), Some(0));
+
+        // Shallower helpers cannot outvote a deeper thread: the deeper search
+        // may already have seen the refutation they missed.
+        let mut shallow = cands.clone();
+        shallow[1].depth = 8;
+        shallow[2].depth = 8;
+        assert_eq!(select_smp_candidate(&shallow, true), Some(0));
+        // ...unless a shallower thread has found a proven mate.
+        shallow[1].score = MATE_IN_MAX_PLY + 10;
+        assert_eq!(select_smp_candidate(&shallow, true), Some(1));
     }
 
     #[test]
