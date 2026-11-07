@@ -814,6 +814,13 @@ tunables!(
     // endgames — the lever against the net over-rating simplified positions.
     // Non-core / experimental.
     (MAT_SCALE_BASE, 22400, 14000, 30000, 1000.0, false),
+    // Previous-PV guards (0 = off, 1 = on). While a node lies on the line the
+    // previous iteration's root PV predicted (`SearchInfo::on_prev_pv`), skip
+    // IIR / quiet-SEE pruning there, so the expected main line is neither
+    // shallowed nor pruned by those two heuristics. Each is a switch, not a
+    // magnitude, so they are non-core.
+    (FOLLOW_PV_SKIP_IIR, 1, 0, 1, 0.5, false),
+    (FOLLOW_PV_SKIP_SEE_QUIET, 1, 0, 1, 0.5, false),
 );
 
 // Demoted loose knobs: cross-tune analysis found SPSA drift dominating signal
@@ -1745,6 +1752,16 @@ pub struct SearchInfo {
     /// Triangular PV table
     pub pv_table: [[Move; MAX_PLY + 1]; MAX_PLY + 1],
     pub pv_len: [usize; MAX_PLY + 1],
+    /// Root PV of the previous completed iteration, snapshotted at the start of
+    /// each iteration (`snapshot_prev_pv`). Per-thread, like `pv_table`.
+    prev_pv: [Move; MAX_PLY + 1],
+    prev_pv_len: usize,
+    /// Per-ply: is this node on the line `prev_pv` predicted? True at the
+    /// root; a child inherits it only when the move that reached it equals
+    /// `prev_pv[parent ply]`. A null move (`NO_MOVE` in the undo stack) never
+    /// matches, so it breaks the line. Set on negamax entry, so a singular
+    /// verification re-entering the same ply recomputes the same value.
+    on_prev_pv: [bool; MAX_PLY + 1],
     /// MultiPV: number of top root lines to report (analysis only). Default 1.
     pub multipv: usize,
     /// Root moves banned from the current search (MultiPV secondary lines).
@@ -1818,6 +1835,16 @@ pub struct SearchInfo {
 }
 
 impl SearchInfo {
+    /// Bank the root PV as the line the next iteration will follow
+    /// (`on_prev_pv`). Called at the start of each iterative-deepening
+    /// iteration, when `pv_table[0]` holds the last completed iteration's PV
+    /// (empty before the first one, leaving only the root on the line).
+    fn snapshot_prev_pv(&mut self) {
+        let len = self.pv_len[0].min(MAX_PLY);
+        self.prev_pv[..len].copy_from_slice(&self.pv_table[0][..len]);
+        self.prev_pv_len = len;
+    }
+
     pub fn new(tt_mb: usize) -> Self {
         Self::new_with_tt(std::sync::Arc::new(TT::new(tt_mb)))
     }
@@ -1905,6 +1932,9 @@ impl SearchInfo {
             moved_to_stack: [0; MAX_PLY + 1],
             pv_table: [[NO_MOVE; MAX_PLY + 1]; MAX_PLY + 1],
             pv_len: [0; MAX_PLY + 1],
+            prev_pv: [NO_MOVE; MAX_PLY + 1],
+            prev_pv_len: 0,
+            on_prev_pv: [false; MAX_PLY + 1],
             multipv: 1,
             root_ban: Vec::new(),
             pawn_hist: alloc_zeroed_box(),
@@ -3953,6 +3983,7 @@ pub(crate) fn search_helper(board: &mut Board, info: &mut SearchInfo, _limits: &
     for depth in 1..=effective_max {
         if info.stop.load(Ordering::Relaxed) { break; }
         info.root_depth = depth;
+        info.snapshot_prev_pv();
 
         let score;
 
@@ -4484,6 +4515,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
         info.root_depth = depth;
         info.sel_depth = 0; // P2.8: reset per iteration (consensus) — the info line then reports THIS iteration's seldepth, not a whole-search running max
         let mut iter_pv_len: usize = 0; // P1.4: fresh best-PV snapshot per iteration
+        info.snapshot_prev_pv();
         // Ponderhit check: stop between iterations (not mid-search) to avoid
         // partial TT entries and PV inconsistency. The engine completes the
         // current iteration fully before stopping, producing clean state.
@@ -5554,6 +5586,23 @@ fn negamax(
         info.pv_len[ply_u] = 0;
     }
 
+    // Previous-PV line membership (see `SearchInfo::on_prev_pv`). The move
+    // that reached this node is the top of the undo stack; a null move is
+    // stored as NO_MOVE and so ends the line.
+    let on_prev_pv = if ply_u == 0 {
+        true
+    } else if ply_u <= MAX_PLY {
+        let parent = ply_u - 1;
+        info.on_prev_pv[parent]
+            && parent < info.prev_pv_len
+            && board.undo_stack.last().map_or(false, |u| u.mv == info.prev_pv[parent])
+    } else {
+        false
+    };
+    if ply_u <= MAX_PLY {
+        info.on_prev_pv[ply_u] = on_prev_pv;
+    }
+
     // Drawn-position detection must run BEFORE the MAX_PLY guard. At ply
     // >= MAX_PLY in drawn-material or repetition positions, the fall-back
     // `apply_halfmove_scale(info.eval(board), halfmove)` returns a possibly-
@@ -6481,7 +6530,9 @@ fn negamax(
     // IIR: moved after NMP so null search uses full depth, not IIR-reduced depth.
     // All 6 reference engines run NMP at full depth; IIR only applies to the
     // moves loop. Running IIR first silently reduces null depth by 1 at cut nodes.
-    if depth >= tp10(&IIR_MIN_DEPTH_10X) && tt_move == NO_MOVE && !in_check && (is_pv || cut_node) && FEAT_IIR.load(Ordering::Relaxed) {
+    if depth >= tp10(&IIR_MIN_DEPTH_10X) && tt_move == NO_MOVE && !in_check && (is_pv || cut_node) && FEAT_IIR.load(Ordering::Relaxed)
+        && !(on_prev_pv && tp(&FOLLOW_PV_SKIP_IIR) != 0)
+    {
         depth -= 1;
     }
 
@@ -6896,6 +6947,7 @@ fn negamax(
             && !is_loss(best_score)
             && beta < MATE_IN_MAX_PLY  // forced-win guard: don't SEE-prune quiets while proving a win
             && FEAT_SEE_PRUNE.load(Ordering::Relaxed)
+            && !(on_prev_pv && tp(&FOLLOW_PV_SKIP_SEE_QUIET) != 0)
         {
             let see_quiet_threshold = -see_quiet_mult * lmr_d * lmr_d;
             if !see_ge(board, mv, see_quiet_threshold) {
