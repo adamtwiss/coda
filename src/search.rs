@@ -421,6 +421,17 @@ tunables!(
     // Clock-keyed: LMR_TTALPHA_CENTI is the deep (root depth >= 17) value, the LTC walk #3709's 25; the
     // shallow value (root depth <= 14) is the STC walk #3701's 36 — see clock_blend.
     (LMR_TTALPHA_SHALLOW_CENTI, 36, 0, 150, 8.0, false),
+    // Refinements of the tt_pv reduce-less term (the flat LMR_SCALE below),
+    // centi-ply, each 0 = disabled (both 0 = bench-identical to before):
+    //   ABOVE: extra relief when the TT score is above alpha — the mirror of
+    //          LMR_TTALPHA_CENTI (TT score <= alpha reduces more), seeded at
+    //          that term's value, 32.
+    //   DEEP:  extra relief when the TT entry is at least as deep as this
+    //          node, seeded at a quarter of the flat tt_pv ply (25).
+    // Defaults are where Coda's own SPSA #4849 held them (33, 26) when tuned
+    // jointly with the rest of the LMR battery.
+    (LMR_TTPV_ABOVE_CENTI, 33, 0, 120, 8.0, false),
+    (LMR_TTPV_DEEP_CENTI, 26, 0, 120, 8.0, false),
     // cutoff_count LMR terms. When the child ply has failed high more than
     // twice under this node, reduce late moves more (with extra at non-PV
     // all-nodes). Seeded below source values for the double-counting reason
@@ -7296,6 +7307,17 @@ let singular_beta = tt_score_local - depth;
                 // Sticky: once a position is searched as PV, tt_pv stays set even at non-PV nodes.
                 if tt_pv {
                     reduction -= LMR_SCALE;
+                    // Refined relief: more when the TT entry agrees this node
+                    // beats alpha, and more when it was searched at least as
+                    // deep as we are now. Both terms only subtract.
+                    if tt_hit && tt_entry.flag != TT_FLAG_NONE {
+                        if score_from_tt(tt_entry.score, ply, board.halfmove) > alpha {
+                            reduction -= tp(&LMR_TTPV_ABOVE_CENTI);
+                        }
+                        if tt_entry.depth >= depth {
+                            reduction -= tp(&LMR_TTPV_DEEP_CENTI);
+                        }
+                    }
                 }
 
                 // LMR correction: TT bound already below alpha.
