@@ -418,6 +418,16 @@ tunables!(
     // already carries a move-count term. Ranges run to 0 so SPSA can kill
     // dead terms.
     (LMR_TTALPHA_CENTI, 32, 0, 150, 8.0, true),
+    // Child-eval LMR (idea from Incipit, where it was invented independently):
+    // after the move is made, compare the child's corrected static eval
+    // (from this node's side) with alpha. A move whose resulting position
+    // already sits below alpha is reduced more, one sitting above alpha less.
+    // DIV is centipawns per ply of adjustment; default = FUT_PER_DEPTH's 96,
+    // i.e. the same cp-per-ply exchange rate futility uses for its depth
+    // margin. CAP bounds the term at one ply (LMR_SCALE) either way; its range
+    // stops short of 0 so SPSA cannot silently disable the term.
+    (LMR_CHILD_EVAL_DIV, 96, 40, 400, 12.0, true),
+    (LMR_CHILD_EVAL_CAP_CENTI, 100, 25, 200, 12.0, true),
     // Clock-keyed: LMR_TTALPHA_CENTI is the deep (root depth >= 17) value, the LTC walk #3709's 25; the
     // shallow value (root depth <= 14) is the STC walk #3701's 36 — see clock_blend.
     (LMR_TTALPHA_SHALLOW_CENTI, 36, 0, 150, 8.0, false),
@@ -1758,6 +1768,12 @@ pub struct SearchInfo {
     /// exact hash match, so a null-move child, a position the parent never
     /// wrote, or a stale slot falls back to `Board::checkers`.
     checkers_hint: [(u64, Bitboard); MAX_PLY + 1],
+    /// Raw (halfmove-independent, uncorrected) static eval handed from parent
+    /// to child, same contract as `checkers_hint`: slot `ply` holds the hash of
+    /// the position and the value `info.eval` returned for it. Child-eval LMR
+    /// evaluates the child before choosing its reduction; the child then reuses
+    /// that value instead of paying for a second NNUE evaluation.
+    eval_hint: [(u64, i32); MAX_PLY + 1],
     /// Per-ply tt_pv, so a child can inherit its parent's PV-region flag.
     tt_pv_stack: [bool; MAX_PLY + 1],
     /// LMR reduction applied at each ply (for hindsight reduction gating)
@@ -1896,6 +1912,7 @@ impl SearchInfo {
             nmp_min_ply: 0,
             static_evals: [0; MAX_PLY + 1],
             checkers_hint: [(0, 0); MAX_PLY + 1],
+            eval_hint: [(0, 0); MAX_PLY + 1],
             tt_pv_stack: [false; MAX_PLY + 1],
             reductions: [0; MAX_PLY + 1],
             excluded_move: [NO_MOVE; MAX_PLY + 1],
@@ -2826,6 +2843,15 @@ fn prefetch_corr_rows(info: &SearchInfo, board: &Board, ply: usize) {
 /// This node's checker set: the parent's hint when it is for this exact
 /// position (see `SearchInfo::checkers_hint`), else computed fresh.
 #[inline(always)]
+/// Raw static eval for the node at `ply`: the parent's handed-down value when it
+/// is for this exact position (see `SearchInfo::eval_hint`), else a fresh eval.
+fn raw_eval_for_node(info: &mut SearchInfo, board: &Board, ply: usize) -> i32 {
+    match info.eval_hint.get(ply) {
+        Some(&(key, ev)) if key == board.hash => ev,
+        _ => info.eval(board),
+    }
+}
+
 fn checkers_for_node(info: &SearchInfo, board: &Board, ply: usize) -> Bitboard {
     match info.checkers_hint.get(ply) {
         Some(&(key, chk)) if key == board.hash => {
@@ -3915,6 +3941,7 @@ pub(crate) fn search_helper(board: &mut Board, info: &mut SearchInfo, _limits: &
     info.stats = PruneStats::default();
     info.static_evals = [0; MAX_PLY + 1];
     info.checkers_hint = [(0, 0); MAX_PLY + 1];
+    info.eval_hint = [(0, 0); MAX_PLY + 1];
     info.reductions = [0; MAX_PLY + 1];
     info.excluded_move = [NO_MOVE; MAX_PLY + 1];
     info.moved_piece_stack = [0; MAX_PLY + 1];
@@ -4278,6 +4305,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     // Clear static evals, excluded moves, depth tracking
     info.static_evals = [0; MAX_PLY + 1];
     info.checkers_hint = [(0, 0); MAX_PLY + 1];
+    info.eval_hint = [(0, 0); MAX_PLY + 1];
     info.depth_nodes = [0; MAX_PLY + 1];
     info.completed_depth = 0;
     // Reset the shared instant-reply gate inputs for THIS search. The UCI
@@ -6136,7 +6164,7 @@ fn negamax(
             info.stats_tt_static_eval_hits += 1;
             tt_static_eval_hit = true;
         } else {
-            raw_eval = info.eval(board);
+            raw_eval = raw_eval_for_node(info, board, ply_u);
             // Eval-only TT writeback: when we paid for an NNUE eval AND
             // there's no existing TT entry, seed the TT with static_eval
             // so later visits of this position (from different move
@@ -7405,6 +7433,36 @@ let singular_beta = tt_score_local - depth;
                     reduction -= complexity * LMR_SCALE / tp(&LMR_COMPLEXITY_DIV); // CONTINUOUS
                 }
 
+                // Child-eval LMR (see LMR_CHILD_EVAL_DIV). The board is
+                // post-make_move, so this is the eval the child would compute
+                // itself: TT static eval if present, else NNUE, handed down
+                // via eval_hint so the child does not evaluate twice. Skipped
+                // when the child is in check (no static eval there) and when
+                // alpha is a decisive score (the gap would be meaningless).
+                if !gives_check && !crate::tt::is_decisive(alpha) && ply_u + 1 <= MAX_PLY {
+                    let child_tt = info.tt.probe(board.hash);
+                    let child_raw = if FEAT_TT_STATIC_EVAL.load(Ordering::Relaxed)
+                        && child_tt.hit && child_tt.static_eval > -4095
+                    {
+                        child_tt.static_eval
+                    } else {
+                        let ev = info.eval(board);
+                        info.eval_hint[ply_u + 1] = (board.hash, ev);
+                        ev
+                    };
+                    let child_scaled = apply_halfmove_scale(child_raw, board.halfmove);
+                    let child_eval = if FEAT_CORRECTION.load(Ordering::Relaxed) {
+                        corrected_eval(info, board, child_scaled, ply_u + 1)
+                    } else {
+                        child_scaled
+                    };
+                    // Shortfall of the move's resulting position below alpha,
+                    // from this node's side: positive = looks bad, reduce more.
+                    let shortfall = alpha + child_eval;
+                    let cap = tp(&LMR_CHILD_EVAL_CAP_CENTI);
+                    reduction += (shortfall * LMR_SCALE / tp(&LMR_CHILD_EVAL_DIV)).clamp(-cap, cap); // CONTINUOUS
+                }
+
                 // Threat-density LMR: reduce less when multiple pieces are
                 // under pawn attack. Tactical positions need deeper search.
                 // Fixed-point divisor: stored × 10. Avoids tp10 swallowing
@@ -8441,7 +8499,7 @@ fn quiescence_with_depth(
         info.stats_tt_static_eval_hits += 1;
         tt_entry.static_eval
     } else {
-        info.eval(board)
+        raw_eval_for_node(info, board, (ply as usize).min(MAX_PLY))
     };
     // Apply correction history to the QS stand-pat, mirroring negamax's
     // static-eval path (halfmove-scale THEN corrected_eval).
