@@ -64,7 +64,7 @@ pub fn evaluate_nnue(
     threat_stack: &crate::threat_accum::ThreatStack,
 ) -> i32 {
     acc.materialize(net, board);
-    let pc = crate::nnue::piece_count(board);
+    let key = crate::nnue::BucketKey::from_board(board);
 
     // DEBUG: compare ThreatStack vs full recompute
     #[cfg(debug_assertions)]
@@ -103,7 +103,7 @@ pub fn evaluate_nnue(
     }
 
 
-    let mut v = net.forward_with_threats(acc, board.side_to_move, pc, threat_stack);
+    let mut v = net.forward_with_threats(acc, board.side_to_move, key, threat_stack);
     // Dominant endgame mop-up gradient (lone-king-vs-matable only). WHITE-rel -> stm.
     let mu = endgame_mopup(board);
     v += if board.side_to_move == crate::types::WHITE { mu } else { -mu };
