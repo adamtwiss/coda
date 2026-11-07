@@ -1996,8 +1996,8 @@ fn parse_option(tokens: &[&str], info: &mut SearchInfo, num_threads: &mut usize,
                     if let Ok(v) = value.parse::<i32>() {
                         let clamped = v.max(min).min(max);
                         param.store(clamped, std::sync::atomic::Ordering::Relaxed);
-                        // Reinit LMR tables if C value changed
-                        if pname.starts_with("LMR_C") || pname == "LMR_BASE_CENTI" {
+                        // Reinit cached LMR tables if an input changed
+                        if crate::search::tunable_rebuilds_lmr(pname) {
                             crate::search::init_lmr();
                         }
                         println!("info string {} = {}", pname, clamped);

@@ -427,6 +427,45 @@ tunables!(
     // above. The >2 threshold is fixed, not a knob.
     (LMR_CUTOFF_CNT_CENTI, 61, 0, 250, 12.0, true),
     (LMR_CUTOFF_ALLNODE_CENTI, 21, 0, 150, 8.0, true),
+    // Pairwise interaction weights on quiet LMR's boolean context, in
+    // centi-ply. Each boolean already moves the reduction by a fixed amount on
+    // its own; these let a CONJUNCTION (e.g. cut node AND not improving) be
+    // worth more or less than the sum of its parts. Folded into
+    // LMR_PAIR_TABLE (indexed by the LMR_BIT_* mask) by init_lmr(), so the
+    // hot path is one load + add.
+    //
+    // Booleans: PV (window wider than null), CUT (expected cut node), IMP
+    // (improving), TTPV, TTNOISY (TT move is a capture/promotion), CHECK (move
+    // gives check), CUTOFF (child ply cutoff_count > 2). Two of the 21 pairs
+    // are omitted as degenerate: PV x CUT never co-occur (PV children are
+    // never labelled cut), and PV implies TTPV, so PV x TTPV would only
+    // duplicate the PV single term.
+    //
+    // Range +-100 = LMR_SCALE, one ply: five of the seven single terms are
+    // exactly one ply (PV, IMP, TTPV, TTNOISY, CHECK); CUT's bump is larger
+    // but includes the cut-vs-all shift, and CUTOFF's is smaller. An
+    // interaction bigger than a whole single term would mean the pair, not its
+    // parts, carries the signal — widen then, not before. c_end = range/10, as
+    // for the other centi-ply LMR terms. Default 0 = bench-identical.
+    (LMR_PAIR_PV_IMP, 0, -100, 100, 10.0, false),
+    (LMR_PAIR_PV_TTNOISY, 0, -100, 100, 10.0, false),
+    (LMR_PAIR_PV_CHECK, 0, -100, 100, 10.0, false),
+    (LMR_PAIR_PV_CUTOFF, 0, -100, 100, 10.0, false),
+    (LMR_PAIR_CUT_IMP, 0, -100, 100, 10.0, false),
+    (LMR_PAIR_CUT_TTPV, 0, -100, 100, 10.0, false),
+    (LMR_PAIR_CUT_TTNOISY, 0, -100, 100, 10.0, false),
+    (LMR_PAIR_CUT_CHECK, 0, -100, 100, 10.0, false),
+    (LMR_PAIR_CUT_CUTOFF, 0, -100, 100, 10.0, false),
+    (LMR_PAIR_IMP_TTPV, 0, -100, 100, 10.0, false),
+    (LMR_PAIR_IMP_TTNOISY, 0, -100, 100, 10.0, false),
+    (LMR_PAIR_IMP_CHECK, 0, -100, 100, 10.0, false),
+    (LMR_PAIR_IMP_CUTOFF, 0, -100, 100, 10.0, false),
+    (LMR_PAIR_TTPV_TTNOISY, 0, -100, 100, 10.0, false),
+    (LMR_PAIR_TTPV_CHECK, 0, -100, 100, 10.0, false),
+    (LMR_PAIR_TTPV_CUTOFF, 0, -100, 100, 10.0, false),
+    (LMR_PAIR_TTNOISY_CHECK, 0, -100, 100, 10.0, false),
+    (LMR_PAIR_TTNOISY_CUTOFF, 0, -100, 100, 10.0, false),
+    (LMR_PAIR_CHECK_CUTOFF, 0, -100, 100, 10.0, false),
     // Minimum depth at which singular extension is attempted. Too low and
     // singular_depth is itself too shallow to judge singularity reliably.
     (SE_DEPTH_10X, 40, 40, 200, 20.0, true),
@@ -2968,7 +3007,63 @@ static LMR_TABLE_CAP: [[AtomicI32; 64]; 64] = {
 /// This is what makes fractional (centi-ply) reductions expressible.
 pub const LMR_SCALE: i32 = 100;
 
+// Bit positions of quiet LMR's boolean context (see the LMR_PAIR_* tunables).
+const LMR_BIT_PV: usize = 1 << 0;
+const LMR_BIT_CUT: usize = 1 << 1;
+const LMR_BIT_IMP: usize = 1 << 2;
+const LMR_BIT_TTPV: usize = 1 << 3;
+const LMR_BIT_TTNOISY: usize = 1 << 4;
+const LMR_BIT_CHECK: usize = 1 << 5;
+const LMR_BIT_CUTOFF: usize = 1 << 6;
+const LMR_PAIR_MASKS: usize = 1 << 7;
+
+/// Sum of the LMR_PAIR_* weights whose two booleans are both set in the
+/// index mask, in centi-ply. Rebuilt by `init_lmr()`; same atomic-storage
+/// rationale as LMR_TABLE.
+static LMR_PAIR_TABLE: [AtomicI32; LMR_PAIR_MASKS] = {
+    const Z: AtomicI32 = AtomicI32::new(0);
+    [Z; LMR_PAIR_MASKS]
+};
+
+/// Whether setting this tunable must be followed by `init_lmr()`. Shared by
+/// UCI setoption and `bench --set` so the two cannot drift apart.
+pub fn tunable_rebuilds_lmr(name: &str) -> bool {
+    name.starts_with("LMR_C") || name == "LMR_BASE_CENTI" || name.starts_with("LMR_PAIR_")
+}
+
+fn init_lmr_pairs() {
+    let pairs: [(usize, &AtomicI32); 19] = [
+        (LMR_BIT_PV | LMR_BIT_IMP, &LMR_PAIR_PV_IMP),
+        (LMR_BIT_PV | LMR_BIT_TTNOISY, &LMR_PAIR_PV_TTNOISY),
+        (LMR_BIT_PV | LMR_BIT_CHECK, &LMR_PAIR_PV_CHECK),
+        (LMR_BIT_PV | LMR_BIT_CUTOFF, &LMR_PAIR_PV_CUTOFF),
+        (LMR_BIT_CUT | LMR_BIT_IMP, &LMR_PAIR_CUT_IMP),
+        (LMR_BIT_CUT | LMR_BIT_TTPV, &LMR_PAIR_CUT_TTPV),
+        (LMR_BIT_CUT | LMR_BIT_TTNOISY, &LMR_PAIR_CUT_TTNOISY),
+        (LMR_BIT_CUT | LMR_BIT_CHECK, &LMR_PAIR_CUT_CHECK),
+        (LMR_BIT_CUT | LMR_BIT_CUTOFF, &LMR_PAIR_CUT_CUTOFF),
+        (LMR_BIT_IMP | LMR_BIT_TTPV, &LMR_PAIR_IMP_TTPV),
+        (LMR_BIT_IMP | LMR_BIT_TTNOISY, &LMR_PAIR_IMP_TTNOISY),
+        (LMR_BIT_IMP | LMR_BIT_CHECK, &LMR_PAIR_IMP_CHECK),
+        (LMR_BIT_IMP | LMR_BIT_CUTOFF, &LMR_PAIR_IMP_CUTOFF),
+        (LMR_BIT_TTPV | LMR_BIT_TTNOISY, &LMR_PAIR_TTPV_TTNOISY),
+        (LMR_BIT_TTPV | LMR_BIT_CHECK, &LMR_PAIR_TTPV_CHECK),
+        (LMR_BIT_TTPV | LMR_BIT_CUTOFF, &LMR_PAIR_TTPV_CUTOFF),
+        (LMR_BIT_TTNOISY | LMR_BIT_CHECK, &LMR_PAIR_TTNOISY_CHECK),
+        (LMR_BIT_TTNOISY | LMR_BIT_CUTOFF, &LMR_PAIR_TTNOISY_CUTOFF),
+        (LMR_BIT_CHECK | LMR_BIT_CUTOFF, &LMR_PAIR_CHECK_CUTOFF),
+    ];
+    for mask in 0..LMR_PAIR_MASKS {
+        let sum: i32 = pairs.iter()
+            .filter(|(bits, _)| mask & bits == *bits)
+            .map(|(_, w)| tp(w))
+            .sum();
+        LMR_PAIR_TABLE[mask].store(sum, Ordering::Relaxed);
+    }
+}
+
 pub fn init_lmr() {
+    init_lmr_pairs();
     for depth in 1..64 {
         for moves in 1..64 {
             // Quiet table: C from tunable (default 130 = 1.30). CENTI-PLY.
@@ -7310,12 +7405,25 @@ let singular_beta = tt_score_local - depth;
                 // cutoff_count: the child ply keeps failing high under
                 // this node — refutations come easy down there, so late moves
                 // need less depth to refute. SF consensus term.
-                if info.cutoff_count[ply_u + 1] > 2 {
+                let child_cutoffs = info.cutoff_count[ply_u + 1] > 2;
+                if child_cutoffs {
                     reduction += tp(&LMR_CUTOFF_CNT_CENTI);
                     if !is_pv && !cut_node {
                         reduction += tp(&LMR_CUTOFF_ALLNODE_CENTI);
                     }
                 }
+
+                // Pairwise interactions between the boolean terms above
+                // (LMR_PAIR_* tunables), pre-summed per mask by init_lmr().
+                // Each bit uses exactly the condition its single term uses.
+                let lmr_mask = ((beta - alpha > 1) as usize) * LMR_BIT_PV
+                    | ((!is_pv && cut_node) as usize) * LMR_BIT_CUT
+                    | (improving as usize) * LMR_BIT_IMP
+                    | (tt_pv as usize) * LMR_BIT_TTPV
+                    | (tt_move_noisy as usize) * LMR_BIT_TTNOISY
+                    | (gives_check as usize) * LMR_BIT_CHECK
+                    | (child_cutoffs as usize) * LMR_BIT_CUTOFF;
+                reduction += LMR_PAIR_TABLE[lmr_mask].load(Ordering::Relaxed);
 
                 // Continuous history adjustment: good history reduces less, bad more
                 // Uses main history + ply-1 + ply-2 continuation history (consensus).

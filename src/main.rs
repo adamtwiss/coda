@@ -713,14 +713,12 @@ fn main() {
                         let clamped = value.max(min).min(max);
                         atomic.store(clamped, std::sync::atomic::Ordering::Relaxed);
                         eprintln!("--set {} = {} (clamped from {} into [{}, {}])", pname, clamped, value, min, max);
-                        // Must match uci.rs's setoption rebuild condition exactly.
-                        // init_lmr() reads LMR_C_QUIET, LMR_C_CAP and
-                        // LMR_BASE_CENTI; the first two are covered by the
-                        // prefix, the third is not. It was missing here while
-                        // uci.rs had it, so `bench --set LMR_BASE_CENTI=x`
-                        // stored the atomic and left the cached table untouched
-                        // -- the parameter looked dead when it is live.
-                        if pname.starts_with("LMR_C") || pname == "LMR_BASE_CENTI" {
+                        // The rebuild condition is shared with uci.rs's
+                        // setoption via tunable_rebuilds_lmr(): when the two
+                        // kept separate copies, `bench --set LMR_BASE_CENTI=x`
+                        // once stored the atomic and left the cached table
+                        // untouched -- the parameter looked dead when it is live.
+                        if search::tunable_rebuilds_lmr(pname) {
                             lmr_c_changed = true;
                         }
                         matched = true;
@@ -729,9 +727,9 @@ fn main() {
                 }
                 if !matched { eprintln!("--set ignored (unknown tunable): {}", name); }
             }
-            // LMR_C_QUIET / LMR_C_CAP are baked into the LMR reduction table
-            // at startup. Without rebuilding it, --set updates the atomic but
-            // search keeps reading the old cached table. Mirror UCI setoption
+            // LMR_C_QUIET / LMR_C_CAP / LMR_BASE_CENTI / LMR_PAIR_* are baked
+            // into cached LMR tables at startup. Without rebuilding them, --set
+            // updates the atomic but search keeps reading the old cached table. Mirror UCI setoption
             // behavior in src/uci.rs.
             if lmr_c_changed { search::init_lmr(); }
             // NPS is search time only: net load and table setup happen before
