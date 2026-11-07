@@ -1530,6 +1530,11 @@ pub struct SearchInfo {
     pub move_overhead: u64, // ms
     // Dynamic time management state
     tm_prev_best: Move,
+    /// This thread's own best root move from its most recent root search
+    /// (including aspiration re-searches), searched first at the root next time. The shared TT's root entry can
+    /// be overwritten by another thread's search (Lazy SMP), which would
+    /// otherwise reorder this thread's root by someone else's result.
+    root_prev_best: Move,
     tm_prev_score: i32,
     tm_best_stable: i32,
     /// Cumulative count of aspiration fail-lows in the current search.
@@ -1849,6 +1854,7 @@ impl SearchInfo {
             max_nodes: 0,
             move_overhead: 100,
             tm_prev_best: NO_MOVE,
+            root_prev_best: NO_MOVE,
             tm_best_move_changes: 0,
             tm_forced_state: ForcedState::None,
             tm_prev_score: 0,
@@ -3949,6 +3955,7 @@ pub(crate) fn search_helper(board: &mut Board, info: &mut SearchInfo, _limits: &
     // Cross-thread TM (concept from SF): track this helper's best-move changes between
     // completed iterations and publish into its own slot of the shared array.
     let mut prev_best = NO_MOVE;
+    info.root_prev_best = NO_MOVE;
     let bmc_slot = thread_id.min(info.thread_bmc.len() - 1);
     for depth in 1..=effective_max {
         if info.stop.load(Ordering::Relaxed) { break; }
@@ -4260,6 +4267,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     info.moved_to_stack = [0; MAX_PLY + 1];
     info.pv_table = [[NO_MOVE; MAX_PLY + 1]; MAX_PLY + 1];
     info.pv_len = [0; MAX_PLY + 1];
+    info.root_prev_best = NO_MOVE;
     // Clear TM state
     info.tm_prev_best = NO_MOVE;
     info.tm_prev_score = 0;
@@ -6681,10 +6689,23 @@ fn negamax(
         NO_MOVE
     };
     let pawn_hist_ref = Some(&info.pawn_hist[ph_idx] as &[[i16; 64]; 13]);
-    let mut picker = if in_check {
-        MovePicker::new_evasion(tt_move, safe_ply, checkers, pinned, &info.history, &info.cont, prev_move, pawn_hist_ref, enemy_attacks, &info.moved_piece_stack, &info.moved_to_stack)
+    // At the root, search this thread's own best move from its last completed
+    // iteration first. Under Lazy SMP the shared TT's root entry may have been
+    // written by another thread; ordering this thread's root by it would make
+    // the thread re-search someone else's choice first. Ordering only — every
+    // other use of tt_move above (cutoffs, extensions, reductions) is unchanged.
+    let order_move = if ply == 0
+        && info.root_prev_best != NO_MOVE
+        && info.excluded_move[ply_u] == NO_MOVE
+    {
+        info.root_prev_best
     } else {
-        MovePicker::new(board, tt_move, safe_ply, checkers, pinned, &info.history, &info.cont, prev_move, pawn_hist_ref, enemy_attacks, &info.moved_piece_stack, &info.moved_to_stack)
+        tt_move
+    };
+    let mut picker = if in_check {
+        MovePicker::new_evasion(order_move, safe_ply, checkers, pinned, &info.history, &info.cont, prev_move, pawn_hist_ref, enemy_attacks, &info.moved_piece_stack, &info.moved_to_stack)
+    } else {
+        MovePicker::new(board, order_move, safe_ply, checkers, pinned, &info.history, &info.cont, prev_move, pawn_hist_ref, enemy_attacks, &info.moved_piece_stack, &info.moved_to_stack)
     };
     picker.threat_sq = threat_sq;
 
@@ -7942,6 +7963,12 @@ let singular_beta = tt_score_local - depth;
             info.stats.b_probe_nodes[d_band][idx] += 1;
             info.stats.b_probe_quiets[d_band][idx] += quiets_count as u64;
             info.stats.b_probe_late[d_band][idx] += (quiets_count.saturating_sub(2)) as u64;
+        }
+
+        // Remember this thread's own root result (the move a T=1 search would
+        // find in its root TT entry) for root ordering on the next search.
+        if ply == 0 && best_move != NO_MOVE && info.excluded_move[0] == NO_MOVE {
+            info.root_prev_best = best_move;
         }
 
         // Adjust mate score for storage (relative to this position)
