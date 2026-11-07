@@ -239,8 +239,17 @@ pub fn convert_v7(
     pawn_pairs: bool,
     l1_raw: bool,
     hidden_gate: crate::nnue::HiddenGate,
+    queen_buckets: crate::nnue::QueenBuckets,
 ) -> Result<(), String> {
-    use crate::nnue::HiddenGate;
+    use crate::nnue::{HiddenGate, QueenBuckets};
+    // Queen output buckets (trainer --queen-buckets): the output layer has
+    // 8 material buckets x the queen-state count; L1/L2 are untouched. Only
+    // defined with shared hidden layers.
+    if queen_buckets != QueenBuckets::None && bucketed_hidden {
+        return Err("--queen-buckets requires shared (unbucketed) hidden layers \
+                    (no --bucketed-hidden)".to_string());
+    }
+    let num_ob = NNUE_OUTPUT_BUCKETS * queen_buckets.multiplier();
     // Gated L2 (trainer --hidden-gate): l2 emits a gate half and a value half,
     // so its weight/bias arrays carry 2*l2_size output rows (gate rows first).
     // Only defined for a shared (unbucketed) L2 in a pairwise net.
@@ -278,9 +287,9 @@ pub fn convert_v7(
     let out_input = if l2_size > 0 { l2_size } else { l1_size };
     // Output: i16 weights at QB + i32 biases for i16 mode, f32 for f32 mode
     let out_bytes = if int16_hidden {
-        out_input * NNUE_OUTPUT_BUCKETS * 2 + NNUE_OUTPUT_BUCKETS * 4 // i16 weights + i32 biases
+        out_input * num_ob * 2 + num_ob * 4 // i16 weights + i32 biases
     } else {
-        out_input * NNUE_OUTPUT_BUCKETS * 4 + NNUE_OUTPUT_BUCKETS * 4 // f32
+        out_input * num_ob * 4 + num_ob * 4 // f32
     };
     let fixed_bytes = l1b_bytes + l2_bytes + out_bytes;
     // Pairwise: L1 input is H (after CReLU+pairwise+concat = ft_size)
@@ -304,7 +313,7 @@ pub fn convert_v7(
 
     println!("Input: {} bytes, FT={} L1={}{} L2={} threats={} pawn_pairs={} kb={}/{:?} (bucketed: {}x{}, {}x{})",
         data.len(), h, l1_size, if int8_l1 { "(i8)" } else { "" }, l2_size, num_threats, num_pawn_pairs,
-        kb_count, kb_layout, bl1, bl2, NNUE_OUTPUT_BUCKETS, l1_size);
+        kb_count, kb_layout, bl1, bl2, num_ob, l1_size);
 
     // Verify size
     let l1_input = l1_mul * h;
@@ -316,9 +325,11 @@ pub fn convert_v7(
         return Err(format!(
             "Size mismatch: expected {} bytes for FT={}, got {} (total_ft_inputs={}). \
              A difference of {} bytes is exactly one pawn-pair block, so check \
-             whether --pawn-pairs matches how the net was trained.",
+             whether --pawn-pairs matches how the net was trained. A multiple of \
+             {} bytes (one 8-bucket output head) points at --queen-buckets instead.",
             expected, h, data_len, total_ft_inputs,
-            crate::pawn_pair::PAWN_PAIR_FEATURES * h * 2));
+            crate::pawn_pair::PAWN_PAIR_FEATURES * h * 2,
+            NNUE_OUTPUT_BUCKETS * (out_input + 1) * hbytes));
     }
 
     let mut offset = 0;
@@ -469,41 +480,41 @@ pub fn convert_v7(
     }
 
     // Output weights: [out_input][BUCKETS] → transpose to [BUCKETS][out_input]
-    let mut out_w_raw = vec![[0i16; NNUE_OUTPUT_BUCKETS]; out_input];
+    let mut out_w_raw = vec![vec![0i16; num_ob]; out_input];
     if int16_hidden {
         // Already quantised as i16 at QB=64
         for i in 0..out_input {
-            for b in 0..NNUE_OUTPUT_BUCKETS {
+            for b in 0..num_ob {
                 out_w_raw[i][b] = read_i16_le(&data, offset);
                 offset += 2;
             }
         }
     } else {
         for i in 0..out_input {
-            for b in 0..NNUE_OUTPUT_BUCKETS {
+            for b in 0..num_ob {
                 let f = read_f32_le(&data, offset);
                 out_w_raw[i][b] = (f * qb).round() as i16;
                 offset += 4;
             }
         }
     }
-    let mut output_weights = vec![0i16; NNUE_OUTPUT_BUCKETS * out_input];
-    for b in 0..NNUE_OUTPUT_BUCKETS {
+    let mut output_weights = vec![0i16; num_ob * out_input];
+    for b in 0..num_ob {
         for i in 0..out_input {
             output_weights[b * out_input + i] = out_w_raw[i][b];
         }
     }
 
     // Output bias: [BUCKETS]
-    let mut output_bias = [0i32; NNUE_OUTPUT_BUCKETS];
+    let mut output_bias = vec![0i32; num_ob];
     if int16_hidden {
         // Already quantised as i32 at QA*QB
-        for b in 0..NNUE_OUTPUT_BUCKETS {
+        for b in 0..num_ob {
             output_bias[b] = read_i32_le(&data, offset);
             offset += 4;
         }
     } else {
-        for b in 0..NNUE_OUTPUT_BUCKETS {
+        for b in 0..num_ob {
             let f = read_f32_le(&data, offset);
             output_bias[b] = (f * qa_l1 * qb).round() as i32;
             offset += 4;
@@ -528,7 +539,8 @@ pub fn convert_v7(
     // is the intended fail-loud behavior for format mismatch.
     // v11 adds an arch_flags2 byte (pawn-pair block). See nnue.rs for why it is
     // a new byte rather than a ninth meaning for a bit in the first flags byte.
-    let version = if num_pawn_pairs > 0 || l1_raw || gated { 11u32 }
+    let queen_split = queen_buckets != QueenBuckets::None;
+    let version = if num_pawn_pairs > 0 || l1_raw || gated || queen_split { 11u32 }
         else if num_threats > 0 { 10u32 } else if dual_l1 { 8u32 } else { 7u32 };
     let mut buf = Vec::new();
     write_u32_le(&mut buf, NNUE_MAGIC);
@@ -594,16 +606,21 @@ pub fn convert_v7(
     //   bits 1-3: reserved (must be 0)
     //   bit 4: raw L1 readout, [l1_size] f32 after the output bias
     //   bits 5-6: hidden gate mode (0 none, 1 pair, 2 sq); L2 arrays double
-    //   bit 7: reserved (must be 0)
+    //   bit 7: an arch_flags3 byte follows the pawn-pair count (if any):
+    //          bits 0-1 queen-bucket mode (0 none, 1 any, 2 sides); output
+    //          arrays grow to 8 x {1,2,4} buckets. Written only when non-zero.
     if version >= 11 {
+        let arch_flags3 = queen_buckets.to_arch_flags3_bits();
         let mut arch_flags2 = 0u8;
         if num_pawn_pairs > 0 { arch_flags2 |= 1; }
         if l1_raw { arch_flags2 |= 16; }
         arch_flags2 |= hidden_gate.to_arch_flags2_bits();
+        if arch_flags3 != 0 { arch_flags2 |= crate::nnue::ARCH2_HAS_FLAGS3; }
         buf.push(arch_flags2);
         if num_pawn_pairs > 0 {
             write_u32_le(&mut buf, num_pawn_pairs as u32);
         }
+        if arch_flags3 != 0 { buf.push(arch_flags3); }
     }
 
     // Write weights — hidden layers have bucketed dimensions
@@ -624,8 +641,8 @@ pub fn convert_v7(
         for &w in &l2_weights { write_i16_le(&mut buf, w); } // [L1][BUCKETS*L2] (×2 rows if gated)
         for &b in &l2_biases { write_i16_le(&mut buf, b); }   // [BUCKETS*L2] (×2 rows if gated)
     }
-    for &w in &output_weights { write_i16_le(&mut buf, w); } // [BUCKETS][L2]
-    for &b in &output_bias { write_i32_le(&mut buf, b); }     // [BUCKETS]
+    for &w in &output_weights { write_i16_le(&mut buf, w); } // [num_ob][L2]
+    for &b in &output_bias { write_i32_le(&mut buf, b); }     // [num_ob]
     if l1_raw {
         for &w in &l1_raw_w { buf.extend_from_slice(&w.to_le_bytes()); } // [l1_size] f32
     }
@@ -641,6 +658,11 @@ pub fn convert_v7(
         HiddenGate::Pair => " gate=pair",
         HiddenGate::Sq => " gate=sq",
     };
-    println!("Saved {} ({} bytes, v{}{}{}{} FT={} L1={} L2={})", output_path, buf.len(), version, dual_str, threat_str, gate_str, h, l1_size, l2_size);
+    let queen_str = match queen_buckets {
+        QueenBuckets::None => "",
+        QueenBuckets::Any => " queen-buckets=any",
+        QueenBuckets::Sides => " queen-buckets=sides",
+    };
+    println!("Saved {} ({} bytes, v{}{}{}{}{} FT={} L1={} L2={} OB={})", output_path, buf.len(), version, dual_str, threat_str, gate_str, queen_str, h, l1_size, l2_size, num_ob);
     Ok(())
 }

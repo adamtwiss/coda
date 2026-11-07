@@ -581,6 +581,12 @@ enum Commands {
         /// product feeds the output. Sets arch_flags2 bits 5-6. Default none.
         #[arg(long, default_value = "none")]
         hidden_gate: String,
+        /// Net was trained with queen-aware output buckets (trainer
+        /// --queen-buckets any|sides): each material output bucket is split by
+        /// queen presence (any: x2, sides: x4 from the side to move's view).
+        /// Sets arch_flags2 bit 7 + arch_flags3 bits 0-1. Default none.
+        #[arg(long, default_value = "none")]
+        queen_buckets: String,
         /// Source output bucket count (default 8, set to 2 for 2-bucket nets)
         #[arg(long, default_value_t = 8)]
         output_buckets: usize,
@@ -1408,7 +1414,7 @@ fn main() {
             run_binpack_material(&input, max);
         }
 
-        Some(Commands::ConvertBullet { input, output, screlu, pairwise, hidden, hidden2, int8l1, bucketed_hidden, ft_size, int16_hidden, dual, consensus_buckets, kb_layout, kb_count, threats, output_buckets, hl_crelu, pawn_pairs, l1_raw, hidden_gate }) => {
+        Some(Commands::ConvertBullet { input, output, screlu, pairwise, hidden, hidden2, int8l1, bucketed_hidden, ft_size, int16_hidden, dual, consensus_buckets, kb_layout, kb_count, threats, output_buckets, hl_crelu, pawn_pairs, l1_raw, hidden_gate, queen_buckets }) => {
             // Resolve king bucket layout and count. Explicit --kb-layout wins;
             // --consensus-buckets is the legacy path for 16-bucket consensus.
             let layout = if !kb_layout.is_empty() {
@@ -1426,13 +1432,21 @@ fn main() {
                 Ok(g) => g,
                 Err(e) => { eprintln!("Error: {}", e); std::process::exit(1); }
             };
+            let queens = match nnue::QueenBuckets::from_name(&queen_buckets) {
+                Ok(q) => q,
+                Err(e) => { eprintln!("Error: {}", e); std::process::exit(1); }
+            };
+            if queens != nnue::QueenBuckets::None && hidden == 0 {
+                eprintln!("Error: --queen-buckets requires a hidden-layer net (--hidden > 0)");
+                std::process::exit(1);
+            }
             if gate != nnue::HiddenGate::None && hidden == 0 {
                 eprintln!("Error: --hidden-gate requires a hidden-layer net (--hidden > 0)");
                 std::process::exit(1);
             }
 
             let result = if hidden > 0 {
-                bullet_convert::convert_v7(&input, &output, screlu, pairwise, hidden, hidden2, int8l1, bucketed_hidden, ft_size, int16_hidden, dual, layout, count, threats, hl_crelu, pawn_pairs, l1_raw, gate)
+                bullet_convert::convert_v7(&input, &output, screlu, pairwise, hidden, hidden2, int8l1, bucketed_hidden, ft_size, int16_hidden, dual, layout, count, threats, hl_crelu, pawn_pairs, l1_raw, gate, queens)
             } else {
                 bullet_convert::convert_v5(&input, &output, screlu, pairwise, output_buckets, layout, count)
             };
@@ -1659,6 +1673,7 @@ fn run_check_net(net_path: &str) {
     if net.l1_size > 0 { arch += &format!(" L1={}", net.l1_size); }
     if net.l2_size > 0 { arch += &format!(" L2={}", net.l2_size); }
     if net.hidden_gate != nnue::HiddenGate::None { arch += &format!(" gate={:?}", net.hidden_gate); }
+    if net.queen_buckets != nnue::QueenBuckets::None { arch += &format!(" queen-buckets={:?} OB={}", net.queen_buckets, net.num_output_buckets); }
     if net.use_screlu { arch += " SCReLU"; }
     if net.use_pairwise { arch += " pairwise"; }
     if net.l1_scale == 64 { arch += " int8L1"; }
@@ -1670,7 +1685,7 @@ fn run_check_net(net_path: &str) {
         let h = net.hidden_size;
         let mut acc = NNUEAccumulator::new(h);
         // Full recompute for both perspectives
-        let piece_count = board.occupied().count_ones();
+        let key = nnue::BucketKey::from_board(&board);
         acc.force_recompute(&net, &board);
         // For v9 threat nets, use forward_with_threats
         // so the displayed eval actually consumes the threat features.
@@ -1681,9 +1696,9 @@ fn run_check_net(net_path: &str) {
             let mut ts = crate::threat_accum::ThreatStack::new(h);
             ts.active = true;
             ts.ensure_computed(&net.threat_weights, net.num_threat_features, net.num_pawn_pair_features, &board);
-            net.forward_with_threats(&acc, board.side_to_move, piece_count, &ts)
+            net.forward_with_threats(&acc, board.side_to_move, key, &ts)
         } else {
-            net.forward(&acc, board.side_to_move, piece_count)
+            net.forward(&acc, board.side_to_move, key)
         }
     };
 
@@ -2071,11 +2086,11 @@ fn run_dump_net_stats(net_path: &str, per_bucket: bool, per_kb: bool, histogram:
     let outw: Vec<i64> = net.output_weights.iter().map(|&w| w as i64).collect();
     let s = compute_stats(&outw, out_width);
     println!("\n[output_weights — i16 @ QB=64, BUCKETS={} × out_width={}]",
-        crate::nnue::NNUE_OUTPUT_BUCKETS, out_width);
+        net.num_output_buckets, out_width);
     print_stats_line("all", &s, "i16");
     if histogram { print_histogram("output_w", &outw); }
     if per_bucket {
-        for b in 0..crate::nnue::NNUE_OUTPUT_BUCKETS {
+        for b in 0..net.num_output_buckets {
             let s = compute_stats(&outw[b * out_width .. (b + 1) * out_width], 0);
             print_stats_line(&format!("bucket {}", b), &s, "i16");
         }
@@ -2083,7 +2098,7 @@ fn run_dump_net_stats(net_path: &str, per_bucket: bool, per_kb: bool, histogram:
 
     // Output bias
     println!("\n[output_bias — i32 @ QA*QB]");
-    for b in 0..crate::nnue::NNUE_OUTPUT_BUCKETS {
+    for b in 0..net.num_output_buckets {
         println!("  bucket {} = {:>10} ({:+.4} cp scaled)",
             b, net.output_bias[b],
             net.output_bias[b] as f64 / (255.0 * 64.0));

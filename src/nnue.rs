@@ -494,6 +494,111 @@ impl HiddenGate {
     }
 }
 
+/// Queen-aware output buckets (arch_flags3 bits 0-1).
+///
+/// Splits every material output bucket by queen presence, so the output
+/// layer has `8 * multiplier()` rows. Positions with and without queens are
+/// evaluated on very different terms — king safety against the heaviest
+/// attacker versus endgame technique — and a separate output row per queen
+/// state lets one shared trunk feed readouts that specialise for each. Only
+/// the output layer is per-bucket; L1, L2 and the raw L1 readout stay shared.
+///   - `None`:  8 material buckets (every net before this field existed).
+///   - `Any`:   x2 — is any queen of either colour on the board.
+///   - `Sides`: x4 — does the side to move have a queen, does the opponent.
+///
+/// The bucket is `material + 8 * queen_state` (see [`NNUENet::output_bucket`]);
+/// it must match the trainer's `MaterialQueenCount<8, Q>` exactly.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum QueenBuckets {
+    None = 0,
+    Any = 1,
+    Sides = 2,
+}
+
+/// arch_flags2 bit 7: an `arch_flags3` byte follows (after the pawn-pair count,
+/// if any). Written only when arch_flags3 is non-zero, so nets that use none
+/// of its features keep their exact bytes.
+pub const ARCH2_HAS_FLAGS3: u8 = 1 << 7;
+/// arch_flags3 bits 0-1: queen-bucket mode (0 none, 1 any, 2 sides, 3 reserved).
+pub const ARCH3_QUEEN_MASK: u8 = 0b11;
+
+impl QueenBuckets {
+    pub fn from_name(name: &str) -> Result<Self, String> {
+        match name {
+            "none" => Ok(QueenBuckets::None),
+            "any" => Ok(QueenBuckets::Any),
+            "sides" => Ok(QueenBuckets::Sides),
+            other => Err(format!("unknown queen buckets {other:?}; expected none | any | sides")),
+        }
+    }
+
+    /// Decode the queen-bucket field of an arch_flags3 byte; the reserved
+    /// value 3 is rejected rather than guessed at.
+    pub fn from_arch_flags3(flags: u8) -> Option<Self> {
+        match flags & ARCH3_QUEEN_MASK {
+            0 => Some(QueenBuckets::None),
+            1 => Some(QueenBuckets::Any),
+            2 => Some(QueenBuckets::Sides),
+            _ => None,
+        }
+    }
+
+    pub fn to_arch_flags3_bits(self) -> u8 {
+        self as u8
+    }
+
+    /// Number of queen states, i.e. how many copies of the material buckets.
+    pub fn multiplier(self) -> usize {
+        match self {
+            QueenBuckets::None => 1,
+            QueenBuckets::Any => 2,
+            QueenBuckets::Sides => 4,
+        }
+    }
+
+    /// Queen state for this mode, from the side to move's point of view.
+    #[inline(always)]
+    pub fn state(self, key: BucketKey) -> usize {
+        match self {
+            QueenBuckets::None => 0,
+            QueenBuckets::Any => (key.stm_queen | key.ntm_queen) as usize,
+            QueenBuckets::Sides => key.stm_queen as usize + 2 * key.ntm_queen as usize,
+        }
+    }
+}
+
+/// Everything the output-bucket choice depends on, gathered once per eval.
+/// Queen presence is "one or more": two queens after a promotion is the same
+/// state as one.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct BucketKey {
+    pub piece_count: u32,
+    /// The side to move has at least one queen.
+    pub stm_queen: bool,
+    /// The opponent has at least one queen.
+    pub ntm_queen: bool,
+}
+
+impl BucketKey {
+    #[inline(always)]
+    pub fn from_board(board: &Board) -> Self {
+        let queens = board.pieces[QUEEN as usize];
+        let stm = board.side_to_move as usize;
+        BucketKey {
+            piece_count: popcount(board.occupied()),
+            stm_queen: queens & board.colors[stm] != 0,
+            ntm_queen: queens & board.colors[1 - stm] != 0,
+        }
+    }
+
+    /// A key carrying only material (no queen information). Correct only for
+    /// nets with `QueenBuckets::None`; kept for diagnostics and tests that
+    /// address a material bucket directly.
+    pub fn material_only(piece_count: u32) -> Self {
+        BucketKey { piece_count, stm_queen: false, ntm_queen: false }
+    }
+}
+
 // Quantization
 const QA: i32 = 255;  // accumulator scale (CReLU/SCReLU clip max)
 const QB: i32 = 64;   // output weight scale
@@ -612,6 +717,14 @@ pub fn halfka_index_with(
 pub fn output_bucket(piece_count: u32) -> usize {
     let bucket = (piece_count as i32 - 2) / 4;
     bucket.clamp(0, NNUE_OUTPUT_BUCKETS as i32 - 1) as usize
+}
+
+/// Output bucket under a queen-bucket mode: the material bucket offset by
+/// `8 * queen_state`, so `QueenBuckets::None` is exactly [`output_bucket`].
+/// This is the engine half of the trainer's `MaterialQueenCount<8, Q>`.
+#[inline(always)]
+pub fn queen_output_bucket(mode: QueenBuckets, key: BucketKey) -> usize {
+    output_bucket(key.piece_count) + NNUE_OUTPUT_BUCKETS * mode.state(key)
 }
 
 // ---- AVX2 SIMD helper functions ----
@@ -2998,11 +3111,16 @@ pub struct NNUENet {
     pub hidden_size: usize,
     pub input_weights: AlignedVec<i16>,  // [NNUE_INPUT_SIZE × hidden_size] 64B-aligned (perf M2)
     pub input_biases: Vec<i16>,   // [hidden_size]
-    pub output_weights: Vec<i16>, // [NNUE_OUTPUT_BUCKETS × out_width]
+    pub output_weights: Vec<i16>, // [num_output_buckets × out_width]
     /// Quantized output weights for fast SCReLU: i16 but clamped to [-128, 127] range.
     pub output_weights_i8: Vec<i16>,
-    pub output_scale: [f32; NNUE_OUTPUT_BUCKETS],
-    pub output_bias: [i32; NNUE_OUTPUT_BUCKETS],
+    pub output_scale: Vec<f32>,   // [num_output_buckets]
+    pub output_bias: Vec<i32>,    // [num_output_buckets]
+    /// Queen-aware output buckets (arch_flags3); `None` for older nets.
+    pub queen_buckets: QueenBuckets,
+    /// Output-layer rows: `NNUE_OUTPUT_BUCKETS * queen_buckets.multiplier()`.
+    /// Every output-indexed table is sized by this, never by the constant.
+    pub num_output_buckets: usize,
     pub use_screlu: bool,
     pub use_pairwise: bool,
     // v7 hidden layers
@@ -3024,8 +3142,8 @@ pub struct NNUENet {
     pub l1_biases: Vec<i16>,      // [l1_size]
     pub l2_weights_f: Vec<f32>,   // [l2_input × l2_size] — float (l2_input = l1*2 if dual)
     pub l2_biases_f: Vec<f32>,    // [l2_size]
-    pub out_weights_f: Vec<f32>,  // [NNUE_OUTPUT_BUCKETS × out_l_size] — float output
-    pub out_bias_f: Vec<f32>,     // [NNUE_OUTPUT_BUCKETS]
+    pub out_weights_f: Vec<f32>,  // [num_output_buckets × out_l_size] — float output
+    pub out_bias_f: Vec<f32>,     // [num_output_buckets]
     pub dual_l1: bool,            // v8: dual L1 activation (CReLU+SCReLU on L1 output)
     /// Raw L1 readout: a learned linear read of the UNCLAMPED L1 pre-activations
     /// (one weight per L1 unit, shared by all buckets), added to the output.
@@ -3095,10 +3213,12 @@ impl NNUENet {
         halfka_index_with(&self.king_bucket, &self.king_mirror, perspective, king_sq, pc_color, pc_type, pc_sq)
     }
 
-    /// Output bucket for this net (uniform `(piece_count-2)/4`). Hot path — inline.
+    /// Output bucket for this net: the material bucket `(piece_count-2)/4`,
+    /// offset by `8 * queen_state` when the net has queen buckets. Must match
+    /// the trainer's `MaterialQueenCount<8, Q>`. Hot path — inline.
     #[inline]
-    pub fn output_bucket(&self, piece_count: u32) -> usize {
-        output_bucket(piece_count)
+    pub fn output_bucket(&self, key: BucketKey) -> usize {
+        queen_output_bucket(self.queen_buckets, key)
     }
 
     /// King-bucket lookup for this net. Use for build_dirty_piece and other
@@ -3167,6 +3287,7 @@ impl NNUENet {
         let mut dual_l1 = false; // bit 4: dual L1 activation (CReLU+SCReLU, v8)
         let mut has_l1_raw = false; // arch_flags2 bit 4 (v11)
         let mut hidden_gate = HiddenGate::None; // arch_flags2 bits 5-6 (v11)
+        let mut queen_buckets = QueenBuckets::None; // arch_flags3 bits 0-1 (v11)
         // bit 5 is context-dependent:
         //   - extended_kb=0: consensus_buckets (legacy 16-bucket encoding)
         //   - extended_kb=1: hl_crelu (hidden-layer CReLU, vs default SCReLU)
@@ -3312,13 +3433,19 @@ impl NNUENet {
                 //   bit 4: raw L1 readout (see `has_l1_raw`)
                 //   bits 5-6: hidden gate mode, a 2-bit field (see `HiddenGate`):
                 //             0 none, 1 pair, 2 sq, 3 reserved (rejected)
-                //   bit 7: reserved, must be zero
+                //   bit 7: an arch_flags3 byte follows (after the pawn-pair
+                //          count, if present). Its bits:
+                //            bits 0-1: queen-bucket mode (see `QueenBuckets`):
+                //                      0 none, 1 any, 2 sides, 3 reserved
+                //            bits 2-7: reserved, must be zero
+                //          Written only when non-zero, so older nets are
+                //          byte-identical and still load.
                 if version >= 11 {
                     let arch_flags2 = read_u8(reader)?;
                     has_l1_raw = arch_flags2 & 16 != 0;
                     hidden_gate = HiddenGate::from_arch_flags2(arch_flags2).ok_or_else(|| format!(
                         "reserved hidden-gate mode in arch_flags2 (0x{:02x})", arch_flags2))?;
-                    if arch_flags2 & !(1 | 16 | ARCH2_GATE_MASK) != 0 {
+                    if arch_flags2 & !(1 | 16 | ARCH2_GATE_MASK | ARCH2_HAS_FLAGS3) != 0 {
                         return Err(format!(
                             "unknown arch_flags2 bits set (0x{:02x}); this net uses an \
                              architecture feature this build does not implement",
@@ -3345,6 +3472,18 @@ impl NNUENet {
                             return Err("net has pawn-pair features but no threat \
                                         features; pawn-pair extends the threat feature \
                                         space and cannot stand alone".to_string());
+                        }
+                    }
+                    if arch_flags2 & ARCH2_HAS_FLAGS3 != 0 {
+                        let arch_flags3 = read_u8(reader)?;
+                        queen_buckets = QueenBuckets::from_arch_flags3(arch_flags3).ok_or_else(|| format!(
+                            "reserved queen-bucket mode in arch_flags3 (0x{:02x})", arch_flags3))?;
+                        if arch_flags3 & !ARCH3_QUEEN_MASK != 0 {
+                            return Err(format!(
+                                "unknown arch_flags3 bits set (0x{:02x}); this net uses an \
+                                 architecture feature this build does not implement",
+                                arch_flags3
+                            ));
                         }
                     }
                 }
@@ -3478,12 +3617,19 @@ impl NNUENet {
         } else {
             2 * hidden_size
         };
-        let mut output_weights = vec![0i16; NNUE_OUTPUT_BUCKETS * out_width];
+        // Queen buckets multiply the OUTPUT rows only. A bucketed-hidden net
+        // bakes the material buckets into L1/L2 as well, and splitting those by
+        // queen state is not defined, so refuse the combination.
+        if queen_buckets != QueenBuckets::None && bucketed_hidden {
+            return Err("queen output buckets require shared (unbucketed) hidden layers".to_string());
+        }
+        let num_output_buckets = NNUE_OUTPUT_BUCKETS * queen_buckets.multiplier();
+        let mut output_weights = vec![0i16; num_output_buckets * out_width];
         read_i16_slice(reader, &mut output_weights)?;
 
         // Read output bias
-        let mut output_bias = [0i32; NNUE_OUTPUT_BUCKETS];
-        for i in 0..NNUE_OUTPUT_BUCKETS {
+        let mut output_bias = vec![0i32; num_output_buckets];
+        for i in 0..num_output_buckets {
             output_bias[i] = read_i32(reader)?;
         }
 
@@ -3514,7 +3660,12 @@ impl NNUENet {
             KbLayout::Consensus => " consensus-kb",
             KbLayout::Reckless  => " reckless-kb10",
         };
-        let threat_str = if has_threats { format!(" threats={}", num_threat_features) } else { String::new() };
+        let mut threat_str = if has_threats { format!(" threats={}", num_threat_features) } else { String::new() };
+        match queen_buckets {
+            QueenBuckets::None => {}
+            QueenBuckets::Any => threat_str += " queen-buckets=any",
+            QueenBuckets::Sides => threat_str += " queen-buckets=sides",
+        }
         if l1_size > 0 {
             if l2_size > 0 {
                 println!("info string Loaded NNUE v{} {} {}{}{}{} (FT={} L1={} L2={})", version, source_name, activation, dual_str, bucket_str, threat_str, hidden_size, l1_size, l2_size);
@@ -3619,11 +3770,11 @@ impl NNUENet {
         // Quantize output weights to i8 range for fast SCReLU dot product.
         // Per-bucket scale: max_abs(weights) / 127.
         // This lets us use mullo_epi16 + madd_epi16 since v*w_i8 fits in i16.
-        let mut output_weights_i8 = vec![0i16; NNUE_OUTPUT_BUCKETS * out_width];
-        let mut output_scale = [1.0f32; NNUE_OUTPUT_BUCKETS];
+        let mut output_weights_i8 = vec![0i16; num_output_buckets * out_width];
+        let mut output_scale = vec![1.0f32; num_output_buckets];
 
         if use_screlu {
-            for bucket in 0..NNUE_OUTPUT_BUCKETS {
+            for bucket in 0..num_output_buckets {
                 let off = bucket * out_width;
                 let slice = &output_weights[off..off + out_width];
                 let max_abs = slice.iter().map(|&w| (w as i32).abs()).max().unwrap_or(1).max(1);
@@ -3640,7 +3791,7 @@ impl NNUENet {
             let total = output_weights.len();
             let mut max_err: f32 = 0.0;
             let mut sum_err: f64 = 0.0;
-            for bucket in 0..NNUE_OUTPUT_BUCKETS {
+            for bucket in 0..num_output_buckets {
                 let off = bucket * out_width;
                 let scale = output_scale[bucket];
                 for j in 0..out_width {
@@ -3726,6 +3877,8 @@ impl NNUENet {
             output_weights_i8,
             output_scale,
             output_bias,
+            queen_buckets,
+            num_output_buckets,
             use_screlu,
             use_pairwise,
             l1_size: bl1,
@@ -5061,7 +5214,7 @@ impl NNUENet {
     }
 
     /// Forward pass with ThreatStack (new path).
-    pub fn forward_with_threats(&self, acc: &NNUEAccumulator, stm: u8, piece_count: u32,
+    pub fn forward_with_threats(&self, acc: &NNUEAccumulator, stm: u8, key: BucketKey,
                                 threat_stack: &crate::threat_accum::ThreatStack) -> i32 {
         // DIAGNOSTIC: CODA_NO_THREAT_ACC=1 zeros the threat-accumulator contribution
         // (falls through to the FT-only forward) to isolate whether the threat
@@ -5070,7 +5223,7 @@ impl NNUENet {
         static NO_THREAT_ACC: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         let no_threats = *NO_THREAT_ACC.get_or_init(|| std::env::var("CODA_NO_THREAT_ACC").is_ok());
         if threat_stack.active && self.has_threats && !no_threats {
-            let bucket = self.output_bucket(piece_count);
+            let bucket = self.output_bucket(key);
             let h = self.hidden_size;
 
             let (stm_acc, ntm_acc) = if stm == WHITE {
@@ -5116,13 +5269,13 @@ impl NNUENet {
         }
 
         // Fallback to old forward path
-        self.forward(acc, stm, piece_count)
+        self.forward(acc, stm, key)
     }
 
     /// Forward pass: CReLU or SCReLU activation → dot product with output weights.
     /// Returns centipawns from side-to-move perspective.
-    pub fn forward(&self, acc: &NNUEAccumulator, stm: u8, piece_count: u32) -> i32 {
-        let bucket = self.output_bucket(piece_count);
+    pub fn forward(&self, acc: &NNUEAccumulator, stm: u8, key: BucketKey) -> i32 {
+        let bucket = self.output_bucket(key);
         let h = self.hidden_size;
         let out_w = self.output_weight_row(bucket);
 
@@ -6844,9 +6997,8 @@ mod tests {
                 // training matches inference, so the net is calibrated to
                 // it). Gross deviation
                 // = real bug (flipped feature family, bucket asymmetry).
-                let pc = board.occupied().count_ones();
-                let e1 = net.forward(&a1, board.side_to_move, pc);
-                let e2 = net.forward(&a2, mboard.side_to_move, pc);
+                let e1 = net.forward(&a1, board.side_to_move, BucketKey::from_board(&board));
+                let e2 = net.forward(&a2, mboard.side_to_move, BucketKey::from_board(&mboard));
                 let d = (e1 - e2).abs();
                 if d > max_diff { max_diff = d; worst = (fen.clone(), e1, e2); }
                 sum_diff += d as u64;
@@ -8447,7 +8599,7 @@ mod tests {
         let mut max_diff = 0i32;
         for fen in &test_fens {
             let board = Board::from_fen(fen);
-            let piece_count = board.occupied().count_ones();
+            let piece_count = BucketKey::from_board(&board);
 
             // Compute accumulator once with SIMD (normal path)
             let mut acc = NNUEAccumulator::new(h);
@@ -9076,7 +9228,7 @@ mod tests {
 
         for fen in &moves_sequence {
             let board = Board::from_fen(fen);
-            let piece_count = board.occupied().count_ones();
+            let piece_count = BucketKey::from_board(&board);
 
             // Full recompute
             let mut acc_full = NNUEAccumulator::new(h);
@@ -9322,7 +9474,7 @@ mod hidden_gate_tests {
         bullet_convert::convert_v7(
             bin.to_str().unwrap(), out.to_str().unwrap(),
             true, true, L1, L2, true, false, H, false, true,
-            bullet_convert::KbLayout::Consensus, 16, 0, true, false, true, gate,
+            bullet_convert::KbLayout::Consensus, 16, 0, true, false, true, gate, QueenBuckets::None,
         ).expect("convert");
         NNUENet::load(out.to_str().unwrap()).expect("load")
     }
@@ -9509,9 +9661,331 @@ mod hidden_gate_tests {
         let r = bullet_convert::convert_v7(
             bin.to_str().unwrap(), out.to_str().unwrap(),
             true, true, L1, L2, true, true, H, false, true,
-            bullet_convert::KbLayout::Consensus, 16, 0, true, false, true, HiddenGate::Pair);
+            bullet_convert::KbLayout::Consensus, 16, 0, true, false, true, HiddenGate::Pair, QueenBuckets::None);
         let _ = std::fs::remove_file(&bin);
         let _ = std::fs::remove_file(&out);
         assert!(r.is_err());
+    }
+}
+
+/// Queen-aware output bucket tests. The bucket function is checked against
+/// hand-computed cases and can be dumped for diffing against the trainer
+/// (bullet `ob_crosscheck`); the net-level tests push synthetic Bullet-layout
+/// `quantised.bin` files through the real converter and loader and check the
+/// full evaluation selects exactly the output row the spec names.
+#[cfg(test)]
+mod queen_bucket_tests {
+    use super::*;
+    use crate::bullet_convert;
+
+    const H: usize = 256; // FT width
+    const L1: usize = 16;
+    const L2: usize = 32;
+    const L2_IN: usize = 2 * L1; // dual L1
+
+    const MODES: [QueenBuckets; 3] = [QueenBuckets::None, QueenBuckets::Any, QueenBuckets::Sides];
+
+    struct Rng(u64);
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            self.0 ^= self.0 << 13; self.0 ^= self.0 >> 7; self.0 ^= self.0 << 17; self.0
+        }
+        fn int(&mut self, lo: i32, hi: i32) -> i32 { lo + (self.next() % (hi - lo + 1) as u64) as i32 }
+    }
+
+    fn key(fen: &str) -> BucketKey {
+        BucketKey::from_board(&Board::from_fen(fen))
+    }
+
+    /// (fen, none, any, sides) — hand-computed; the same table is in the
+    /// trainer's `outputs::tests::CASES`.
+    const CASES: &[(&str, usize, usize, usize)] = &[
+        ("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", 7, 15, 31),
+        ("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR b KQkq - 0 1", 7, 15, 31),
+        ("rnb1kbnr/pppppppp/8/8/8/8/PPPPPPPP/RNB1KBNR w KQkq - 0 1", 7, 7, 7),
+        ("4k3/8/8/8/8/8/8/3QK3 w - - 0 1", 0, 8, 8),
+        ("4k3/8/8/8/8/8/8/3QK3 b - - 0 1", 0, 8, 16),
+        ("3qk3/8/8/8/8/8/8/4K3 w - - 0 1", 0, 8, 16),
+        ("3qk3/8/8/8/8/8/8/4K3 b - - 0 1", 0, 8, 8),
+        ("3qk3/8/8/8/8/8/8/Q2QK3 w - - 0 1", 0, 8, 24),
+        ("2qqk3/8/8/8/8/8/P7/4K1N1 w - - 0 1", 1, 9, 17),
+        ("4k3/8/8/8/8/8/8/4K3 w - - 0 1", 0, 0, 0),
+    ];
+
+    #[test]
+    fn queen_bucket_hand_cases() {
+        for &(fen, none, any, sides) in CASES {
+            let k = key(fen);
+            assert_eq!(queen_output_bucket(QueenBuckets::None, k), none, "none {fen}");
+            assert_eq!(queen_output_bucket(QueenBuckets::Any, k), any, "any {fen}");
+            assert_eq!(queen_output_bucket(QueenBuckets::Sides, k), sides, "sides {fen}");
+            // None must be the historical material bucket, unchanged.
+            assert_eq!(none, output_bucket(k.piece_count));
+        }
+    }
+
+    #[test]
+    fn queen_bucket_flag_roundtrip() {
+        for q in MODES {
+            let bits = q.to_arch_flags3_bits();
+            assert_eq!(bits & !ARCH3_QUEEN_MASK, 0);
+            assert_eq!(QueenBuckets::from_arch_flags3(bits), Some(q));
+        }
+        assert_eq!(QueenBuckets::from_arch_flags3(ARCH3_QUEEN_MASK), None);
+        // The new arch_flags2 bit must not alias the gate field or the
+        // pawn-pair / raw-readout bits.
+        assert_eq!(ARCH2_HAS_FLAGS3 & (1 | 16 | ARCH2_GATE_MASK), 0);
+    }
+
+    /// Cross-check dump: writes `<none> <any> <sides>` per FEN so the bullet
+    /// trainer's `ob_crosscheck` output can be diffed against it.
+    /// Env-gated: `OB_DUMP_IN=<fens> OB_DUMP_OUT=<path> cargo test --release
+    /// queen_bucket_tests::dump_output_buckets -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn dump_output_buckets() {
+        use std::io::Write;
+        let inp = std::env::var("OB_DUMP_IN").expect("OB_DUMP_IN");
+        let outp = std::env::var("OB_DUMP_OUT").expect("OB_DUMP_OUT");
+        let text = std::fs::read_to_string(&inp).unwrap();
+        let mut out = std::fs::File::create(&outp).unwrap();
+        for fen in text.lines().filter(|l| !l.trim().is_empty()) {
+            let k = key(fen);
+            let ids: Vec<String> = MODES.iter().map(|&m| queen_output_bucket(m, k).to_string()).collect();
+            writeln!(out, "{}", ids.join(" ")).unwrap();
+        }
+    }
+
+    /// Independent spec of the bucket, walking the square-indexed mailbox
+    /// (piece types) square by square rather than reading the per-type
+    /// bitboards `BucketKey` uses, for the net-level tests.
+    fn spec_bucket(fen: &str, mode: QueenBuckets) -> usize {
+        let b = Board::from_fen(fen);
+        let (mut n, mut ours, mut theirs) = (0i32, false, false);
+        for sq in 0..64 {
+            let pt = b.mailbox[sq];
+            if pt == NO_PIECE_TYPE { continue; }
+            n += 1;
+            if pt == QUEEN {
+                let colour = if b.colors[WHITE as usize] >> sq & 1 != 0 { WHITE } else { BLACK };
+                if colour == b.side_to_move { ours = true; } else { theirs = true; }
+            }
+        }
+        let material = ((n - 2) / 4).clamp(0, 7) as usize;
+        let state = match mode {
+            QueenBuckets::None => 0,
+            QueenBuckets::Any => (ours || theirs) as usize,
+            QueenBuckets::Sides => ours as usize + 2 * theirs as usize,
+        };
+        material + 8 * state
+    }
+
+    /// Hidden + output weights in the trainer's saved layout (column-major:
+    /// `l3w[k * ob + b]` is L2 unit `k` -> bucket `b`).
+    #[derive(Clone)]
+    struct Hidden {
+        l2w: Vec<f32>,
+        l2b: Vec<f32>,
+        l3w: Vec<f32>, // [L2][ob]
+        l3b: Vec<f32>, // [ob]
+        l1rw: Vec<f32>,
+        ob: usize,
+    }
+
+    /// Production-recipe shape (pairwise, int8 L1, dual, hl-crelu, raw L1
+    /// readout, no threats); FT/L1 from `seed`, so equal seeds share the trunk.
+    fn write_bin(path: &std::path::Path, seed: u64, hid: &Hidden) {
+        let mut r = Rng(seed);
+        let mut b: Vec<u8> = Vec::new();
+        for _ in 0..16 * 768 * H { b.extend_from_slice(&(r.int(-30, 30) as i16).to_le_bytes()); }
+        for _ in 0..H { b.extend_from_slice(&(r.int(60, 200) as i16).to_le_bytes()); }
+        for _ in 0..H * L1 { b.push(r.int(-60, 60) as i8 as u8); }
+        for _ in 0..L1 { b.extend_from_slice(&(r.int(-64, 64) as f32 / 64.0).to_le_bytes()); }
+        for &x in hid.l2w.iter().chain(&hid.l2b).chain(&hid.l3w).chain(&hid.l3b).chain(&hid.l1rw) {
+            b.extend_from_slice(&x.to_le_bytes());
+        }
+        std::fs::write(path, b).unwrap();
+    }
+
+    /// Random hidden weights on the converter's quantisation grids (L2 and L3
+    /// weights at 1/64, L3 bias at 1/4096) so conversion is lossless.
+    fn random_hidden(seed: u64, ob: usize) -> Hidden {
+        let mut r = Rng(seed);
+        Hidden {
+            l2w: (0..L2_IN * L2).map(|_| r.int(-48, 48) as f32 / 64.0).collect(),
+            l2b: (0..L2).map(|_| r.int(-32, 64) as f32 / 64.0).collect(),
+            l3w: (0..L2 * ob).map(|_| r.int(-64, 64) as f32 / 64.0).collect(),
+            l3b: (0..ob).map(|_| r.int(-2048, 2048) as f32 / 4096.0).collect(),
+            l1rw: (0..L1).map(|_| r.int(-64, 64) as f32 / 256.0).collect(),
+            ob,
+        }
+    }
+
+    /// Output rows [8s, 8s+8) of `src` as a plain 8-bucket head.
+    fn slice_head(src: &Hidden, s: usize) -> Hidden {
+        let mut h = src.clone();
+        h.ob = 8;
+        h.l3w = (0..L2).flat_map(|k| (0..8).map(move |b| (k, b))).map(|(k, b)| src.l3w[k * src.ob + 8 * s + b]).collect();
+        h.l3b = src.l3b[8 * s..8 * s + 8].to_vec();
+        h
+    }
+
+    /// `src` (8 buckets) replicated into every queen state of `mode`.
+    fn replicate_head(src: &Hidden, mode: QueenBuckets) -> Hidden {
+        let m = mode.multiplier();
+        let ob = 8 * m;
+        let mut h = src.clone();
+        h.ob = ob;
+        h.l3w = (0..L2 * ob).map(|i| src.l3w[(i / ob) * 8 + (i % ob) % 8]).collect();
+        h.l3b = (0..ob).map(|b| src.l3b[b % 8]).collect();
+        h
+    }
+
+    fn tmp(name: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("coda_qb_{}_{}", std::process::id(), name))
+    }
+
+    fn build(name: &str, seed: u64, hid: &Hidden, mode: QueenBuckets) -> NNUENet {
+        let (bin, out) = (tmp(&format!("{name}.bin")), tmp(&format!("{name}.nnue")));
+        write_bin(&bin, seed, hid);
+        bullet_convert::convert_v7(
+            bin.to_str().unwrap(), out.to_str().unwrap(),
+            true, true, L1, L2, true, false, H, false, true,
+            bullet_convert::KbLayout::Consensus, 16, 0, true, false, true,
+            HiddenGate::None, mode,
+        ).expect("convert");
+        let net = NNUENet::load(out.to_str().unwrap()).expect("load");
+        let _ = std::fs::remove_file(&bin);
+        let _ = std::fs::remove_file(&out);
+        assert_eq!(net.queen_buckets, mode);
+        assert_eq!(net.num_output_buckets, 8 * mode.multiplier());
+        net
+    }
+
+    fn eval_fen(net: &NNUENet, fen: &str) -> i32 {
+        use crate::threat_accum::ThreatStack;
+        let b = Board::from_fen(fen);
+        let mut acc = NNUEAccumulator::new(net.hidden_size);
+        let mut ts = ThreatStack::new(net.hidden_size);
+        ts.active = net.has_threats;
+        crate::eval::evaluate_nnue(&b, net, &mut acc, &ts)
+    }
+
+    /// Every queen state, each with both sides to move, across several
+    /// material buckets.
+    const FENS: [&str; 16] = [
+        "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+        "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR b KQkq - 0 1",
+        "r1b1kb1r/pppp1ppp/2n2n2/4p3/2B1P3/5N2/PPPP1PPP/RNB1K2R w KQkq - 4 4",
+        "r1b1kb1r/pppp1ppp/2n2n2/4p3/2B1P3/5N2/PPPP1PPP/RNB1K2R b KQkq - 4 4",
+        "r3k2r/p1pp1pb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+        "r3k2r/p1pp1pb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R b KQkq - 0 1",
+        "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N4p/PPPBBPPP/R3K2R w KQkq - 0 1",
+        "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N4p/PPPBBPPP/R3K2R b KQkq - 0 1",
+        "6k1/5ppp/8/8/8/8/5PPP/3Q2K1 w - - 0 1",
+        "6k1/5ppp/8/8/8/8/5PPP/3Q2K1 b - - 0 1",
+        "3q2k1/5ppp/8/8/8/8/5PPP/6K1 w - - 0 1",
+        "3q2k1/5ppp/8/8/8/8/5PPP/6K1 b - - 0 1",
+        "3q2k1/5ppp/8/8/8/8/5PPP/Q2Q2K1 w - - 0 1",
+        "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",
+        "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 b - - 0 1",
+        "6k1/5ppp/8/8/8/8/5PPP/3R2K1 b - - 0 1",
+    ];
+
+    /// The full evaluation reads exactly the output row the spec names: for
+    /// every row of a queen-bucket net, nudging that row's bias moves the eval
+    /// of precisely the positions mapped to it and no others.
+    #[test]
+    fn eval_reads_exactly_the_spec_row() {
+        let _space = crate::threats::FEATURE_SPACE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::init();
+        for mode in [QueenBuckets::Any, QueenBuckets::Sides] {
+            let ob = 8 * mode.multiplier();
+            let hid = random_hidden(0xC0DA + ob as u64, ob);
+            let base = build("base", 11, &hid, mode);
+            let base_evals: Vec<i32> = FENS.iter().map(|f| eval_fen(&base, f)).collect();
+            let mut rows_hit = std::collections::BTreeSet::new();
+            for row in 0..ob {
+                let mut h = hid.clone();
+                h.l3b[row] += 0.25; // +1024 on the 1/4096 grid
+                let net = build("nudge", 11, &h, mode);
+                for (i, fen) in FENS.iter().enumerate() {
+                    let want = spec_bucket(fen, mode);
+                    let e = eval_fen(&net, fen);
+                    if row == want {
+                        // 0.25 output units; truncation to cp may cost 1.
+                        let d = (e - base_evals[i]) as f64;
+                        let exp = 0.25 * EVAL_SCALE as f64;
+                        assert!((d - exp).abs() <= 1.0, "{mode:?} row {row} {fen}: moved {d}, expected {exp}");
+                        rows_hit.insert(row);
+                    } else {
+                        assert_eq!(e, base_evals[i], "{mode:?} row {row} leaked into {fen} (spec row {want})");
+                    }
+                }
+            }
+            // The FEN set must exercise every queen state.
+            let states: std::collections::BTreeSet<usize> = rows_hit.iter().map(|r| r / 8).collect();
+            assert_eq!(states.len(), mode.multiplier(), "{mode:?}: FENs miss a queen state");
+            eprintln!("{mode:?}: rows exercised {:?}", rows_hit);
+        }
+    }
+
+    /// Against a reference built through the established 8-bucket path: the
+    /// queen-bucket net must evaluate every position exactly as the plain net
+    /// made from its selected queen state's rows does — and differ from the
+    /// others, so a wrong state cannot pass.
+    #[test]
+    fn eval_matches_per_state_plain_net() {
+        let _space = crate::threats::FEATURE_SPACE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::init();
+        let hid = random_hidden(0x5EED, 32);
+        let qnet = build("q", 21, &hid, QueenBuckets::Sides);
+        let plain: Vec<NNUENet> = (0..4).map(|s| build(&format!("p{s}"), 21, &slice_head(&hid, s), QueenBuckets::None)).collect();
+        let mut distinguishing = 0;
+        for fen in FENS {
+            let s = spec_bucket(fen, QueenBuckets::Sides) / 8;
+            let q = eval_fen(&qnet, fen);
+            let per_state: Vec<i32> = plain.iter().map(|n| eval_fen(n, fen)).collect();
+            eprintln!("{:<72} state {} q {:+6} plain {:?}", fen, s, q, per_state);
+            assert_eq!(q, per_state[s], "{fen}: queen net != plain net of state {s}");
+            if per_state.iter().enumerate().all(|(t, &v)| t == s || v != q) { distinguishing += 1; }
+        }
+        assert!(distinguishing >= FENS.len() - 1, "per-state heads too similar to discriminate");
+    }
+
+    /// Degenerate split: queen states that are identical copies of an 8-bucket
+    /// head reproduce the unsplit net bit for bit, in both modes.
+    #[test]
+    fn identical_copies_reproduce_unsplit_net() {
+        let _space = crate::threats::FEATURE_SPACE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::init();
+        let hid = random_hidden(0xBA5E, 8);
+        let plain = build("u", 31, &hid, QueenBuckets::None);
+        let want: Vec<i32> = FENS.iter().map(|f| eval_fen(&plain, f)).collect();
+        assert!(want.iter().collect::<std::collections::BTreeSet<_>>().len() > 4, "evals degenerate");
+        for mode in [QueenBuckets::Any, QueenBuckets::Sides] {
+            let net = build("r", 31, &replicate_head(&hid, mode), mode);
+            let got: Vec<i32> = FENS.iter().map(|f| eval_fen(&net, f)).collect();
+            assert_eq!(got, want, "{mode:?}: replicated head diverged from the unsplit net");
+        }
+    }
+
+    /// A queen-bucket net with the mode left off at conversion is the wrong
+    /// size, and the converter must say so rather than write a net.
+    #[test]
+    fn converter_rejects_mode_mismatch() {
+        let hid = random_hidden(3, 32);
+        let (bin, out) = (tmp("mm.bin"), tmp("mm.nnue"));
+        write_bin(&bin, 3, &hid);
+        for mode in [QueenBuckets::None, QueenBuckets::Any] {
+            let r = bullet_convert::convert_v7(
+                bin.to_str().unwrap(), out.to_str().unwrap(),
+                true, true, L1, L2, true, false, H, false, true,
+                bullet_convert::KbLayout::Consensus, 16, 0, true, false, true,
+                HiddenGate::None, mode);
+            assert!(r.is_err(), "{mode:?} accepted a 32-bucket file");
+        }
+        let _ = std::fs::remove_file(&bin);
+        let _ = std::fs::remove_file(&out);
     }
 }

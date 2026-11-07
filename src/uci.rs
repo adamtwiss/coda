@@ -1598,9 +1598,10 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>) {
                         let b_vals: Vec<String> = acc.black()[..n].iter().map(|v| v.to_string()).collect();
                         println!("info string white_acc [{}]", w_vals.join(","));
                         println!("info string black_acc [{}]", b_vals.join(","));
-                        let pc = crate::nnue::piece_count(&board);
-                        let bucket = net.output_bucket(pc);
-                        println!("info string piece_count {} bucket {}", pc, bucket);
+                        let key = crate::nnue::BucketKey::from_board(&board);
+                        let bucket = net.output_bucket(key);
+                        println!("info string piece_count {} stm_queen {} ntm_queen {} bucket {}",
+                            key.piece_count, key.stm_queen, key.ntm_queen, bucket);
                     }
                 }
             }
