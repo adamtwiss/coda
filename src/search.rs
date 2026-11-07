@@ -2305,8 +2305,17 @@ impl SearchInfo {
     /// this same number instead of re-deriving a raw net output that drifts
     /// every time a term is added here.
     pub(crate) fn eval(&mut self, board: &Board) -> i32 {
-        // Ensure threat accumulator is computed before eval
-        if self.threat_stack.active {
+        // Fused PSQ+threat accumulator: one materialization replays both
+        // halves from the threat stack's deltas, and the threat stack's own
+        // value arrays are not used. evaluate_nnue's materialize below is then
+        // a cached skip.
+        let fused = self.nnue_acc.as_ref().is_some_and(|a| a.threat_fused());
+        if fused {
+            if let (Some(net), Some(acc)) = (&self.nnue_net, &mut self.nnue_acc) {
+                acc.materialize_with(net, board, Some(&mut self.threat_stack));
+            }
+        } else if self.threat_stack.active {
+            // Ensure threat accumulator is computed before eval
             if let Some(ref net) = self.nnue_net {
                 self.threat_stack.ensure_computed(&net.threat_weights, net.num_threat_features,
                                                   net.num_pawn_pair_features, board);
@@ -2320,7 +2329,21 @@ impl SearchInfo {
             static VERIFY_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
             if *VERIFY_ENABLED.get_or_init(|| std::env::var("CODA_VERIFY_NNUE").is_ok()) {
                 let n = VERIFY_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                // Compare the accumulator itself, not only the eval it
+                // produces: a small drift can round to the same score. Under
+                // threat fusion this is the whole psq + threat value.
+                let live: Vec<i16> = [acc.white(), acc.black()].concat();
                 acc.force_recompute(net, board);
+                if live[..] != [acc.white(), acc.black()].concat()[..] {
+                    static ACC_MISMATCHES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+                    let m = ACC_MISMATCHES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    if m < 20 {
+                        eprintln!("NNUE ACCUMULATOR MISMATCH n={} hash={:016x} fused={}", n, board.hash, fused);
+                    }
+                    if std::env::var("CODA_VERIFY_THREATS").as_deref() == Ok("panic") {
+                        panic!("NNUE accumulator mismatch (CODA_VERIFY_THREATS=panic)");
+                    }
+                }
                 let s2 = evaluate_nnue(board, net, acc, &self.threat_stack);
                 if s != s2 {
                     let m = VERIFY_MISMATCHES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -2346,7 +2369,10 @@ impl SearchInfo {
                 // uses is perturbed. Opt-in via CODA_VERIFY_NNUE (this whole
                 // block); CODA_VERIFY_THREATS=panic upgrades mismatch to panic.
                 // ---------------------------------------------------------------
-                if self.threat_stack.active && net.has_threats {
+                // Under threat fusion the stack's value arrays are not
+                // maintained; the check above already compared the combined
+                // accumulator against a from-scratch rebuild of both halves.
+                if self.threat_stack.active && net.has_threats && !fused {
                     static THREAT_PANIC: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
                     static THREAT_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
                     static THREAT_MISMATCHES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -2547,7 +2573,9 @@ impl SearchInfo {
     fn materialize_tt_barrier(&mut self, board: &Board) {
         if let (Some(net), Some(acc)) = (&self.nnue_net, &mut self.nnue_acc) {
             if acc.has_unmaterialized_psq_barrier() {
-                acc.materialize(net, board);
+                // Under threat fusion the other perspective may replay, which
+                // needs the threat deltas (ignored when unfused).
+                acc.materialize_with(net, board, Some(&mut self.threat_stack));
             }
         }
     }
@@ -3937,6 +3965,15 @@ pub(crate) fn search_helper(board: &mut Board, info: &mut SearchInfo, _limits: &
             info.threat_stack.refresh(&net.threat_weights, net.num_threat_features, board, BLACK);
         }
     }
+    // Fused PSQ+threat accumulator (NNUEAccumulator::set_threat_fusion):
+    // decided per search, after REFRESH_MODE, because it needs the threat
+    // deltas that refresh mode stops generating. A mode change invalidates the
+    // stack, so rebuild the root here.
+    if let (Some(net), Some(acc)) = (&info.nnue_net, &mut info.nnue_acc) {
+        acc.set_threat_fusion(info.threat_stack.active && net.threat_fusion_ok()
+            && !crate::threat_accum::refresh_mode());
+        acc.materialize(net, board);
+    }
 
     let root_legal = generate_legal_moves(board);
     let mut best_move = if root_legal.len > 0 { root_legal.get(0) } else { NO_MOVE };
@@ -4166,6 +4203,15 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             info.threat_stack.refresh(&net.threat_weights, net.num_threat_features, board, WHITE);
             info.threat_stack.refresh(&net.threat_weights, net.num_threat_features, board, BLACK);
         }
+    }
+    // Fused PSQ+threat accumulator (NNUEAccumulator::set_threat_fusion):
+    // decided per search, after REFRESH_MODE, because it needs the threat
+    // deltas that refresh mode stops generating. A mode change invalidates the
+    // stack, so rebuild the root here.
+    if let (Some(net), Some(acc)) = (&info.nnue_net, &mut info.nnue_acc) {
+        acc.set_threat_fusion(info.threat_stack.active && net.threat_fusion_ok()
+            && !crate::threat_accum::refresh_mode());
+        acc.materialize(net, board);
     }
 
     info.start_time = Instant::now();
@@ -9016,6 +9062,9 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool,
                   if full > 0 { acc.stats_rebuild_chain as f64 * 100.0 / full as f64 } else { 0.0 });
         eprintln!("NNUE incremental:   {:>10} ({:>5.2}% of evals)", incr,
                   if total_evals > 0 { incr as f64 * 100.0 / total_evals as f64 } else { 0.0 });
+        if acc.stats_block_swaps > 0 {
+            eprintln!("  of which block swaps: {}", acc.stats_block_swaps);
+        }
         eprintln!("TT static-eval hit: {:>10} ({:>5.2}% of call sites)", tt,
                   if eval_call_attempts > 0 { tt as f64 * 100.0 / eval_call_attempts as f64 } else { 0.0 });
         eprintln!("Already-computed:   {:>10}", skip);
