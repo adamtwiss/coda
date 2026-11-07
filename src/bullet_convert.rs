@@ -640,6 +640,7 @@ pub fn convert_v7(
         HiddenGate::None => "",
         HiddenGate::Pair => " gate=pair",
         HiddenGate::Sq => " gate=sq",
+        HiddenGate::Sig => " gate=sig",
     };
     println!("Saved {} ({} bytes, v{}{}{}{} FT={} L1={} L2={})", output_path, buf.len(), version, dual_str, threat_str, gate_str, h, l1_size, l2_size);
     Ok(())

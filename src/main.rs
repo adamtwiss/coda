@@ -577,7 +577,7 @@ enum Commands {
         #[arg(long)]
         l1_raw: bool,
         /// Net was trained with a gated second hidden layer (trainer
-        /// --hidden-gate pair|sq): L2 emits a gate half and a value half whose
+        /// --hidden-gate pair|sq|sig): L2 emits a gate half and a value half whose
         /// product feeds the output. Sets arch_flags2 bits 5-6. Default none.
         #[arg(long, default_value = "none")]
         hidden_gate: String,

@@ -444,12 +444,15 @@ impl KbLayout {
 /// reproduces the ungated layer exactly.
 ///   - `Pair`: `crelu(g) * crelu(v)`
 ///   - `Sq`:   `screlu(g) * crelu(v)` — squared gate, so it opens more softly
-/// with crelu = clamp(x, 0, 1) and screlu = crelu², both in float.
+///   - `Sig`:  `sigmoid(g) * crelu(v)` — smooth gate on the unclamped g, never
+///     exactly 0 or 1, so no unit is switched fully off
+/// with crelu = clamp(x, 0, 1) and screlu = crelu², all in float.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum HiddenGate {
     None = 0,
     Pair = 1,
     Sq = 2,
+    Sig = 3,
 }
 
 /// arch_flags2 bit position / mask of the 2-bit hidden-gate field.
@@ -462,17 +465,19 @@ impl HiddenGate {
             "none" => Ok(HiddenGate::None),
             "pair" => Ok(HiddenGate::Pair),
             "sq" => Ok(HiddenGate::Sq),
-            other => Err(format!("unknown hidden gate {other:?}; expected none | pair | sq")),
+            "sig" => Ok(HiddenGate::Sig),
+            other => Err(format!("unknown hidden gate {other:?}; expected none | pair | sq | sig")),
         }
     }
 
-    /// Decode the gate field of an arch_flags2 byte. Field value 3 is
-    /// reserved and rejected rather than guessed at.
+    /// Decode the gate field of an arch_flags2 byte. All four values of the
+    /// 2-bit field are assigned.
     pub fn from_arch_flags2(flags: u8) -> Option<Self> {
         match (flags & ARCH2_GATE_MASK) >> ARCH2_GATE_SHIFT {
             0 => Some(HiddenGate::None),
             1 => Some(HiddenGate::Pair),
             2 => Some(HiddenGate::Sq),
+            3 => Some(HiddenGate::Sig),
             _ => None,
         }
     }
@@ -490,6 +495,7 @@ impl HiddenGate {
             HiddenGate::None => vc,
             HiddenGate::Pair => gc * vc,
             HiddenGate::Sq => (gc * gc) * vc,
+            HiddenGate::Sig => vc / (1.0 + (-g).exp()),
         }
     }
 }
@@ -3684,6 +3690,7 @@ impl NNUENet {
             HiddenGate::None => if dual_l1 { " dual" } else { "" },
             HiddenGate::Pair => if dual_l1 { " dual gate=pair" } else { " gate=pair" },
             HiddenGate::Sq => if dual_l1 { " dual gate=sq" } else { " gate=sq" },
+            HiddenGate::Sig => if dual_l1 { " dual gate=sig" } else { " gate=sig" },
         };
         let bucket_str = match kb_layout {
             KbLayout::Uniform   => "",
@@ -4784,7 +4791,8 @@ impl NNUENet {
         let out_w = &self.out_weights_f[bucket * l2..bucket * l2 + l2];
         let bias = self.out_bias_f[bucket];
         let sq = self.hidden_gate == HiddenGate::Sq;
-        if l2 == 32 {
+        // Sig has no SIMD kernel yet (fail-fast stage): it takes the scalar path.
+        if l2 == 32 && self.hidden_gate != HiddenGate::Sig {
             #[cfg(target_arch = "x86_64")]
             unsafe {
                 if self.has_avx512 {
@@ -4820,6 +4828,7 @@ impl NNUENet {
         let (g, v) = pre.split_at_mut(l2);
         match self.hidden_gate {
             HiddenGate::Sq => for k in 0..l2 { v[k] = HiddenGate::Sq.apply(g[k], v[k]); },
+            HiddenGate::Sig => for k in 0..l2 { v[k] = HiddenGate::Sig.apply(g[k], v[k]); },
             _ => for k in 0..l2 { v[k] = HiddenGate::Pair.apply(g[k], v[k]); },
         }
         let out_f = dot_out_canonical(v, out_w, bias);
@@ -9583,6 +9592,7 @@ mod hidden_gate_tests {
             let a = match gate {
                 HiddenGate::Pair => crelu(g) * crelu(v),
                 HiddenGate::Sq => crelu(g) * crelu(g) * crelu(v),
+                HiddenGate::Sig => crelu(v) / (1.0 + (-g).exp()),
                 HiddenGate::None => unreachable!(),
             };
             out += a * hid.l3w[k * OB + bucket] as f64;
@@ -9592,13 +9602,13 @@ mod hidden_gate_tests {
 
     #[test]
     fn hidden_gate_flag_roundtrip() {
-        for g in [HiddenGate::None, HiddenGate::Pair, HiddenGate::Sq] {
+        for g in [HiddenGate::None, HiddenGate::Pair, HiddenGate::Sq, HiddenGate::Sig] {
             let bits = g.to_arch_flags2_bits();
             assert_eq!(bits & !ARCH2_GATE_MASK, 0);
             // Other arch_flags2 bits must not disturb the field.
             assert_eq!(HiddenGate::from_arch_flags2(bits | 1 | 16), Some(g));
         }
-        assert_eq!(HiddenGate::from_arch_flags2(ARCH2_GATE_MASK), None);
+        assert_eq!(HiddenGate::from_arch_flags2(ARCH2_GATE_MASK), Some(HiddenGate::Sig));
     }
 
     /// The engine's gated tail (loaded through the real converter + loader)
@@ -9607,7 +9617,7 @@ mod hidden_gate_tests {
     fn gated_tail_matches_float_reference() {
         let _space = crate::threats::FEATURE_SPACE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         crate::init();
-        for (gi, gate) in [HiddenGate::Pair, HiddenGate::Sq].into_iter().enumerate() {
+        for (gi, gate) in [HiddenGate::Pair, HiddenGate::Sq, HiddenGate::Sig].into_iter().enumerate() {
             let hid = random_hidden(0x9e37_79b9 + gi as u64, 2 * L2);
             let (bin, out) = (tmp(&format!("ref{gi}.bin")), tmp(&format!("ref{gi}.nnue")));
             write_bin(&bin, 7, &hid);
@@ -9637,8 +9647,17 @@ mod hidden_gate_tests {
                 let got = net.gated_l2_output(&x, bucket, raw);
                 // The fused kernel must be bit-identical to the two-pass form
                 // it replaced, on every tier.
-                assert_eq!(got, net.gated_l2_output_twopass(&x, bucket, raw),
-                    "{:?} tier {} trial {}: fused vs two-pass", gate, tier, trial);
+                // Sig has no SIMD kernel: it always takes the scalar tail, whose
+                // output dot is the canonical (unfused) one, while the two-pass
+                // oracle uses the FMA dot on SIMD tiers — a 1-unit rounding gap.
+                let twopass = net.gated_l2_output_twopass(&x, bucket, raw);
+                if gate == HiddenGate::Sig && tier < 2 {
+                    assert!((got - twopass).abs() <= 1,
+                        "{:?} tier {} trial {}: fused {} vs two-pass {}", gate, tier, trial, got, twopass);
+                } else {
+                    assert_eq!(got, twopass,
+                        "{:?} tier {} trial {}: fused vs two-pass", gate, tier, trial);
+                }
                 let want = reference(&hid, gate, &x, bucket, raw);
                 let err = (got as f64 - want.trunc()).abs();
                 max_err = max_err.max(err);
@@ -9702,6 +9721,7 @@ mod hidden_gate_tests {
         l2b[L2..].copy_from_slice(&base.l2b);
         let gated_hid = Hidden { l2w, l2b, l3w: base.l3w.clone(), l3b: base.l3b.clone(), l1rw: base.l1rw.clone() };
 
+        // Sig is excluded: a sigmoid never reaches exactly 1, so it cannot saturate.
         for (gi, gate) in [HiddenGate::Pair, HiddenGate::Sq].into_iter().enumerate() {
             let (gbin, gnet) = (tmp(&format!("g{gi}.bin")), tmp(&format!("g{gi}.nnue")));
             write_bin(&gbin, 99, &gated_hid);
@@ -9728,7 +9748,7 @@ mod hidden_gate_tests {
         crate::init();
         let hid = random_hidden(777, 2 * L2);
         let mut evals = Vec::new();
-        for (gi, gate) in [HiddenGate::Pair, HiddenGate::Sq].into_iter().enumerate() {
+        for (gi, gate) in [HiddenGate::Pair, HiddenGate::Sq, HiddenGate::Sig].into_iter().enumerate() {
             let (bin, out) = (tmp(&format!("live{gi}.bin")), tmp(&format!("live{gi}.nnue")));
             write_bin(&bin, 5, &hid);
             let net = convert(&bin, &out, gate);
