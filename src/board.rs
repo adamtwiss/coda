@@ -352,6 +352,58 @@ impl Board {
         k ^ piece_key(dest, to)
     }
 
+    /// Per-node half of `quiet_child_key`: the current hash with the side
+    /// flipped and any HASHED en-passant key removed (the child of a quiet
+    /// move never inherits the parent's EP square). Computed once per node by
+    /// the move picker, so the per-move part is a few XORs.
+    #[inline]
+    pub fn quiet_child_key_base(&self) -> u64 {
+        let mut k = self.hash ^ side_key();
+        if self.ep_square != NO_SQUARE
+            && ep_capture_available(&self.pieces, &self.colors, self.side_to_move, self.ep_square)
+        {
+            k ^= ep_key(file_of(self.ep_square));
+        }
+        k
+    }
+
+    /// EXACT Zobrist key after a plain quiet move (no capture, castle or
+    /// promotion), given `base = self.quiet_child_key_base()`. Unlike
+    /// `key_after` (prefetch-only, approximate), this one is used to READ the
+    /// child's TT entry, so it must agree with `make_move` bit for bit:
+    /// castling-right loss is applied through `castle_hash`, and the parent's
+    /// EP key is already out of `base`. A double push whose EP square COULD be
+    /// hashed (an enemy pawn stands beside the destination) returns `None`
+    /// rather than replaying the EP legality test; every other quiet is exact.
+    #[inline]
+    pub fn quiet_child_key(&self, base: u64, mv: Move) -> Option<u64> {
+        let from = move_from(mv);
+        let to = move_to(mv);
+        let flags = move_flags(mv);
+        if flags != FLAG_NONE {
+            return None;
+        }
+        let pt = self.piece_type_at(from);
+        if pt >= 6 || self.piece_type_at(to) < 6 {
+            return None;
+        }
+        let us = self.side_to_move;
+        if pt == PAWN && from.abs_diff(to) == 16 {
+            let to_bb = 1u64 << to;
+            let beside = ((to_bb << 1) & NOT_FILE_A) | ((to_bb >> 1) & NOT_FILE_H);
+            if beside & self.pieces[PAWN as usize] & self.colors[(1 - us) as usize] != 0 {
+                return None;
+            }
+        }
+        let p = make_piece(us, pt);
+        let mut k = base ^ piece_key(p, from) ^ piece_key(p, to);
+        let new_rights = self.castling & self.castle_mask[from as usize] & self.castle_mask[to as usize];
+        if new_rights != self.castling {
+            k ^= self.castle_hash(self.castling) ^ self.castle_hash(new_rights);
+        }
+        Some(k)
+    }
+
     #[inline]
     fn move_piece(&mut self, color: Color, pt: u8, from: u8, to: u8) {
         let from_to = (1u64 << from) | (1u64 << to);
@@ -1814,6 +1866,56 @@ mod tests {
         b.unmake_move();
         assert_eq!(b.to_fen(), fen_before);
         assert_eq!(b.hash, hash_before);
+    }
+
+    /// `quiet_child_key` is used to READ child TT entries for move ordering,
+    /// so whenever it returns a key, that key must equal the real post-move
+    /// hash. Random legal games over castling-, EP- and 960-rich starts;
+    /// every legal move is checked at every ply (make, compare, unmake).
+    #[test]
+    fn fuzz_quiet_child_key_matches_make_move() {
+        use crate::movegen::generate_legal_moves;
+        init();
+        const START_FENS: &[&str] = &[
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+            "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+            "rnbqkbnr/1ppp1ppp/p7/3Pp3/8/8/PPP1PPPP/RNBQKBNR w KQkq e6 0 3",
+            "4k3/8/8/8/8/8/PPPPPPPP/4K3 w - - 0 1",
+            "8/2p1p3/8/K2P3r/8/8/8/7k b - - 0 1",
+            "1r1k1rr1/pp1ppp1p/8/2p3p1/2P3P1/8/PP1PPP1P/1R1K1RR1 w FBfb - 0 1",
+        ];
+        fn next_u32(state: &mut u32) -> u32 {
+            let mut x = *state;
+            x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+            *state = x; x
+        }
+        let mut checked = 0usize;
+        for (fen_idx, fen) in START_FENS.iter().enumerate() {
+            for game in 0..20u32 {
+                let mut rng = 0x5EED_1234u32
+                    .wrapping_add((fen_idx as u32).wrapping_mul(1_000_003))
+                    .wrapping_add(game.wrapping_mul(7919));
+                let mut board = Board::from_fen(fen);
+                for _ply in 0..80 {
+                    let legal = generate_legal_moves(&board);
+                    if legal.len == 0 { break; }
+                    let base = board.quiet_child_key_base();
+                    for i in 0..legal.len {
+                        let mv = legal.get(i);
+                        if let Some(k) = board.quiet_child_key(base, mv) {
+                            board.make_move(mv);
+                            assert_eq!(k, board.hash, "child key mismatch after {} ({})",
+                                crate::types::move_to_uci(mv), fen);
+                            board.unmake_move();
+                            checked += 1;
+                        }
+                    }
+                    let mv = legal.get((next_u32(&mut rng) as usize) % legal.len);
+                    board.make_move(mv);
+                }
+            }
+        }
+        assert!(checked > 10_000, "too few quiet keys checked: {}", checked);
     }
 
     /// Deterministic fuzzer: plays random legal games from several start

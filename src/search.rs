@@ -736,6 +736,15 @@ tunables!(
     // movers (a queen threatening a minor) harder and sharpens the contrast
     // between favourable and even threats; < 100 flattens it.
     (OFFENSE_MOVER_W_PCT, 102, 25, 400, 20.0, false),
+    // TT lookahead in quiet ordering: at depth >= TTLA_MIN_DEPTH, probe each
+    // plain quiet's child position and add its stored static-eval swing to the
+    // ordering score (exchange rate and clamp derived in movepicker,
+    // TTLA_HIST_PER_CP). The default min depth is the effective IIR gate
+    // (IIR_MIN_DEPTH_10X 41 -> 4): the depth from which Coda already pays
+    // for better ordering when the TT has no move. SCALE_PCT 0 or a min depth
+    // above any reachable depth switches the term off entirely (no probes).
+    (TTLA_MIN_DEPTH, 4, 1, 64, 1.0, false),
+    (TTLA_SCALE_PCT, 100, 0, 300, 15.0, false),
     // --- Pruning depth gates ---
     // These are sensitive to eval quality and want re-calibrating after a net
     // change, which is why they are tunable rather than hardcoded.
@@ -6687,6 +6696,15 @@ fn negamax(
         MovePicker::new(board, tt_move, safe_ply, checkers, pinned, &info.history, &info.cont, prev_move, pawn_hist_ref, enemy_attacks, &info.moved_piece_stack, &info.moved_to_stack)
     };
     picker.threat_sq = threat_sq;
+    // TT lookahead for quiet ordering. Needs a real parent eval (raw_eval is
+    // -INFINITY in check, where the evasion picker scores no quiets anyway).
+    if !in_check
+        && depth >= TTLA_MIN_DEPTH.load(Ordering::Relaxed)
+        && TTLA_SCALE_PCT.load(Ordering::Relaxed) > 0
+        && raw_eval > -4095 && raw_eval < 4095
+    {
+        picker.enable_child_tt(&info.tt, raw_eval);
+    }
 
     let mut best_move = NO_MOVE;
     let mut best_score = -INFINITY;

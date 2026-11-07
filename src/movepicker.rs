@@ -20,6 +20,16 @@ use crate::types::*;
 
 const MAX_HISTORY: i32 = 16384;
 
+/// TT-lookahead exchange rate: history units per centipawn of child-eval
+/// swing, at TTLA_SCALE_PCT = 100. Derived from Coda's own quiet futility:
+/// at the frontier (lmr_depth 1) a quiet is pruned once it sits more than
+/// FUT_BASE + FUT_PER_DEPTH = 85 + 96 = 181 cp below alpha, i.e. 181 cp is
+/// the eval gap Coda already treats as deciding a quiet. Mapping that gap
+/// onto one full history span gives MAX_HISTORY / 181 = 16384 / 181 ~= 90.
+/// The adjustment is then clamped to +-MAX_HISTORY, so lookahead can move a
+/// quiet by at most what one saturated history table can.
+const TTLA_HIST_PER_CP: i32 = 90;
+
 /// Bitboard type alias for threat computation.
 pub type Threats = u64;
 
@@ -300,6 +310,11 @@ pub struct MovePicker {
     // Checking squares: from which squares does each piece type give direct check?
     // Indexed by piece type (0=PAWN..5=KING). Computed once per node.
     checking_sqs: [Bitboard; 6],
+    /// TT lookahead for quiet ordering (see `enable_child_tt`). Null = off.
+    child_tt: *const crate::tt::TT,
+    /// The node's own raw (uncorrected, halfmove-independent) static eval,
+    /// the reference the child evals are measured against.
+    child_parent_eval: i32,
 }
 
 impl MovePicker {
@@ -367,7 +382,20 @@ impl MovePicker {
             // so nodes that cut off before the quiet stage never pay the
             // 4 attack computations.
             checking_sqs: [0; 6],
+            child_tt: std::ptr::null(),
+            child_parent_eval: 0,
         }
+    }
+
+    /// Turn on TT lookahead for quiet scoring: each plain quiet's CHILD
+    /// position is probed and, when the child has a stored static eval, the
+    /// eval swing the move produces is folded into its ordering score. The
+    /// caller gates this (depth, scale > 0, a usable parent eval); the TT
+    /// outlives the picker, which lives inside one negamax frame.
+    #[inline]
+    pub fn enable_child_tt(&mut self, tt: &crate::tt::TT, parent_raw_eval: i32) {
+        self.child_tt = tt as *const crate::tt::TT;
+        self.child_parent_eval = parent_raw_eval;
     }
 
     /// Create a MovePicker for quiescence search (captures only).
@@ -404,6 +432,8 @@ impl MovePicker {
             pinned,
             threat_sq: -1,
             checking_sqs: [0; 6], // not used in QS
+            child_tt: std::ptr::null(),
+            child_parent_eval: 0,
         }
     }
 
@@ -467,6 +497,8 @@ impl MovePicker {
             pinned,
             threat_sq: -1,
             checking_sqs: [0; 6], // not used in evasions
+            child_tt: std::ptr::null(),
+            child_parent_eval: 0,
         }
     }
 
@@ -710,6 +742,14 @@ impl MovePicker {
             ((their_pawns & !FILE_A) >> 9) | ((their_pawns & !FILE_H) >> 7)
         };
 
+        // TT lookahead (enabled by the caller via `enable_child_tt`). The
+        // child key base and the per-centipawn rate are per-node constants.
+        let child_tt = if self.child_tt.is_null() { None } else { Some(unsafe { &*self.child_tt }) };
+        let child_base = if child_tt.is_some() { board.quiet_child_key_base() } else { 0 };
+        let child_rate = TTLA_HIST_PER_CP
+            * crate::search::TTLA_SCALE_PCT.load(Ordering::Relaxed);
+        let parent_eval = self.child_parent_eval;
+
         for i in 0..quiets.len {
             let m = quiets.get(i);
             if m == self.tt_move {
@@ -826,6 +866,22 @@ impl MovePicker {
                             && popcount(attacks_from_to & enemy_non_pawns) >= 2 {
                             score += kf_bonus;
                         }
+                    }
+                }
+            }
+
+            // TT lookahead: if the child position already has a stored static
+            // eval, order by the eval swing the move produced. The child eval
+            // is from the opponent's side, so the swing from our side is
+            // -child - parent; both are raw (uncorrected, halfmove-free) evals,
+            // the form the TT stores, so they share a scale. -4095 is the
+            // TT's in-check sentinel (see the probe in negamax) — skip it.
+            if let Some(tt) = child_tt {
+                if let Some(key) = board.quiet_child_key(child_base, m) {
+                    let e = tt.probe(key);
+                    if e.hit && e.static_eval > -4095 {
+                        let swing = -e.static_eval - parent_eval;
+                        score += (swing * child_rate / 100).clamp(-MAX_HISTORY, MAX_HISTORY);
                     }
                 }
             }
