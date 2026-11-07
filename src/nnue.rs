@@ -2100,6 +2100,129 @@ unsafe fn dot_fmadd_avx2_x32(a: &[f32], b: &[f32], bias: f32) -> f32 {
     let s = _mm_hadd_ps(s, s);
     bias + _mm_cvtss_f32(s)
 }
+
+/// Fused gated L2 + gate + output dot for `l2 == 32` (AVX-2). One pass over
+/// the L2 inputs drives EIGHT accumulators — four for the gate rows, four for
+/// the value rows — so the 64 pre-activations never leave registers; the gate
+/// is applied in-register and the products feed the output dot directly.
+///
+/// Why one pass and not two: each output lane is a dependent chain of one FMA
+/// per input, so a 4-accumulator pass is bound by FMA latency, not throughput,
+/// and two such passes back to back paid that latency twice. Eight
+/// independent chains fill the FMA ports the single-pass ungated kernel leaves
+/// idle, so the gate half rides along for nearly free.
+///
+/// Bit-identical to the two-pass form: every lane's chain is the same
+/// `bias, fma(x_0, w), fma(x_1, w), ...` sequence as `l2_fmadd_avx2_x32`,
+/// the clamp is the `crelu_f32_avx2_x32` shape (which matches `f32::clamp`
+/// including on -0.0), the gate products associate as `HiddenGate::apply`
+/// does (`(gc * gc) * vc` for `SQ`), and the dot is `dot_fmadd_avx2_x32`'s
+/// association, i.e. the canonical one (`dot_out_canonical`).
+///
+/// Preconditions: `w` holds rows of exactly 64 floats (`w[i * 64 ..][..32]`
+/// gate, `[32..64]` value) for every `i < l1_out.len()`; `b.len() >= 64`;
+/// `out_w.len() >= 32`.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,fma")]
+unsafe fn gated_l2_dot_avx2_x32<const SQ: bool>(
+    l1_out: &[f32], w: &[f32], b: &[f32], out_w: &[f32], bias: f32,
+) -> f32 {
+    let bp = b.as_ptr();
+    let mut g0 = _mm256_loadu_ps(bp);
+    let mut g1 = _mm256_loadu_ps(bp.add(8));
+    let mut g2 = _mm256_loadu_ps(bp.add(16));
+    let mut g3 = _mm256_loadu_ps(bp.add(24));
+    let mut v0 = _mm256_loadu_ps(bp.add(32));
+    let mut v1 = _mm256_loadu_ps(bp.add(40));
+    let mut v2 = _mm256_loadu_ps(bp.add(48));
+    let mut v3 = _mm256_loadu_ps(bp.add(56));
+    let mut wp = w.as_ptr();
+    for &x in l1_out {
+        // Branchless for the same reason as `l2_fmadd_avx2_x32`. The
+        // per-input broadcast is a load-port `vbroadcastss`; splatting from a
+        // register instead (8 inputs per load + in-lane shuffles) measured
+        // flat, and LLVM folds it back to the memory broadcast anyway.
+        let xb = _mm256_set1_ps(x);
+        g0 = _mm256_fmadd_ps(xb, _mm256_loadu_ps(wp), g0);
+        g1 = _mm256_fmadd_ps(xb, _mm256_loadu_ps(wp.add(8)), g1);
+        g2 = _mm256_fmadd_ps(xb, _mm256_loadu_ps(wp.add(16)), g2);
+        g3 = _mm256_fmadd_ps(xb, _mm256_loadu_ps(wp.add(24)), g3);
+        v0 = _mm256_fmadd_ps(xb, _mm256_loadu_ps(wp.add(32)), v0);
+        v1 = _mm256_fmadd_ps(xb, _mm256_loadu_ps(wp.add(40)), v1);
+        v2 = _mm256_fmadd_ps(xb, _mm256_loadu_ps(wp.add(48)), v2);
+        v3 = _mm256_fmadd_ps(xb, _mm256_loadu_ps(wp.add(56)), v3);
+        wp = wp.add(64);
+    }
+    let zero = _mm256_setzero_ps();
+    let one = _mm256_set1_ps(1.0);
+    let gate = |g: __m256, v: __m256| -> __m256 {
+        let gc = _mm256_max_ps(zero, _mm256_min_ps(one, g));
+        let vc = _mm256_max_ps(zero, _mm256_min_ps(one, v));
+        if SQ { _mm256_mul_ps(_mm256_mul_ps(gc, gc), vc) } else { _mm256_mul_ps(gc, vc) }
+    };
+    let h0 = gate(g0, v0);
+    let h1 = gate(g1, v1);
+    let h2 = gate(g2, v2);
+    let h3 = gate(g3, v3);
+    let op = out_w.as_ptr();
+    let p = _mm256_mul_ps(h0, _mm256_loadu_ps(op));
+    let p = _mm256_fmadd_ps(h1, _mm256_loadu_ps(op.add(8)), p);
+    let p = _mm256_fmadd_ps(h2, _mm256_loadu_ps(op.add(16)), p);
+    let p = _mm256_fmadd_ps(h3, _mm256_loadu_ps(op.add(24)), p);
+    let s = _mm_add_ps(_mm256_castps256_ps128(p), _mm256_extractf128_ps(p, 1));
+    let s = _mm_hadd_ps(s, s);
+    let s = _mm_hadd_ps(s, s);
+    bias + _mm_cvtss_f32(s)
+}
+
+/// AVX-512 sibling of `gated_l2_dot_avx2_x32`: two ZMM accumulators per half,
+/// same per-lane FMA chains, same clamp/gate. The output dot is then folded
+/// on 256-bit halves exactly as the AVX-2 kernel does, so the canonical
+/// association (`dot_out_canonical`) holds on AVX-512 hosts too.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f,avx2,fma")]
+unsafe fn gated_l2_dot_avx512_x32<const SQ: bool>(
+    l1_out: &[f32], w: &[f32], b: &[f32], out_w: &[f32], bias: f32,
+) -> f32 {
+    let bp = b.as_ptr();
+    let mut g_lo = _mm512_loadu_ps(bp);
+    let mut g_hi = _mm512_loadu_ps(bp.add(16));
+    let mut v_lo = _mm512_loadu_ps(bp.add(32));
+    let mut v_hi = _mm512_loadu_ps(bp.add(48));
+    let mut wp = w.as_ptr();
+    for &x in l1_out {
+        let xb = _mm512_set1_ps(x);
+        g_lo = _mm512_fmadd_ps(xb, _mm512_loadu_ps(wp), g_lo);
+        g_hi = _mm512_fmadd_ps(xb, _mm512_loadu_ps(wp.add(16)), g_hi);
+        v_lo = _mm512_fmadd_ps(xb, _mm512_loadu_ps(wp.add(32)), v_lo);
+        v_hi = _mm512_fmadd_ps(xb, _mm512_loadu_ps(wp.add(48)), v_hi);
+        wp = wp.add(64);
+    }
+    let zero = _mm512_setzero_ps();
+    let one = _mm512_set1_ps(1.0);
+    let gate = |g: __m512, v: __m512| -> __m512 {
+        let gc = _mm512_max_ps(zero, _mm512_min_ps(one, g));
+        let vc = _mm512_max_ps(zero, _mm512_min_ps(one, v));
+        if SQ { _mm512_mul_ps(_mm512_mul_ps(gc, gc), vc) } else { _mm512_mul_ps(gc, vc) }
+    };
+    let h_lo = gate(g_lo, v_lo);
+    let h_hi = gate(g_hi, v_hi);
+    // Split into the four 8-lane groups of the canonical fold.
+    let h0 = _mm512_castps512_ps256(h_lo);
+    let h1 = _mm256_castpd_ps(_mm512_extractf64x4_pd(_mm512_castps_pd(h_lo), 1));
+    let h2 = _mm512_castps512_ps256(h_hi);
+    let h3 = _mm256_castpd_ps(_mm512_extractf64x4_pd(_mm512_castps_pd(h_hi), 1));
+    let op = out_w.as_ptr();
+    let p = _mm256_mul_ps(h0, _mm256_loadu_ps(op));
+    let p = _mm256_fmadd_ps(h1, _mm256_loadu_ps(op.add(8)), p);
+    let p = _mm256_fmadd_ps(h2, _mm256_loadu_ps(op.add(16)), p);
+    let p = _mm256_fmadd_ps(h3, _mm256_loadu_ps(op.add(24)), p);
+    let s = _mm_add_ps(_mm256_castps256_ps128(p), _mm256_extractf128_ps(p, 1));
+    let s = _mm_hadd_ps(s, s);
+    let s = _mm_hadd_ps(s, s);
+    bias + _mm_cvtss_f32(s)
+}
+
 /// Find non-zero 64-byte chunk indices in a packed u8 buffer (AVX-512).
 /// Returns the number of NNZ chunks. nnz_indices[0..count] contains byte offsets.
 #[cfg(target_arch = "x86_64")]
@@ -2196,6 +2319,59 @@ unsafe fn crelu_f32_neon_x32(h2: &mut [f32]) {
         vst1q_f32(p.add(off), vmaxq_f32(zeros, vminq_f32(ones, v)));
     }
 }
+
+/// NEON mirror of `gated_l2_dot_avx2_x32`: sixteen float32x4 accumulators
+/// (eight gate, eight value) in one pass over the L2 inputs, gate applied
+/// in-register, output dot in the canonical association (`dot_out_canonical`:
+/// eight running lanes — here two float32x4 — one multiply then three fused
+/// multiply-adds, folded 8 -> 4 -> 2 -> 1).
+///
+/// Per-lane FMA chains match `l2_fmadd_neon_x32`. One deliberate difference
+/// from the scalar gate: `vmaxq_f32(0, -0.0)` is +0.0 where `f32::clamp`
+/// keeps -0.0. A zero's sign survives only as the sign of a zero product or
+/// sum (x + ±0 == x for x != 0), so the returned value can differ at most in
+/// the sign of an exact zero — never after the caller's integer conversion.
+#[cfg(target_arch = "aarch64")]
+unsafe fn gated_l2_dot_neon_x32<const SQ: bool>(
+    l1_out: &[f32], w: &[f32], b: &[f32], out_w: &[f32], bias: f32,
+) -> f32 {
+    let bp = b.as_ptr();
+    let mut g = [vdupq_n_f32(0.0); 8];
+    let mut v = [vdupq_n_f32(0.0); 8];
+    for k in 0..8 {
+        g[k] = vld1q_f32(bp.add(4 * k));
+        v[k] = vld1q_f32(bp.add(32 + 4 * k));
+    }
+    let mut wp = w.as_ptr();
+    for &x in l1_out {
+        for k in 0..8 {
+            g[k] = vfmaq_n_f32(g[k], vld1q_f32(wp.add(4 * k)), x);
+            v[k] = vfmaq_n_f32(v[k], vld1q_f32(wp.add(32 + 4 * k)), x);
+        }
+        wp = wp.add(64);
+    }
+    let zero = vdupq_n_f32(0.0);
+    let one = vdupq_n_f32(1.0);
+    let mut h = [zero; 8];
+    for k in 0..8 {
+        let gc = vmaxq_f32(zero, vminq_f32(one, g[k]));
+        let vc = vmaxq_f32(zero, vminq_f32(one, v[k]));
+        h[k] = if SQ { vmulq_f32(vmulq_f32(gc, gc), vc) } else { vmulq_f32(gc, vc) };
+    }
+    // Canonical fold: lanes j = 0..8 of each 8-wide group live in h[2g], h[2g+1].
+    let op = out_w.as_ptr();
+    let mut p_lo = vmulq_f32(h[0], vld1q_f32(op));
+    let mut p_hi = vmulq_f32(h[1], vld1q_f32(op.add(4)));
+    for grp in 1..4 {
+        p_lo = vfmaq_f32(p_lo, h[2 * grp], vld1q_f32(op.add(8 * grp)));
+        p_hi = vfmaq_f32(p_hi, h[2 * grp + 1], vld1q_f32(op.add(8 * grp + 4)));
+    }
+    let s = vaddq_f32(p_lo, p_hi); // [s0, s1, s2, s3]
+    let s01 = vgetq_lane_f32::<0>(s) + vgetq_lane_f32::<1>(s);
+    let s23 = vgetq_lane_f32::<2>(s) + vgetq_lane_f32::<3>(s);
+    bias + (s01 + s23)
+}
+
 /// Add a weight row to an accumulator (NEON, 8 × i16 per iteration).
 #[cfg(target_arch = "aarch64")]
 unsafe fn neon_acc_add(acc: &mut [i16], row: &[i16], h: usize) {
@@ -4560,6 +4736,7 @@ impl NNUENet {
     /// ungated L2 (32-wide SIMD where present, else the skip-zero scalar loop),
     /// so a gated net's value half is computed bit-identically to an ungated
     /// L2 with the same weights.
+    #[cfg(test)]
     #[inline(always)]
     fn l2_half(&self, l1_out: &[f32], off: usize, n: usize, out: &mut [f32]) {
         let rows = self.l2_rows;
@@ -4590,10 +4767,71 @@ impl NNUENet {
     /// Gated L2 + output layer (see [`HiddenGate`]). `l1_out` is the activated
     /// L1 output (dual-concatenated when `dual_l1`); `raw_f` the raw L1 readout
     /// term. Returns centipawns exactly as the ungated tail does.
+    ///
+    /// The L2 weights are already in the layout a fused kernel wants: input
+    /// `i`'s row is `2 * l2` contiguous floats, gate rows then value rows. At
+    /// `l2 == 32` that is one 256-byte row per input, consumed in a single
+    /// pass that keeps all 64 pre-activations in registers, gates them there
+    /// and feeds the output dot (`gated_l2_dot_*_x32`). Other widths take the
+    /// scalar fallback, which fuses the same way through a stack buffer.
     #[inline(never)]
     fn gated_l2_output(&self, l1_out: &[f32], bucket: usize, raw_f: f32) -> i32 {
         let l2 = self.l2_per_bucket;
-        assert!(l2 <= NNUE_L2_BUF, "l2 {} exceeds NNUE_L2_BUF {}", l2, NNUE_L2_BUF);
+        let rows = self.l2_rows;
+        assert!(l2 <= NNUE_L2_BUF && rows == 2 * l2, "gated l2 {} / rows {}", l2, rows);
+        let w = &self.l2_weights_f[..l1_out.len() * rows];
+        let b = &self.l2_biases_f[..rows];
+        let out_w = &self.out_weights_f[bucket * l2..bucket * l2 + l2];
+        let bias = self.out_bias_f[bucket];
+        let sq = self.hidden_gate == HiddenGate::Sq;
+        if l2 == 32 {
+            #[cfg(target_arch = "x86_64")]
+            unsafe {
+                if self.has_avx512 {
+                    let out_f = if sq { gated_l2_dot_avx512_x32::<true>(l1_out, w, b, out_w, bias) }
+                                else { gated_l2_dot_avx512_x32::<false>(l1_out, w, b, out_w, bias) };
+                    return ((out_f + raw_f) * EVAL_SCALE as f32) as i32;
+                }
+                if self.has_avx2 {
+                    let out_f = if sq { gated_l2_dot_avx2_x32::<true>(l1_out, w, b, out_w, bias) }
+                                else { gated_l2_dot_avx2_x32::<false>(l1_out, w, b, out_w, bias) };
+                    return ((out_f + raw_f) * EVAL_SCALE as f32) as i32;
+                }
+            }
+            #[cfg(target_arch = "aarch64")]
+            if self.has_neon {
+                let out_f = unsafe {
+                    if sq { gated_l2_dot_neon_x32::<true>(l1_out, w, b, out_w, bias) }
+                    else { gated_l2_dot_neon_x32::<false>(l1_out, w, b, out_w, bias) }
+                };
+                return ((out_f + raw_f) * EVAL_SCALE as f32) as i32;
+            }
+        }
+        // Scalar fallback: one skip-zero pass over both halves (each output's
+        // summation order is the per-half loop's), then the gate with the mode
+        // hoisted out of the loop, then the canonical output dot.
+        let mut pre = [0.0f32; 2 * NNUE_L2_BUF];
+        let pre = &mut pre[..rows];
+        pre.copy_from_slice(b);
+        for (&x, row) in l1_out.iter().zip(w.chunks_exact(rows)) {
+            if x == 0.0 { continue; }
+            for k in 0..rows { pre[k] += x * row[k]; }
+        }
+        let (g, v) = pre.split_at_mut(l2);
+        match self.hidden_gate {
+            HiddenGate::Sq => for k in 0..l2 { v[k] = HiddenGate::Sq.apply(g[k], v[k]); },
+            _ => for k in 0..l2 { v[k] = HiddenGate::Pair.apply(g[k], v[k]); },
+        }
+        let out_f = dot_out_canonical(v, out_w, bias);
+        ((out_f + raw_f) * EVAL_SCALE as f32) as i32
+    }
+
+    /// The pre-fusion gated tail, kept as a test oracle: two L2 passes (one per
+    /// half) through the ungated 32-wide kernels, a scalar gate pass, then the
+    /// ungated output-dot dispatch. `gated_l2_output` must agree with it.
+    #[cfg(test)]
+    fn gated_l2_output_twopass(&self, l1_out: &[f32], bucket: usize, raw_f: f32) -> i32 {
+        let l2 = self.l2_per_bucket;
         let mut g = [0.0f32; NNUE_L2_BUF];
         let mut h2 = [0.0f32; NNUE_L2_BUF];
         self.l2_half(l1_out, 0, l2, &mut g);   // gate rows [0, l2)
@@ -4602,8 +4840,6 @@ impl NNUENet {
         for k in 0..l2 { h2[k] = gate.apply(g[k], h2[k]); }
         let out_w = &self.out_weights_f[bucket * l2..bucket * l2 + l2];
         let bias = self.out_bias_f[bucket];
-        // Same output-dot dispatch as the ungated tail, so the canonical
-        // association (see `dot_out_canonical`) holds for gated nets too.
         #[cfg(target_arch = "x86_64")]
         let out_f = if self.has_avx2 && l2 == 32 {
             unsafe { dot_fmadd_avx2_x32(&h2[..32], &out_w[..32], bias) }
@@ -9399,6 +9635,10 @@ mod hidden_gate_tests {
                 let bucket = trial % OB;
                 let raw = (r.int(-100, 100) as f32) / 400.0;
                 let got = net.gated_l2_output(&x, bucket, raw);
+                // The fused kernel must be bit-identical to the two-pass form
+                // it replaced, on every tier.
+                assert_eq!(got, net.gated_l2_output_twopass(&x, bucket, raw),
+                    "{:?} tier {} trial {}: fused vs two-pass", gate, tier, trial);
                 let want = reference(&hid, gate, &x, bucket, raw);
                 let err = (got as f64 - want.trunc()).abs();
                 max_err = max_err.max(err);
