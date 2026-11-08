@@ -239,12 +239,16 @@ pub fn convert_v7(
     pawn_pairs: bool,
     l1_raw: bool,
     hidden_gate: crate::nnue::HiddenGate,
+    gate_signed: bool,
 ) -> Result<(), String> {
     use crate::nnue::HiddenGate;
     // Gated L2 (trainer --hidden-gate): l2 emits a gate half and a value half,
     // so its weight/bias arrays carry 2*l2_size output rows (gate rows first).
     // Only defined for a shared (unbucketed) L2 in a pairwise net.
     let gated = hidden_gate != HiddenGate::None;
+    if gate_signed && !gated {
+        return Err("--gate-signed requires --hidden-gate".to_string());
+    }
     if gated && (l2_size == 0 || bucketed_hidden || !use_pairwise) {
         return Err("--hidden-gate requires a pairwise net with a shared (unbucketed) L2 \
                     (--hidden2 > 0, no --bucketed-hidden)".to_string());
@@ -593,17 +597,21 @@ pub fn convert_v7(
     //   bit 0: has_pawn_pair, followed by a u32 feature count
     //   bits 1-3: reserved (must be 0)
     //   bit 4: raw L1 readout, [l1_size] f32 after the output bias
-    //   bits 5-6: hidden gate mode (0 none, 1 pair, 2 sq); L2 arrays double
-    //   bit 7: reserved (must be 0)
+    //   bits 5-6: hidden gate mode (0 none, 1 pair, 2 sq, 3 sig); L2 arrays double
+    //   bit 7: an arch_flags3 byte follows the pawn-pair count (if any):
+    //          bit 2 = signed gate value. Written only when non-zero.
     if version >= 11 {
+        let arch_flags3 = if gate_signed { crate::nnue::ARCH3_GATE_SIGNED } else { 0 };
         let mut arch_flags2 = 0u8;
         if num_pawn_pairs > 0 { arch_flags2 |= 1; }
         if l1_raw { arch_flags2 |= 16; }
         arch_flags2 |= hidden_gate.to_arch_flags2_bits();
+        if arch_flags3 != 0 { arch_flags2 |= crate::nnue::ARCH2_HAS_FLAGS3; }
         buf.push(arch_flags2);
         if num_pawn_pairs > 0 {
             write_u32_le(&mut buf, num_pawn_pairs as u32);
         }
+        if arch_flags3 != 0 { buf.push(arch_flags3); }
     }
 
     // Write weights — hidden layers have bucketed dimensions
@@ -642,6 +650,7 @@ pub fn convert_v7(
         HiddenGate::Sq => " gate=sq",
         HiddenGate::Sig => " gate=sig",
     };
+    let gate_str = if gate_signed { format!("{gate_str}-signed") } else { gate_str.to_string() };
     println!("Saved {} ({} bytes, v{}{}{}{} FT={} L1={} L2={})", output_path, buf.len(), version, dual_str, threat_str, gate_str, h, l1_size, l2_size);
     Ok(())
 }

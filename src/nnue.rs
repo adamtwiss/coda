@@ -455,6 +455,17 @@ pub enum HiddenGate {
     Sig = 3,
 }
 
+/// arch_flags2 bit 7: an `arch_flags3` byte follows (after the pawn-pair count,
+/// if any). Written only when arch_flags3 is non-zero, so nets that use none of
+/// its features keep their exact bytes. Same layout as the queen-bucket branch
+/// (nnue/queen-buckets), which owns arch_flags3 bits 0-1; this branch does not
+/// implement those and rejects them.
+pub const ARCH2_HAS_FLAGS3: u8 = 1 << 7;
+/// arch_flags3 bit 2: the gated L2's value half is SIGNED — clipped to [-1, 1]
+/// instead of [0, 1] — so a gated unit can push the eval either way rather than
+/// only scale a non-negative contribution down. Modifies any gate mode.
+pub const ARCH3_GATE_SIGNED: u8 = 1 << 2;
+
 /// arch_flags2 bit position / mask of the 2-bit hidden-gate field.
 pub const ARCH2_GATE_SHIFT: u8 = 5;
 pub const ARCH2_GATE_MASK: u8 = 0b11 << ARCH2_GATE_SHIFT;
@@ -489,8 +500,19 @@ impl HiddenGate {
     /// Apply the gate to one (gate, value) pre-activation pair.
     #[inline(always)]
     pub fn apply(self, g: f32, v: f32) -> f32 {
+        self.apply_v(g, v.clamp(0.0, 1.0))
+    }
+
+    /// As `apply`, with the value clipped to [-1, 1] (see `ARCH3_GATE_SIGNED`).
+    #[inline(always)]
+    pub fn apply_signed(self, g: f32, v: f32) -> f32 {
+        self.apply_v(g, v.clamp(-1.0, 1.0))
+    }
+
+    /// The gate applied to an already-clipped value `vc`.
+    #[inline(always)]
+    fn apply_v(self, g: f32, vc: f32) -> f32 {
         let gc = g.clamp(0.0, 1.0);
-        let vc = v.clamp(0.0, 1.0);
         match self {
             HiddenGate::None => vc,
             HiddenGate::Pair => gc * vc,
@@ -3222,6 +3244,8 @@ pub struct NNUENet {
     /// first, then value rows) while `l2_size` stays the width the output
     /// layer reads. Shared (unbucketed) L2 only.
     pub hidden_gate: HiddenGate,
+    /// Gated L2 value half is signed (arch_flags3 bit 2, `ARCH3_GATE_SIGNED`).
+    pub gate_signed: bool,
     /// Output-row stride of `l2_weights_f` (= `l2_size`, or `2 * l2_size` gated).
     pub l2_rows: usize,
     // v9 threat features
@@ -3349,6 +3373,7 @@ impl NNUENet {
         let mut dual_l1 = false; // bit 4: dual L1 activation (CReLU+SCReLU, v8)
         let mut has_l1_raw = false; // arch_flags2 bit 4 (v11)
         let mut hidden_gate = HiddenGate::None; // arch_flags2 bits 5-6 (v11)
+        let mut gate_signed = false; // arch_flags3 bit 2 (v11)
         // bit 5 is context-dependent:
         //   - extended_kb=0: consensus_buckets (legacy 16-bucket encoding)
         //   - extended_kb=1: hl_crelu (hidden-layer CReLU, vs default SCReLU)
@@ -3493,14 +3518,15 @@ impl NNUENet {
                 //             reserved keeps those nets refused, not misread)
                 //   bit 4: raw L1 readout (see `has_l1_raw`)
                 //   bits 5-6: hidden gate mode, a 2-bit field (see `HiddenGate`):
-                //             0 none, 1 pair, 2 sq, 3 reserved (rejected)
-                //   bit 7: reserved, must be zero
+                //             0 none, 1 pair, 2 sq, 3 sig
+                //   bit 7: an arch_flags3 byte follows the pawn-pair count (see
+                //          `ARCH2_HAS_FLAGS3`); bit 2 of it = signed gate value
                 if version >= 11 {
                     let arch_flags2 = read_u8(reader)?;
                     has_l1_raw = arch_flags2 & 16 != 0;
                     hidden_gate = HiddenGate::from_arch_flags2(arch_flags2).ok_or_else(|| format!(
                         "reserved hidden-gate mode in arch_flags2 (0x{:02x})", arch_flags2))?;
-                    if arch_flags2 & !(1 | 16 | ARCH2_GATE_MASK) != 0 {
+                    if arch_flags2 & !(1 | 16 | ARCH2_GATE_MASK | ARCH2_HAS_FLAGS3) != 0 {
                         return Err(format!(
                             "unknown arch_flags2 bits set (0x{:02x}); this net uses an \
                              architecture feature this build does not implement",
@@ -3527,6 +3553,21 @@ impl NNUENet {
                             return Err("net has pawn-pair features but no threat \
                                         features; pawn-pair extends the threat feature \
                                         space and cannot stand alone".to_string());
+                        }
+                    }
+                    if arch_flags2 & ARCH2_HAS_FLAGS3 != 0 {
+                        let arch_flags3 = read_u8(reader)?;
+                        if arch_flags3 & !ARCH3_GATE_SIGNED != 0 {
+                            return Err(format!(
+                                "unknown arch_flags3 bits set (0x{:02x}); this net uses an \
+                                 architecture feature this build does not implement",
+                                arch_flags3
+                            ));
+                        }
+                        gate_signed = arch_flags3 & ARCH3_GATE_SIGNED != 0;
+                        if gate_signed && hidden_gate == HiddenGate::None {
+                            return Err("arch_flags3 marks a signed gate value but the net \
+                                        has no hidden gate".to_string());
                         }
                     }
                 }
@@ -3692,6 +3733,7 @@ impl NNUENet {
             HiddenGate::Sq => if dual_l1 { " dual gate=sq" } else { " gate=sq" },
             HiddenGate::Sig => if dual_l1 { " dual gate=sig" } else { " gate=sig" },
         };
+        let dual_str = if gate_signed { format!("{dual_str}-signed") } else { dual_str.to_string() };
         let bucket_str = match kb_layout {
             KbLayout::Uniform   => "",
             KbLayout::Consensus => " consensus-kb",
@@ -3931,6 +3973,7 @@ impl NNUENet {
             has_l1_raw,
             l1_raw_w,
             hidden_gate,
+            gate_signed,
             l2_rows,
             threat_weights,
             num_threat_features,
@@ -4791,8 +4834,9 @@ impl NNUENet {
         let out_w = &self.out_weights_f[bucket * l2..bucket * l2 + l2];
         let bias = self.out_bias_f[bucket];
         let sq = self.hidden_gate == HiddenGate::Sq;
-        // Sig has no SIMD kernel yet (fail-fast stage): it takes the scalar path.
-        if l2 == 32 && self.hidden_gate != HiddenGate::Sig {
+        // Sig and signed-value gates have no SIMD kernel yet (fail-fast stage):
+        // they take the scalar path.
+        if l2 == 32 && self.hidden_gate != HiddenGate::Sig && !self.gate_signed {
             #[cfg(target_arch = "x86_64")]
             unsafe {
                 if self.has_avx512 {
@@ -4826,10 +4870,15 @@ impl NNUENet {
             for k in 0..rows { pre[k] += x * row[k]; }
         }
         let (g, v) = pre.split_at_mut(l2);
+        if self.gate_signed {
+            let gate = self.hidden_gate;
+            for k in 0..l2 { v[k] = gate.apply_signed(g[k], v[k]); }
+        } else {
         match self.hidden_gate {
             HiddenGate::Sq => for k in 0..l2 { v[k] = HiddenGate::Sq.apply(g[k], v[k]); },
             HiddenGate::Sig => for k in 0..l2 { v[k] = HiddenGate::Sig.apply(g[k], v[k]); },
             _ => for k in 0..l2 { v[k] = HiddenGate::Pair.apply(g[k], v[k]); },
+        }
         }
         let out_f = dot_out_canonical(v, out_w, bias);
         ((out_f + raw_f) * EVAL_SCALE as f32) as i32
@@ -4846,7 +4895,9 @@ impl NNUENet {
         self.l2_half(l1_out, 0, l2, &mut g);   // gate rows [0, l2)
         self.l2_half(l1_out, l2, l2, &mut h2); // value rows [l2, 2*l2)
         let gate = self.hidden_gate;
-        for k in 0..l2 { h2[k] = gate.apply(g[k], h2[k]); }
+        for k in 0..l2 {
+            h2[k] = if self.gate_signed { gate.apply_signed(g[k], h2[k]) } else { gate.apply(g[k], h2[k]) };
+        }
         let out_w = &self.out_weights_f[bucket * l2..bucket * l2 + l2];
         let bias = self.out_bias_f[bucket];
         #[cfg(target_arch = "x86_64")]
@@ -9564,10 +9615,14 @@ mod hidden_gate_tests {
     }
 
     fn convert(bin: &std::path::Path, out: &std::path::Path, gate: HiddenGate) -> NNUENet {
+        convert_s(bin, out, gate, false)
+    }
+
+    fn convert_s(bin: &std::path::Path, out: &std::path::Path, gate: HiddenGate, signed: bool) -> NNUENet {
         bullet_convert::convert_v7(
             bin.to_str().unwrap(), out.to_str().unwrap(),
             true, true, L1, L2, true, false, H, false, true,
-            bullet_convert::KbLayout::Consensus, 16, 0, true, false, true, gate,
+            bullet_convert::KbLayout::Consensus, 16, 0, true, false, true, gate, signed,
         ).expect("convert");
         NNUENet::load(out.to_str().unwrap()).expect("load")
     }
@@ -9578,7 +9633,7 @@ mod hidden_gate_tests {
 
     /// Trainer-side float reference of the gated tail: `l2_rows = 2*L2`,
     /// rows [0, L2) gate, [L2, 2*L2) value, output = l3 · gate(g, v) + l3b + raw.
-    fn reference(hid: &Hidden, gate: HiddenGate, x: &[f32], bucket: usize, raw: f32) -> f64 {
+    fn reference(hid: &Hidden, gate: HiddenGate, signed: bool, x: &[f32], bucket: usize, raw: f32) -> f64 {
         let rows = 2 * L2;
         let crelu = |t: f64| t.clamp(0.0, 1.0);
         let mut out = hid.l3b[bucket] as f64;
@@ -9589,10 +9644,11 @@ mod hidden_gate_tests {
                 g += x[i] as f64 * hid.l2w[i * rows + k] as f64;
                 v += x[i] as f64 * hid.l2w[i * rows + L2 + k] as f64;
             }
+            let vc = if signed { v.clamp(-1.0, 1.0) } else { crelu(v) };
             let a = match gate {
-                HiddenGate::Pair => crelu(g) * crelu(v),
-                HiddenGate::Sq => crelu(g) * crelu(g) * crelu(v),
-                HiddenGate::Sig => crelu(v) / (1.0 + (-g).exp()),
+                HiddenGate::Pair => crelu(g) * vc,
+                HiddenGate::Sq => crelu(g) * crelu(g) * vc,
+                HiddenGate::Sig => vc / (1.0 + (-g).exp()),
                 HiddenGate::None => unreachable!(),
             };
             out += a * hid.l3w[k * OB + bucket] as f64;
@@ -9617,14 +9673,16 @@ mod hidden_gate_tests {
     fn gated_tail_matches_float_reference() {
         let _space = crate::threats::FEATURE_SPACE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         crate::init();
-        for (gi, gate) in [HiddenGate::Pair, HiddenGate::Sq, HiddenGate::Sig].into_iter().enumerate() {
+        let cases = [(HiddenGate::Pair, false), (HiddenGate::Sq, false), (HiddenGate::Sig, false), (HiddenGate::Pair, true)];
+        for (gi, (gate, signed)) in cases.into_iter().enumerate() {
             let hid = random_hidden(0x9e37_79b9 + gi as u64, 2 * L2);
             let (bin, out) = (tmp(&format!("ref{gi}.bin")), tmp(&format!("ref{gi}.nnue")));
             write_bin(&bin, 7, &hid);
             // Every dispatch tier the gated tail can take on this host: native,
             // AVX-2 without AVX-512, and the scalar fallback.
             for tier in 0..3 {
-            let mut net = convert(&bin, &out, gate);
+            let mut net = convert_s(&bin, &out, gate, signed);
+            assert_eq!(net.gate_signed, signed);
             if tier >= 1 { net.has_avx512 = false; }
             if tier >= 2 { net.has_avx2 = false; net.has_neon = false; }
             assert_eq!(net.hidden_gate, gate);
@@ -9651,14 +9709,14 @@ mod hidden_gate_tests {
                 // output dot is the canonical (unfused) one, while the two-pass
                 // oracle uses the FMA dot on SIMD tiers — a 1-unit rounding gap.
                 let twopass = net.gated_l2_output_twopass(&x, bucket, raw);
-                if gate == HiddenGate::Sig && tier < 2 {
+                if (gate == HiddenGate::Sig || signed) && tier < 2 {
                     assert!((got - twopass).abs() <= 1,
                         "{:?} tier {} trial {}: fused {} vs two-pass {}", gate, tier, trial, got, twopass);
                 } else {
                     assert_eq!(got, twopass,
                         "{:?} tier {} trial {}: fused vs two-pass", gate, tier, trial);
                 }
-                let want = reference(&hid, gate, &x, bucket, raw);
+                let want = reference(&hid, gate, signed, &x, bucket, raw);
                 let err = (got as f64 - want.trunc()).abs();
                 max_err = max_err.max(err);
                 assert!(err <= 1.0,
@@ -9769,7 +9827,7 @@ mod hidden_gate_tests {
         let r = bullet_convert::convert_v7(
             bin.to_str().unwrap(), out.to_str().unwrap(),
             true, true, L1, L2, true, true, H, false, true,
-            bullet_convert::KbLayout::Consensus, 16, 0, true, false, true, HiddenGate::Pair);
+            bullet_convert::KbLayout::Consensus, 16, 0, true, false, true, HiddenGate::Pair, false);
         let _ = std::fs::remove_file(&bin);
         let _ = std::fs::remove_file(&out);
         assert!(r.is_err());

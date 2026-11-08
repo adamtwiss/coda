@@ -581,6 +581,10 @@ enum Commands {
         /// product feeds the output. Sets arch_flags2 bits 5-6. Default none.
         #[arg(long, default_value = "none")]
         hidden_gate: String,
+        /// Gated L2's value half is signed (trainer --gate-signed): clipped to
+        /// [-1, 1] instead of [0, 1]. Sets arch_flags3 bit 2.
+        #[arg(long)]
+        gate_signed: bool,
         /// Source output bucket count (default 8, set to 2 for 2-bucket nets)
         #[arg(long, default_value_t = 8)]
         output_buckets: usize,
@@ -1408,7 +1412,7 @@ fn main() {
             run_binpack_material(&input, max);
         }
 
-        Some(Commands::ConvertBullet { input, output, screlu, pairwise, hidden, hidden2, int8l1, bucketed_hidden, ft_size, int16_hidden, dual, consensus_buckets, kb_layout, kb_count, threats, output_buckets, hl_crelu, pawn_pairs, l1_raw, hidden_gate }) => {
+        Some(Commands::ConvertBullet { input, output, screlu, pairwise, hidden, hidden2, int8l1, bucketed_hidden, ft_size, int16_hidden, dual, consensus_buckets, kb_layout, kb_count, threats, output_buckets, hl_crelu, pawn_pairs, l1_raw, hidden_gate, gate_signed }) => {
             // Resolve king bucket layout and count. Explicit --kb-layout wins;
             // --consensus-buckets is the legacy path for 16-bucket consensus.
             let layout = if !kb_layout.is_empty() {
@@ -1432,7 +1436,7 @@ fn main() {
             }
 
             let result = if hidden > 0 {
-                bullet_convert::convert_v7(&input, &output, screlu, pairwise, hidden, hidden2, int8l1, bucketed_hidden, ft_size, int16_hidden, dual, layout, count, threats, hl_crelu, pawn_pairs, l1_raw, gate)
+                bullet_convert::convert_v7(&input, &output, screlu, pairwise, hidden, hidden2, int8l1, bucketed_hidden, ft_size, int16_hidden, dual, layout, count, threats, hl_crelu, pawn_pairs, l1_raw, gate, gate_signed)
             } else {
                 bullet_convert::convert_v5(&input, &output, screlu, pairwise, output_buckets, layout, count)
             };
@@ -1659,6 +1663,7 @@ fn run_check_net(net_path: &str) {
     if net.l1_size > 0 { arch += &format!(" L1={}", net.l1_size); }
     if net.l2_size > 0 { arch += &format!(" L2={}", net.l2_size); }
     if net.hidden_gate != nnue::HiddenGate::None { arch += &format!(" gate={:?}", net.hidden_gate); }
+    if net.gate_signed { arch += "-signed"; }
     if net.use_screlu { arch += " SCReLU"; }
     if net.use_pairwise { arch += " pairwise"; }
     if net.l1_scale == 64 { arch += " int8L1"; }
