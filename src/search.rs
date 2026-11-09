@@ -3749,6 +3749,12 @@ pub fn search_smp(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimit
     info.tm_publish_prediction = false;
     let mv = search_smp_inner(board, info, limits, threads);
     if info.tm_publish_prediction {
+        // search() published main's score as the next move's cross-move trend
+        // baseline before SMP selection ran. When a helper wins the vote,
+        // `last_score` now holds the score of the move actually played;
+        // re-publish so the next move's trend compares against it, not against
+        // main's score for a move we did not play. Identical at T=1.
+        info.tm_cross_prev_score = info.last_score;
         publish_reply_prediction(board, info, mv);
     }
     mv
