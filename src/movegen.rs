@@ -38,6 +38,24 @@ impl MoveList {
         }
     }
 
+    /// Empty the list in place. Only `len` is reset; the slots stay as they
+    /// are and are overwritten by later pushes.
+    #[inline(always)]
+    pub fn clear(&mut self) {
+        self.len = 0;
+    }
+
+    /// Remove the first occurrence of `mv`, shifting the later moves down so
+    /// the remaining order is unchanged. No-op if `mv` is absent (including
+    /// `NO_MOVE`, which no generator emits).
+    #[inline]
+    pub fn remove(&mut self, mv: Move) {
+        if let Some(p) = self.as_slice().iter().position(|&m| m == mv) {
+            self.moves.copy_within(p + 1..self.len, p);
+            self.len -= 1;
+        }
+    }
+
     #[inline(always)]
     pub fn push(&mut self, mv: Move) {
         debug_assert!(self.len < MAX_MOVES);
@@ -78,9 +96,37 @@ impl MoveList {
     }
 }
 
+/// Write cursor used by the generators: borrows a `MoveList`'s slots and
+/// keeps the running length in a local. Pushing through `&mut MoveList`
+/// directly makes the compiler store and reload `len` on every push, because
+/// it cannot prove the slot writes never alias the length field; with the
+/// length held here it stays in a register and is written back once.
+struct MoveSink<'a> {
+    slots: &'a mut [std::mem::MaybeUninit<Move>; MAX_MOVES],
+    len: usize,
+}
+
+impl MoveSink<'_> {
+    #[inline(always)]
+    fn push(&mut self, mv: Move) {
+        debug_assert!(self.len < MAX_MOVES);
+        self.slots[self.len].write(mv);
+        self.len += 1;
+    }
+}
+
+/// Run a generator body against `list` through a `MoveSink`, appending.
+#[inline(always)]
+fn fill(list: &mut MoveList, body: impl FnOnce(&mut MoveSink)) {
+    let MoveList { moves, len } = list;
+    let mut sink = MoveSink { slots: moves, len: *len };
+    body(&mut sink);
+    *len = sink.len;
+}
+
 /// Add pawn promotions (Q, R, B, N).
 #[inline]
-fn add_promotions(list: &mut MoveList, from: u8, to: u8) {
+fn add_promotions(list: &mut MoveSink, from: u8, to: u8) {
     list.push(make_move(from, to, FLAG_PROMOTE_Q));
     list.push(make_move(from, to, FLAG_PROMOTE_R));
     list.push(make_move(from, to, FLAG_PROMOTE_B));
@@ -93,9 +139,15 @@ fn add_promotions(list: &mut MoveList, from: u8, to: u8) {
 //        knight caps, bishop caps, rook caps, queen caps, king caps
 // ---------------------------------------------------------------------------
 
-/// Generate all pseudo-legal captures (including promotions and en passant).
-pub fn generate_captures(board: &Board) -> MoveList {
-    let mut list = MoveList::new();
+/// Generate all pseudo-legal captures (including promotions and en passant),
+/// appending to `list`. The search pickers call this with their own buffer so
+/// the 520-byte list is never returned by value and copied.
+pub fn generate_captures_into(board: &Board, list: &mut MoveList) {
+    fill(list, |sink| captures_body(board, sink));
+}
+
+#[inline(always)]
+fn captures_body(board: &Board, list: &mut MoveSink) {
     let us = board.side_to_move;
     let them = flip_color(us);
     let occ = board.occupied();
@@ -116,7 +168,7 @@ pub fn generate_captures(board: &Board) -> MoveList {
         let mut non_promo = capture_l & !promo_rank;
         while promo != 0 {
             let to = pop_lsb(&mut promo) as u8;
-            add_promotions(&mut list, to - 7, to);
+            add_promotions(list, to - 7, to);
         }
         while non_promo != 0 {
             let to = pop_lsb(&mut non_promo) as u8;
@@ -128,7 +180,7 @@ pub fn generate_captures(board: &Board) -> MoveList {
         let mut non_promo = capture_r & !promo_rank;
         while promo != 0 {
             let to = pop_lsb(&mut promo) as u8;
-            add_promotions(&mut list, to - 9, to);
+            add_promotions(list, to - 9, to);
         }
         while non_promo != 0 {
             let to = pop_lsb(&mut non_promo) as u8;
@@ -140,7 +192,7 @@ pub fn generate_captures(board: &Board) -> MoveList {
         let mut push_promo = ((pawns << 8) & empty) & promo_rank;
         while push_promo != 0 {
             let to = pop_lsb(&mut push_promo) as u8;
-            add_promotions(&mut list, to - 8, to);
+            add_promotions(list, to - 8, to);
         }
 
         // En passant
@@ -166,7 +218,7 @@ pub fn generate_captures(board: &Board) -> MoveList {
         let mut non_promo = capture_l & !promo_rank;
         while promo != 0 {
             let to = pop_lsb(&mut promo) as u8;
-            add_promotions(&mut list, to + 9, to);
+            add_promotions(list, to + 9, to);
         }
         while non_promo != 0 {
             let to = pop_lsb(&mut non_promo) as u8;
@@ -177,7 +229,7 @@ pub fn generate_captures(board: &Board) -> MoveList {
         let mut non_promo = capture_r & !promo_rank;
         while promo != 0 {
             let to = pop_lsb(&mut promo) as u8;
-            add_promotions(&mut list, to + 7, to);
+            add_promotions(list, to + 7, to);
         }
         while non_promo != 0 {
             let to = pop_lsb(&mut non_promo) as u8;
@@ -189,7 +241,7 @@ pub fn generate_captures(board: &Board) -> MoveList {
         let mut push_promo = ((pawns >> 8) & empty) & promo_rank;
         while push_promo != 0 {
             let to = pop_lsb(&mut push_promo) as u8;
-            add_promotions(&mut list, to + 8, to);
+            add_promotions(list, to + 8, to);
         }
 
         // En passant
@@ -257,7 +309,13 @@ pub fn generate_captures(board: &Board) -> MoveList {
         let to = pop_lsb(&mut attacks) as u8;
         list.push(make_move(ksq, to, FLAG_NONE));
     }
+}
 
+/// By-value wrapper over [`generate_captures_into`] for callers outside the
+/// search hot path (tests, tooling).
+pub fn generate_captures(board: &Board) -> MoveList {
+    let mut list = MoveList::new();
+    generate_captures_into(board, &mut list);
     list
 }
 
@@ -267,9 +325,14 @@ pub fn generate_captures(board: &Board) -> MoveList {
 //        knight, bishop, rook, queen, king, castling
 // ---------------------------------------------------------------------------
 
-/// Generate pseudo-legal quiet moves (non-captures, non-promotions).
-pub fn generate_quiets(board: &Board) -> MoveList {
-    let mut list = MoveList::new();
+/// Generate pseudo-legal quiet moves (non-captures, non-promotions),
+/// appending to `list`.
+pub fn generate_quiets_into(board: &Board, list: &mut MoveList) {
+    fill(list, |sink| quiets_body(board, sink));
+}
+
+#[inline(always)]
+fn quiets_body(board: &Board, list: &mut MoveSink) {
     let us = board.side_to_move;
     let occ = board.occupied();
     let our_pieces = board.colors[us as usize];
@@ -365,8 +428,14 @@ pub fn generate_quiets(board: &Board) -> MoveList {
     }
 
     // Castling
-    generate_castling(board, &mut list, us);
+    generate_castling(board, list, us);
+}
 
+/// By-value wrapper over [`generate_quiets_into`] for callers outside the
+/// search hot path (tests, tooling).
+pub fn generate_quiets(board: &Board) -> MoveList {
+    let mut list = MoveList::new();
+    generate_quiets_into(board, &mut list);
     list
 }
 
@@ -374,7 +443,7 @@ pub fn generate_quiets(board: &Board) -> MoveList {
 // Castling move generation
 // ---------------------------------------------------------------------------
 
-fn generate_castling(board: &Board, list: &mut MoveList, us: Color) {
+fn generate_castling(board: &Board, list: &mut MoveSink, us: Color) {
     // Rights for `us`: bit 0 = kingside, bit 1 = queenside.
     let rights = (board.castling >> (2 * us)) & 0b11;
     if rights == 0 {
@@ -435,19 +504,8 @@ fn is_attacked_with_occ(board: &Board, sq: u8, by_color: Color, occ: Bitboard) -
 /// Generate all pseudo-legal moves (captures first, then quiets).
 pub fn generate_all_moves(board: &Board) -> MoveList {
     let mut list = MoveList::new();
-
-    // Captures
-    let caps = generate_captures(board);
-    for i in 0..caps.len {
-        list.push(caps.get(i));
-    }
-
-    // Quiets
-    let quiets = generate_quiets(board);
-    for i in 0..quiets.len {
-        list.push(quiets.get(i));
-    }
-
+    generate_captures_into(board, &mut list);
+    generate_quiets_into(board, &mut list);
     list
 }
 
@@ -458,9 +516,13 @@ pub fn generate_all_moves(board: &Board) -> MoveList {
 
 /// Generate all legal evasion moves when in check.
 /// checkers and pinned should be precomputed via board.checkers() / board.pinned().
-/// The returned moves are fully legal.
-pub fn generate_evasions(board: &Board, checkers: Bitboard, pinned: Bitboard) -> MoveList {
-    let mut list = MoveList::new();
+/// The generated moves are fully legal. Appends to `list`.
+pub fn generate_evasions_into(board: &Board, checkers: Bitboard, pinned: Bitboard, list: &mut MoveList) {
+    fill(list, |sink| evasions_body(board, checkers, pinned, sink));
+}
+
+#[inline(always)]
+fn evasions_body(board: &Board, checkers: Bitboard, pinned: Bitboard, list: &mut MoveSink) {
     let us = board.side_to_move;
     let them = flip_color(us);
     let king_sq = board.king_sq(us);
@@ -479,7 +541,7 @@ pub fn generate_evasions(board: &Board, checkers: Bitboard, pinned: Bitboard) ->
 
     // Double check: only king moves are legal
     if more_than_one(checkers) {
-        return list;
+        return;
     }
 
     // Single check: can also block or capture the checker
@@ -587,7 +649,7 @@ pub fn generate_evasions(board: &Board, checkers: Bitboard, pinned: Bitboard) ->
             let to = pop_lsb(&mut cl) as u8;
             let from = to - 7;
             if (1u64 << to) & promo_rank != 0 {
-                add_promotions(&mut list, from, to);
+                add_promotions(list, from, to);
             } else {
                 list.push(make_move(from, to, FLAG_NONE));
             }
@@ -597,7 +659,7 @@ pub fn generate_evasions(board: &Board, checkers: Bitboard, pinned: Bitboard) ->
             let to = pop_lsb(&mut cr) as u8;
             let from = to - 9;
             if (1u64 << to) & promo_rank != 0 {
-                add_promotions(&mut list, from, to);
+                add_promotions(list, from, to);
             } else {
                 list.push(make_move(from, to, FLAG_NONE));
             }
@@ -612,7 +674,7 @@ pub fn generate_evasions(board: &Board, checkers: Bitboard, pinned: Bitboard) ->
             let to = pop_lsb(&mut p) as u8;
             let from = to - 8;
             if (1u64 << to) & promo_rank != 0 {
-                add_promotions(&mut list, from, to);
+                add_promotions(list, from, to);
             } else {
                 list.push(make_move(from, to, FLAG_NONE));
             }
@@ -653,7 +715,7 @@ pub fn generate_evasions(board: &Board, checkers: Bitboard, pinned: Bitboard) ->
             let to = pop_lsb(&mut cl) as u8;
             let from = to + 9;
             if (1u64 << to) & promo_rank != 0 {
-                add_promotions(&mut list, from, to);
+                add_promotions(list, from, to);
             } else {
                 list.push(make_move(from, to, FLAG_NONE));
             }
@@ -663,7 +725,7 @@ pub fn generate_evasions(board: &Board, checkers: Bitboard, pinned: Bitboard) ->
             let to = pop_lsb(&mut cr) as u8;
             let from = to + 7;
             if (1u64 << to) & promo_rank != 0 {
-                add_promotions(&mut list, from, to);
+                add_promotions(list, from, to);
             } else {
                 list.push(make_move(from, to, FLAG_NONE));
             }
@@ -677,7 +739,7 @@ pub fn generate_evasions(board: &Board, checkers: Bitboard, pinned: Bitboard) ->
             let to = pop_lsb(&mut p) as u8;
             let from = to + 8;
             if (1u64 << to) & promo_rank != 0 {
-                add_promotions(&mut list, from, to);
+                add_promotions(list, from, to);
             } else {
                 list.push(make_move(from, to, FLAG_NONE));
             }
@@ -707,7 +769,13 @@ pub fn generate_evasions(board: &Board, checkers: Bitboard, pinned: Bitboard) ->
             }
         }
     }
+}
 
+/// By-value wrapper over [`generate_evasions_into`] for callers outside the
+/// search hot path (tests, tooling).
+pub fn generate_evasions(board: &Board, checkers: Bitboard, pinned: Bitboard) -> MoveList {
+    let mut list = MoveList::new();
+    generate_evasions_into(board, checkers, pinned, &mut list);
     list
 }
 
@@ -717,7 +785,9 @@ pub fn generate_evasions(board: &Board, checkers: Bitboard, pinned: Bitboard) ->
 
 /// Generate all legal moves (for perft and verification).
 pub fn generate_legal_moves(board: &Board) -> MoveList {
-    let pseudo = generate_all_moves(board);
+    let mut pseudo = MoveList::new();
+    generate_captures_into(board, &mut pseudo);
+    generate_quiets_into(board, &mut pseudo);
     let pinned = board.pinned();
     let checkers = board.checkers();
     let mut legal = MoveList::new();
