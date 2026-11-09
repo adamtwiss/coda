@@ -186,6 +186,47 @@ pub fn see_ge(board: &Board, mv: Move, threshold: i32) -> bool {
     board.side_to_move != stm
 }
 
+/// `see_ge` for a QUIET move (no capture, no en passant, no promotion) at a
+/// node that already holds `enemy_attacks`, the full attack map of the side
+/// not to move (`board.attacks_by_color(!stm)` on this exact board).
+///
+/// Answers without the swap loop when the result is known in advance, and
+/// otherwise defers to `see_ge`, so the two always agree:
+///
+/// For a quiet move `see_ge` starts at `balance = -threshold`. With
+/// `threshold <= 0` that is non-negative, so the move then fails only if the
+/// opponent can capture on `to`, and the swap loop ends `true` the moment it
+/// finds no enemy attacker of `to` (occupancy minus `from`). With
+/// `threshold > 0` a quiet move can never pass, and `see_ge` returns `false`
+/// at its first test, so that case simply falls through.
+///
+/// "No enemy attacker of `to` once `from` is vacated" is read off the map:
+/// - `to` not in `enemy_attacks` rules out every attacker at full occupancy;
+/// - vacating `from` can only ADD a slider that x-rays through `from`, which
+///   needs `from` strictly between that slider and `to`. That slider then
+///   attacks `from` at full occupancy (nothing lies between them), and
+///   `from` and `to` are collinear. So `from` outside `enemy_attacks`, or
+///   `from`/`to` not on one line, rules it out.
+///
+/// Castling also lands here as a quiet; `see_ge` returns `0 >= threshold`
+/// for it, which is `true` for every `threshold <= 0`, as returned here.
+#[inline]
+pub fn see_ge_quiet(board: &Board, mv: Move, threshold: i32, enemy_attacks: Bitboard) -> bool {
+    debug_assert!(!is_promotion(mv) && move_flags(mv) != FLAG_EN_PASSANT);
+    debug_assert!(board.piece_type_at(move_to(mv)) == NO_PIECE_TYPE || move_flags(mv) == FLAG_CASTLE);
+    debug_assert_eq!(enemy_attacks, board.attacks_by_color(flip_color(board.side_to_move)));
+    let from = move_from(mv) as u32;
+    let to = move_to(mv) as u32;
+    if threshold <= 0
+        && enemy_attacks & (1u64 << to) == 0
+        && (enemy_attacks & (1u64 << from) == 0 || line(from, to) == 0)
+    {
+        debug_assert!(see_ge(board, mv, threshold), "see_ge_quiet fast path disagrees with see_ge");
+        return true;
+    }
+    see_ge(board, mv, threshold)
+}
+
 /// Find the least valuable attacker and its square.
 #[inline]
 fn find_lva(board: &Board, stm_attackers: Bitboard, _stm: Color) -> (u8, u32) {
@@ -591,5 +632,80 @@ mod see_pin_tests {
         let b = Board::from_fen("3k4/8/8/3r4/3p4/5N2/8/3RK3 w - - 0 1");
         let mv = find_move(&b, 21, 27); // f3 -> d4
         assert_eq!(see_value_of(&b, mv), 100);
+    }
+}
+
+#[cfg(test)]
+mod see_quiet_fast_path_tests {
+    use super::*;
+    use crate::movegen::generate_legal_moves;
+
+    fn init() { crate::init(); }
+
+    /// `see_ge_quiet` must equal `see_ge` for every quiet move and every
+    /// threshold. Walks random games from several starting positions and, at
+    /// each one, checks every legal quiet move (castling included) against a
+    /// spread of thresholds on both sides of zero. Also asserts that both the
+    /// fast path and the x-ray fallback were actually exercised.
+    #[test]
+    fn see_ge_quiet_matches_see_ge() {
+        init();
+        let fens = [
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+            "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+            "r1bq1rk1/pp2bppp/2n1pn2/3p4/2PP4/2N1PN2/PP1B1PPP/R2QKB1R w KQ - 0 8",
+            "2r3k1/1q3ppp/p2p4/1p1Pp3/4P1b1/1P1Q1N2/P4PPP/2R3K1 b - - 0 24",
+            "8/2k5/3p4/p2P1p2/P2P1P2/8/3K4/8 w - - 0 50",
+            "4r1k1/5ppp/8/8/8/8/4R3/4K3 w - - 0 1",
+        ];
+        let thresholds = [-2000, -1200, -641, -640, -420, -101, -100, -99, -1, 0, 1, 100];
+        let mut rng: u64 = 0x9E37_79B9_7F4A_7C15;
+        let mut next = || { rng ^= rng << 13; rng ^= rng >> 7; rng ^= rng << 17; rng };
+        let (mut checked, mut fast, mut xray_fallback) = (0u64, 0u64, 0u64);
+        for fen in fens {
+            for _game in 0..12 {
+                let mut b = Board::from_fen(fen);
+                for _ply in 0..80 {
+                    let moves = generate_legal_moves(&b);
+                    if moves.len == 0 { break; }
+                    let ea = b.attacks_by_color(flip_color(b.side_to_move));
+                    for i in 0..moves.len {
+                        let mv = moves.get(i);
+                        if b.is_capture(mv) || is_promotion(mv) { continue; }
+                        let (from, to) = (move_from(mv) as u32, move_to(mv) as u32);
+                        if ea & (1u64 << to) == 0 {
+                            if ea & (1u64 << from) == 0 || line(from, to) == 0 { fast += 1; }
+                            else { xray_fallback += 1; }
+                        }
+                        for &t in &thresholds {
+                            assert_eq!(see_ge_quiet(&b, mv, t, ea), see_ge(&b, mv, t),
+                                "{} mv {}->{} t={}", b.to_fen(), from, to, t);
+                            checked += 1;
+                        }
+                    }
+                    let mv = moves.get((next() % moves.len as u64) as usize);
+                    b.make_move(mv);
+                }
+            }
+        }
+        assert!(checked > 100_000, "too few comparisons: {}", checked);
+        assert!(fast > 1_000 && xray_fallback > 10, "fast {} xray {}", fast, xray_fallback);
+    }
+
+    /// A slider stepping along the ray of the piece attacking it must not take
+    /// the fast path. Black Ra4 attacks e4 along the 4th rank; after Re4-h4,
+    /// h4 is unattacked at full occupancy (e4 blocks) but attacked once e4 is
+    /// vacated, so the rook is lost and the fallback must say so.
+    #[test]
+    fn see_ge_quiet_xray_through_from_falls_back() {
+        init();
+        let b = Board::from_fen("6k1/8/8/8/r3R3/8/8/6K1 w - - 0 1");
+        let ea = b.attacks_by_color(BLACK);
+        let moves = generate_legal_moves(&b);
+        let mv = moves.as_slice().iter().copied()
+            .find(|&m| move_from(m) == 28 && move_to(m) == 31).expect("Re4-h4");
+        assert_eq!(ea & (1u64 << 31), 0, "h4 must be unattacked at full occupancy");
+        assert!(!see_ge(&b, mv, 0));
+        assert!(!see_ge_quiet(&b, mv, 0, ea));
     }
 }

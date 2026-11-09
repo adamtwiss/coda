@@ -11,7 +11,7 @@ use crate::eval::{evaluate_nnue, see_value};
 use crate::nnue::DirtyPiece;
 use crate::movegen::generate_legal_moves;
 use crate::movepicker::*;
-use crate::see::see_ge;
+use crate::see::{see_ge, see_ge_quiet};
 use crate::tt::*;
 use crate::types::*;
 
@@ -6993,7 +6993,9 @@ fn negamax(
             && FEAT_SEE_PRUNE.load(Ordering::Relaxed)
         {
             let see_quiet_threshold = -see_quiet_mult * lmr_d * lmr_d;
-            if !see_ge(board, mv, see_quiet_threshold) {
+            // `see_ge_quiet` answers from `enemy_attacks` when no enemy piece
+            // can reach `to` (over half of these calls); same result as see_ge.
+            if !see_ge_quiet(board, mv, see_quiet_threshold, enemy_attacks) {
                 trace_gate!(info, board.hash, ply, mv, "see_quiet", depth, move_count);
                 info.stats.see_prunes += 1;
                 continue;
