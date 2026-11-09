@@ -2152,7 +2152,7 @@ unsafe fn dot_fmadd_avx2_x32(a: &[f32], b: &[f32], bias: f32) -> f32 {
 /// `out_w.len() >= 32`.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2,fma")]
-unsafe fn gated_l2_dot_avx2_x32<const SQ: bool>(
+unsafe fn gated_l2_dot_avx2_x32<const SQ: bool, const SIGNED: bool>(
     l1_out: &[f32], w: &[f32], b: &[f32], out_w: &[f32], bias: f32,
 ) -> f32 {
     let bp = b.as_ptr();
@@ -2183,9 +2183,11 @@ unsafe fn gated_l2_dot_avx2_x32<const SQ: bool>(
     }
     let zero = _mm256_setzero_ps();
     let one = _mm256_set1_ps(1.0);
+    // Value floor: 0, or -1 for a signed gate value (see ARCH3_GATE_SIGNED).
+    let vlo = if SIGNED { _mm256_set1_ps(-1.0) } else { zero };
     let gate = |g: __m256, v: __m256| -> __m256 {
         let gc = _mm256_max_ps(zero, _mm256_min_ps(one, g));
-        let vc = _mm256_max_ps(zero, _mm256_min_ps(one, v));
+        let vc = _mm256_max_ps(vlo, _mm256_min_ps(one, v));
         if SQ { _mm256_mul_ps(_mm256_mul_ps(gc, gc), vc) } else { _mm256_mul_ps(gc, vc) }
     };
     let h0 = gate(g0, v0);
@@ -2209,7 +2211,7 @@ unsafe fn gated_l2_dot_avx2_x32<const SQ: bool>(
 /// association (`dot_out_canonical`) holds on AVX-512 hosts too.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f,avx2,fma")]
-unsafe fn gated_l2_dot_avx512_x32<const SQ: bool>(
+unsafe fn gated_l2_dot_avx512_x32<const SQ: bool, const SIGNED: bool>(
     l1_out: &[f32], w: &[f32], b: &[f32], out_w: &[f32], bias: f32,
 ) -> f32 {
     let bp = b.as_ptr();
@@ -2228,9 +2230,10 @@ unsafe fn gated_l2_dot_avx512_x32<const SQ: bool>(
     }
     let zero = _mm512_setzero_ps();
     let one = _mm512_set1_ps(1.0);
+    let vlo = if SIGNED { _mm512_set1_ps(-1.0) } else { zero };
     let gate = |g: __m512, v: __m512| -> __m512 {
         let gc = _mm512_max_ps(zero, _mm512_min_ps(one, g));
-        let vc = _mm512_max_ps(zero, _mm512_min_ps(one, v));
+        let vc = _mm512_max_ps(vlo, _mm512_min_ps(one, v));
         if SQ { _mm512_mul_ps(_mm512_mul_ps(gc, gc), vc) } else { _mm512_mul_ps(gc, vc) }
     };
     let h_lo = gate(g_lo, v_lo);
@@ -2360,7 +2363,7 @@ unsafe fn crelu_f32_neon_x32(h2: &mut [f32]) {
 /// sum (x + ±0 == x for x != 0), so the returned value can differ at most in
 /// the sign of an exact zero — never after the caller's integer conversion.
 #[cfg(target_arch = "aarch64")]
-unsafe fn gated_l2_dot_neon_x32<const SQ: bool>(
+unsafe fn gated_l2_dot_neon_x32<const SQ: bool, const SIGNED: bool>(
     l1_out: &[f32], w: &[f32], b: &[f32], out_w: &[f32], bias: f32,
 ) -> f32 {
     let bp = b.as_ptr();
@@ -2380,10 +2383,11 @@ unsafe fn gated_l2_dot_neon_x32<const SQ: bool>(
     }
     let zero = vdupq_n_f32(0.0);
     let one = vdupq_n_f32(1.0);
+    let vlo = if SIGNED { vdupq_n_f32(-1.0) } else { zero };
     let mut h = [zero; 8];
     for k in 0..8 {
         let gc = vmaxq_f32(zero, vminq_f32(one, g[k]));
-        let vc = vmaxq_f32(zero, vminq_f32(one, v[k]));
+        let vc = vmaxq_f32(vlo, vminq_f32(one, v[k]));
         h[k] = if SQ { vmulq_f32(vmulq_f32(gc, gc), vc) } else { vmulq_f32(gc, vc) };
     }
     // Canonical fold: lanes j = 0..8 of each 8-wide group live in h[2g], h[2g+1].
@@ -4834,27 +4838,39 @@ impl NNUENet {
         let out_w = &self.out_weights_f[bucket * l2..bucket * l2 + l2];
         let bias = self.out_bias_f[bucket];
         let sq = self.hidden_gate == HiddenGate::Sq;
-        // Sig and signed-value gates have no SIMD kernel yet (fail-fast stage):
-        // they take the scalar path.
-        if l2 == 32 && self.hidden_gate != HiddenGate::Sig && !self.gate_signed {
+        // Sig has no SIMD kernel (fail-fast stage, not advanced): scalar path.
+        let signed = self.gate_signed;
+        if l2 == 32 && self.hidden_gate != HiddenGate::Sig {
             #[cfg(target_arch = "x86_64")]
             unsafe {
                 if self.has_avx512 {
-                    let out_f = if sq { gated_l2_dot_avx512_x32::<true>(l1_out, w, b, out_w, bias) }
-                                else { gated_l2_dot_avx512_x32::<false>(l1_out, w, b, out_w, bias) };
+                    let out_f = match (sq, signed) {
+                        (true, false) => gated_l2_dot_avx512_x32::<true, false>(l1_out, w, b, out_w, bias),
+                        (false, false) => gated_l2_dot_avx512_x32::<false, false>(l1_out, w, b, out_w, bias),
+                        (true, true) => gated_l2_dot_avx512_x32::<true, true>(l1_out, w, b, out_w, bias),
+                        (false, true) => gated_l2_dot_avx512_x32::<false, true>(l1_out, w, b, out_w, bias),
+                    };
                     return ((out_f + raw_f) * EVAL_SCALE as f32) as i32;
                 }
                 if self.has_avx2 {
-                    let out_f = if sq { gated_l2_dot_avx2_x32::<true>(l1_out, w, b, out_w, bias) }
-                                else { gated_l2_dot_avx2_x32::<false>(l1_out, w, b, out_w, bias) };
+                    let out_f = match (sq, signed) {
+                        (true, false) => gated_l2_dot_avx2_x32::<true, false>(l1_out, w, b, out_w, bias),
+                        (false, false) => gated_l2_dot_avx2_x32::<false, false>(l1_out, w, b, out_w, bias),
+                        (true, true) => gated_l2_dot_avx2_x32::<true, true>(l1_out, w, b, out_w, bias),
+                        (false, true) => gated_l2_dot_avx2_x32::<false, true>(l1_out, w, b, out_w, bias),
+                    };
                     return ((out_f + raw_f) * EVAL_SCALE as f32) as i32;
                 }
             }
             #[cfg(target_arch = "aarch64")]
             if self.has_neon {
                 let out_f = unsafe {
-                    if sq { gated_l2_dot_neon_x32::<true>(l1_out, w, b, out_w, bias) }
-                    else { gated_l2_dot_neon_x32::<false>(l1_out, w, b, out_w, bias) }
+                    match (sq, signed) {
+                        (true, false) => gated_l2_dot_neon_x32::<true, false>(l1_out, w, b, out_w, bias),
+                        (false, false) => gated_l2_dot_neon_x32::<false, false>(l1_out, w, b, out_w, bias),
+                        (true, true) => gated_l2_dot_neon_x32::<true, true>(l1_out, w, b, out_w, bias),
+                        (false, true) => gated_l2_dot_neon_x32::<false, true>(l1_out, w, b, out_w, bias),
+                    }
                 };
                 return ((out_f + raw_f) * EVAL_SCALE as f32) as i32;
             }
@@ -9709,7 +9725,7 @@ mod hidden_gate_tests {
                 // output dot is the canonical (unfused) one, while the two-pass
                 // oracle uses the FMA dot on SIMD tiers — a 1-unit rounding gap.
                 let twopass = net.gated_l2_output_twopass(&x, bucket, raw);
-                if (gate == HiddenGate::Sig || signed) && tier < 2 {
+                if gate == HiddenGate::Sig && tier < 2 {
                     assert!((got - twopass).abs() <= 1,
                         "{:?} tier {} trial {}: fused {} vs two-pass {}", gate, tier, trial, got, twopass);
                 } else {
