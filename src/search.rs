@@ -192,6 +192,16 @@ tunables!(
     // One SPSA step either way changes under 0.04% of futility prunes, so
     // in core SPSA it would only add gradient noise. Kept at its value.
     (FUT_LMR_DEPTH, 14, 6, 24, 2.0, false),
+    // History-folded quiet pruning depth (futility + SEE-quiet). The depth these
+    // gates use is the LMR-table depth shifted by the move's history composite
+    // (the same composite and the same history-per-ply exchange rate LMR uses:
+    // seeded at LMR_HIST_DIV), and it may fall below one. Bad-history quiets
+    // are then pruned as if shallower; a strong-history quiet as if deeper (never
+    // past the node depth). PRUNE_D_FLOOR bounds how far below zero it goes: the
+    // seed of -1 is two plies under the old floor of 1. Tune as a cluster with
+    // FUT_* / SEE_QUIET_MULT — the depth change alone shifts every margin.
+    (PRUNE_HIST_DIV, 24952, 4000, 100000, 4900.0, true),
+    (PRUNE_D_FLOOR, -1, -6, 1, 1.0, true),
     // Move-count term: later quiets get a tighter futility margin. Default
     // FUT_PER_DEPTH / 8 — one depth-ply of margin per eight moves; capped at
     // the depth term so the margin never drops below FUT_BASE. Futility is
@@ -6952,7 +6962,25 @@ fn negamax(
         // Estimated LMR depth for pre-MakeMove pruning (SEE quiet, futility).
         // Computed once and shared — no depth ceiling; at high depths lmr_d
         // collapses to 1, so thresholds naturally become permissive.
-        let lmr_d = if move_count > 1 && depth >= 2 {
+        //
+        // Quiets: the depth is history-folded (see PRUNE_HIST_DIV) and may go
+        // below one, down to PRUNE_D_FLOOR. Captures keep the table-only form.
+        let lmr_d = if !is_cap && !is_promo && depth >= 2 {
+            let r_centi = if move_count > 1 {
+                lmr_reduction((depth as usize).min(63) as i32, (move_count as usize).min(63) as i32)
+            } else { 0 };
+            let gp = go_piece(board.piece_at(from));
+            let mut hs = info.history.main_score(from, to, enemy_attacks) * 2;
+            if prev_piece_for_cont != 0 {
+                hs += info.cont.t[prev_piece_for_cont][prev_to_for_cont as usize][gp][to as usize].load(Ordering::Relaxed) as i32;
+            }
+            if prev2_piece_for_cont != 0 {
+                hs += info.cont.t[prev2_piece_for_cont][prev2_to_for_cont as usize][gp][to as usize].load(Ordering::Relaxed) as i32 / 2;
+            }
+            hs += info.pawn_hist[ph_idx][gp][to as usize] as i32;
+            let d_centi = depth * LMR_SCALE - r_centi + hs * LMR_SCALE / tp(&PRUNE_HIST_DIV);
+            d_centi.div_euclid(LMR_SCALE).clamp(tp(&PRUNE_D_FLOOR), depth)
+        } else if move_count > 1 && depth >= 2 {
             // Table is centi-ply; gates want integer plies (floor = old value).
             let r = lmr_reduction((depth as usize).min(63) as i32, (move_count as usize).min(63) as i32) / LMR_SCALE;
             if r > 0 { (depth - r).max(1) } else { depth }
@@ -6973,10 +7001,10 @@ fn negamax(
             && lmr_d <= tp(&FUT_LMR_DEPTH)
         {
             let main_hist = info.history.main_score(from, to, enemy_attacks);
-            let hist_adj = main_hist / 128;
+            // History now enters through lmr_d (history-folded), not the margin.
             let threats_adj = any_threat_count * tp(&FUT_THREATS_MARGIN);
-            let mc_adj = (move_count * tp(&FUT_MC_PER_MOVE)).min(lmr_d * tp(&FUT_PER_DEPTH));
-            let futility_value = static_eval + tp(&FUT_BASE) + lmr_d * tp(&FUT_PER_DEPTH) + hist_adj + threats_adj - mc_adj;
+            let mc_adj = (move_count * tp(&FUT_MC_PER_MOVE)).min(lmr_d.max(0) * tp(&FUT_PER_DEPTH));
+            let futility_value = static_eval + tp(&FUT_BASE) + lmr_d * tp(&FUT_PER_DEPTH) + threats_adj - mc_adj;
             // Direct-check carve-out + strong-history exemption: a move that
             // gives check, or one our own history rates highly, is not futile.
             if futility_value <= alpha && main_hist < tp(&FUT_HIST_EXEMPT) && !board.gives_direct_check(mv) {
@@ -6999,7 +7027,8 @@ fn negamax(
             && beta < MATE_IN_MAX_PLY  // forced-win guard: don't SEE-prune quiets while proving a win
             && FEAT_SEE_PRUNE.load(Ordering::Relaxed)
         {
-            let see_quiet_threshold = -see_quiet_mult * lmr_d * lmr_d;
+            let sd = lmr_d.max(0); // a negative pruning depth must not loosen SEE
+            let see_quiet_threshold = -see_quiet_mult * sd * sd;
             if !see_ge(board, mv, see_quiet_threshold) {
                 trace_gate!(info, board.hash, ply, mv, "see_quiet", depth, move_count);
                 info.stats.see_prunes += 1;
