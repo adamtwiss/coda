@@ -227,6 +227,76 @@ pub fn captured_type(pt: PieceType) -> usize {
     (pt + 1) as usize
 }
 
+/// Quiet threat lift by `[target piece type][mover piece type]`:
+///
+///     QUIET_CHECK_BONUS * OFFENSE_SCALE_PCT/100 * t / (t + m * OFFENSE_MOVER_W_PCT/100)
+///
+/// with t and m the `see_value`s of the target and the mover (the term is
+/// explained where quiets are scored). Every input is a tunable or a constant,
+/// so the per-quiet integer divide becomes one load. Rebuilt by
+/// `init_threat_lift`, from `crate::init` and whenever setoption or `--set`
+/// changes one of the three tunables (`search::rebuild_derived_tables`), the
+/// same lifecycle as the LMR tables. `AtomicI32` for the same reason as
+/// those: a setoption can rebuild it while helper threads read it.
+/// 8x8 so that indexing by a masked piece type needs no bounds check; only
+/// targets KNIGHT..=QUEEN and movers PAWN..=QUEEN are ever read.
+static THREAT_LIFT: [[std::sync::atomic::AtomicI32; 8]; 8] = {
+    const Z: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+    const ROW: [std::sync::atomic::AtomicI32; 8] = [Z; 8];
+    [ROW; 8]
+};
+
+/// The threat-lift formula at the given tunable values. Integer arithmetic
+/// and operation order exactly as the scorer computed it inline before the
+/// table existed, so the table is bit-identical to that.
+fn threat_lift_formula(quiet_check_bonus: i32, scale_pct: i32, mover_w_pct: i32, target_pt: u8, mover_pt: u8) -> i32 {
+    let base = quiet_check_bonus * scale_pct / 100;
+    let t = see_value(target_pt);
+    base * t / (t + see_value(mover_pt) * mover_w_pct / 100)
+}
+
+/// Rebuild `THREAT_LIFT` from the live tunables.
+pub fn init_threat_lift() {
+    use std::sync::atomic::Ordering::Relaxed;
+    let qcb = crate::search::QUIET_CHECK_BONUS.load(Relaxed);
+    let scale = crate::search::OFFENSE_SCALE_PCT.load(Relaxed);
+    let w = crate::search::OFFENSE_MOVER_W_PCT.load(Relaxed);
+    for target in KNIGHT..=QUEEN {
+        for mover in PAWN..=QUEEN {
+            THREAT_LIFT[target as usize][mover as usize]
+                .store(threat_lift_formula(qcb, scale, w, target, mover), Relaxed);
+        }
+    }
+}
+
+#[inline(always)]
+fn threat_lift(target_pt: u8, mover_pt: u8) -> i32 {
+    THREAT_LIFT[(target_pt & 7) as usize][(mover_pt & 7) as usize]
+        .load(std::sync::atomic::Ordering::Relaxed)
+}
+
+// `threat_lift_target` ranks targets queen > rook > minor and treats the two
+// minors as one value. Fail the build if the SEE values stop supporting that.
+const _: () = assert!(
+    see_value(QUEEN) > see_value(ROOK)
+        && see_value(ROOK) > see_value(KNIGHT)
+        && see_value(KNIGHT) == see_value(BISHOP)
+);
+
+/// The piece type of the most valuable enemy non-pawn, non-king piece (by
+/// `see_value`) on the squares `hits`, given that there is at least one. A
+/// minor is reported as KNIGHT; a bishop has the same value (asserted above).
+#[inline(always)]
+fn threat_lift_target(hits: Bitboard, enemy_queens: Bitboard, enemy_rooks: Bitboard) -> u8 {
+    if hits & enemy_queens != 0 {
+        QUEEN
+    } else if hits & enemy_rooks != 0 {
+        ROOK
+    } else {
+        KNIGHT
+    }
+}
+
 /// MovePicker stages.
 ///
 /// Discriminants are explicit so that the four "picking" stages
@@ -693,16 +763,15 @@ impl MovePicker {
         let quiet_check_bonus = crate::search::QUIET_CHECK_BONUS.load(Ordering::Relaxed);
         let quiet_check_see_margin = crate::search::QUIET_CHECK_SEE_MARGIN.load(Ordering::Relaxed);
         let kf_bonus = crate::search::KNIGHT_FORK_BONUS.load(Ordering::Relaxed);
-        // Threat-lift numerator, hoisted: QUIET_CHECK_BONUS * SCALE/100 (at
-        // most 30000 * 2, so `offense_base * t` stays far inside i32).
-        let offense_base =
-            quiet_check_bonus * crate::search::OFFENSE_SCALE_PCT.load(Ordering::Relaxed) / 100;
-        let offense_mover_w = crate::search::OFFENSE_MOVER_W_PCT.load(Ordering::Relaxed);
         let us = board.side_to_move;
         let them = 1 - us;
         let occ = board.colors[us as usize] | board.colors[them as usize];
         let enemy_non_pawns = board.colors[them as usize]
             & !(board.pieces[PAWN as usize] | board.pieces[KING as usize]);
+        // Enemy queens and rooks, for picking the most valuable threat target
+        // (see `threat_lift_target`).
+        let enemy_queens = board.colors[them as usize] & board.pieces[QUEEN as usize];
+        let enemy_rooks = board.colors[them as usize] & board.pieces[ROOK as usize];
         let their_pawns = board.pieces[PAWN as usize] & board.colors[them as usize];
         let enemy_pawn_attacks = if them == WHITE {
             ((their_pawns & !FILE_A) << 7) | ((their_pawns & !FILE_H) << 9)
@@ -809,15 +878,11 @@ impl MovePicker {
                         // Only skip if WE would be a bigger target than a pawn
                         let unsafe_square = pt != 0 && (enemy_pawn_attacks & (1u64 << to)) != 0;
                         if !unsafe_square {
-                            let mut hits = attacks_from_to & enemy_non_pawns;
-                            let mut t_val = 0;
-                            while hits != 0 {
-                                let t_sq = hits.trailing_zeros() as u8;
-                                hits &= hits - 1;
-                                t_val = t_val.max(see_value(board.piece_type_at(t_sq)));
-                            }
-                            score += offense_base * t_val
-                                / (t_val + see_value(pt) * offense_mover_w / 100);
+                            // The formula above, read from a table built
+                            // whenever its tunables change (`init_threat_lift`).
+                            let target_pt =
+                                threat_lift_target(attacks_from_to, enemy_queens, enemy_rooks);
+                            score += threat_lift(target_pt, pt);
                         }
                         // Knight-fork bonus: knight move attacking 2+ enemy
                         // non-pawn pieces from `to` is a fork. Tunable
@@ -1893,6 +1958,112 @@ mod quiet_check_bonus_tests {
         let knight_on_rook = threat_lift(ROOK, KNIGHT);
         assert!(pawn_on_knight > knight_on_rook && knight_on_rook > queen_on_knight);
         assert!(pawn_on_knight < bonus(), "a threat outranked a quiet check");
+    }
+
+    /// `THREAT_LIFT` must equal the per-quiet divide it replaced, for every
+    /// target/mover pair, across the full setoption range of all three
+    /// tunables (the endpoints and a stride through each range), with no i32
+    /// overflow anywhere. The table is rebuilt at each setting through the
+    /// same `init_threat_lift` path the hook uses, then restored.
+    #[test]
+    fn threat_lift_table_matches_divide_over_tunable_ranges() {
+        crate::init();
+        use std::sync::atomic::Ordering::Relaxed;
+        let range = |name: &str| -> (i32, i32) {
+            let t = crate::search::tunable_params().into_iter().find(|t| t.0 == name).unwrap();
+            (t.3, t.4)
+        };
+        let pts = |(lo, hi): (i32, i32)| -> Vec<i32> {
+            let mut v: Vec<i32> = (0..=12).map(|k| lo + (hi - lo) * k / 12).collect();
+            v.push(lo + 1); v.push(hi - 1);
+            v
+        };
+        let (qcb_r, sc_r, w_r) = (range("QUIET_CHECK_BONUS"), range("OFFENSE_SCALE_PCT"), range("OFFENSE_MOVER_W_PCT"));
+        for qcb in pts(qcb_r) {
+            for sc in pts(sc_r) {
+                for w in pts(w_r) {
+                    for target in KNIGHT..=QUEEN {
+                        for mover in PAWN..=QUEEN {
+                            // The pre-table expression, verbatim, in checked i32.
+                            let base = qcb.checked_mul(sc).unwrap() / 100;
+                            let t = see_value(target);
+                            let den = t + see_value(mover).checked_mul(w).unwrap() / 100;
+                            let old = base.checked_mul(t).unwrap() / den;
+                            assert_eq!(super::threat_lift_formula(qcb, sc, w, target, mover), old);
+                        }
+                    }
+                }
+            }
+        }
+        // The live table equals the formula at the live tunables, through
+        // the real rebuild path. Only rebuilt, never mutated, so tests that
+        // read the tunables concurrently are unaffected.
+        super::init_threat_lift();
+        let (qcb, sc, w) = (
+            crate::search::QUIET_CHECK_BONUS.load(Relaxed),
+            crate::search::OFFENSE_SCALE_PCT.load(Relaxed),
+            crate::search::OFFENSE_MOVER_W_PCT.load(Relaxed),
+        );
+        for target in KNIGHT..=QUEEN {
+            for mover in PAWN..=QUEEN {
+                assert_eq!(super::threat_lift(target, mover),
+                    super::threat_lift_formula(qcb, sc, w, target, mover));
+            }
+        }
+    }
+
+    /// `threat_lift_target` must pick a target of the same `see_value` as the
+    /// max-over-targets loop it replaced. Checked on every quiet that attacks
+    /// an enemy non-pawn piece from `to`, over random games.
+    #[test]
+    fn threat_lift_target_matches_max_loop() {
+        crate::init();
+        let mut rng: u64 = 0x2545_F491_4F6C_DD1D;
+        let mut next = || { rng ^= rng << 13; rng ^= rng >> 7; rng ^= rng << 17; rng };
+        let mut checked = 0u32;
+        let mut by_target = [0u32; 6];
+        for _game in 0..60 {
+            let mut b = Board::from_fen("r1bqkb1r/pppp1ppp/2n2n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4");
+            for _ply in 0..100 {
+                let moves = crate::movegen::generate_legal_moves(&b);
+                if moves.len == 0 { break; }
+                let us = b.side_to_move;
+                let them = flip_color(us);
+                let occ = b.occupied();
+                let enemy_np = b.colors[them as usize] & !(b.pieces[PAWN as usize] | b.pieces[KING as usize]);
+                let eq = b.colors[them as usize] & b.pieces[QUEEN as usize];
+                let er = b.colors[them as usize] & b.pieces[ROOK as usize];
+                for i in 0..moves.len {
+                    let m = moves.get(i);
+                    let (from, to) = (move_from(m), move_to(m) as u32);
+                    let pt = b.piece_type_at(from);
+                    let att = match pt {
+                        PAWN => pawn_attacks(us, to),
+                        KNIGHT => knight_attacks(to),
+                        BISHOP => bishop_attacks(to, occ & !(1u64 << from)),
+                        ROOK => rook_attacks(to, occ & !(1u64 << from)),
+                        QUEEN => queen_attacks(to, occ & !(1u64 << from)),
+                        _ => 0,
+                    };
+                    if att & enemy_np == 0 { continue; }
+                    let mut hits = att & enemy_np;
+                    let mut t_val = 0;
+                    while hits != 0 {
+                        let sq = hits.trailing_zeros() as u8;
+                        hits &= hits - 1;
+                        t_val = t_val.max(see_value(b.piece_type_at(sq)));
+                    }
+                    let picked = super::threat_lift_target(att, eq, er);
+                    assert_eq!(see_value(picked), t_val, "{} {}", b.to_fen(), b.uci_move(m));
+                    checked += 1;
+                    by_target[picked as usize] += 1;
+                }
+                let mv = moves.get((next() % moves.len as u64) as usize);
+                b.make_move(mv);
+            }
+        }
+        assert!(checked > 1000 && by_target[QUEEN as usize] > 50 && by_target[ROOK as usize] > 50,
+            "coverage too thin: {} {:?}", checked, by_target);
     }
 }
 

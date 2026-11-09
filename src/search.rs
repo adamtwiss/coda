@@ -3051,6 +3051,19 @@ pub fn init_lmr() {
     }
 }
 
+/// Rebuild every table derived from tunables after `pname` was stored. The
+/// one place that knows which tunables feed which table, shared by UCI
+/// setoption and `--set` so the two cannot drift apart.
+pub fn rebuild_derived_tables(pname: &str) {
+    // init_lmr() reads LMR_C_QUIET, LMR_C_CAP and LMR_BASE_CENTI.
+    if pname.starts_with("LMR_C") || pname == "LMR_BASE_CENTI" {
+        init_lmr();
+    }
+    if matches!(pname, "QUIET_CHECK_BONUS" | "OFFENSE_SCALE_PCT" | "OFFENSE_MOVER_W_PCT") {
+        crate::movepicker::init_threat_lift();
+    }
+}
+
 fn lmr_cap_reduction(depth: i32, moves: i32) -> i32 {
     let d = (depth as usize).min(63);
     let m = (moves as usize).min(63);

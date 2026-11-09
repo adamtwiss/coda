@@ -75,6 +75,7 @@ pub fn init() {
         bitboard::init_bitboards();
         zobrist::init_zobrist();
         search::init_lmr();
+        movepicker::init_threat_lift();
         cuckoo::init_cuckoo();
         nnue::init_nnue();
         threats::init_threats();
@@ -697,7 +698,6 @@ fn main() {
             println!("{}", isa_banner());
             let nnue_path = cli.nnue.as_deref();
             // Apply per-invocation tunable overrides (--set NAME=VALUE).
-            let mut lmr_c_changed = false;
             for kv in &set {
                 let (name, value_str) = match kv.split_once('=') {
                     Some(parts) => parts,
@@ -713,27 +713,18 @@ fn main() {
                         let clamped = value.max(min).min(max);
                         atomic.store(clamped, std::sync::atomic::Ordering::Relaxed);
                         eprintln!("--set {} = {} (clamped from {} into [{}, {}])", pname, clamped, value, min, max);
-                        // Must match uci.rs's setoption rebuild condition exactly.
-                        // init_lmr() reads LMR_C_QUIET, LMR_C_CAP and
-                        // LMR_BASE_CENTI; the first two are covered by the
-                        // prefix, the third is not. It was missing here while
-                        // uci.rs had it, so `bench --set LMR_BASE_CENTI=x`
-                        // stored the atomic and left the cached table untouched
-                        // -- the parameter looked dead when it is live.
-                        if pname.starts_with("LMR_C") || pname == "LMR_BASE_CENTI" {
-                            lmr_c_changed = true;
-                        }
+                        // Some tunables are baked into cached tables (LMR,
+                        // threat lift) at startup; without a rebuild, --set
+                        // updates the atomic but search keeps reading the old
+                        // table and the parameter looks dead when it is live.
+                        // Same hook as UCI setoption, so the two cannot drift.
+                        search::rebuild_derived_tables(pname);
                         matched = true;
                         break;
                     }
                 }
                 if !matched { eprintln!("--set ignored (unknown tunable): {}", name); }
             }
-            // LMR_C_QUIET / LMR_C_CAP are baked into the LMR reduction table
-            // at startup. Without rebuilding it, --set updates the atomic but
-            // search keeps reading the old cached table. Mirror UCI setoption
-            // behavior in src/uci.rs.
-            if lmr_c_changed { search::init_lmr(); }
             // NPS is search time only: net load and table setup happen before
             // the clock starts (see search::bench_timed), so the figure OB
             // scales time controls by tracks in-game search speed.
