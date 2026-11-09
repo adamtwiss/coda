@@ -7527,8 +7527,7 @@ let singular_beta = tt_score_local - depth;
                 if reduction >= LMR_SCALE {
                     // Continuous capture history adjustment: `capt_hist /
                     // LMR_HIST_DIV_CAP`, mirroring quiet-LMR's `hist_score /
-                    // LMR_HIST_DIV` and Obsidian's
-                    // `R -= hist/(isQuiet?Q_DIV:C_DIV)`. Must NOT be a step
+                    // LMR_HIST_DIV` (a common cross-engine shape). Must NOT be a step
                     // function (±1 at some |capt_hist| threshold): the
                     // step-vs-continuous asymmetry against quiet LMR forces
                     // SPSA to compress LMR_C_CAP below LMR_C_QUIET, because a
@@ -7742,8 +7741,8 @@ let singular_beta = tt_score_local - depth;
             // first child is itself a PV node (never a cut node) -> false; at a
             // non-PV node the first child's expected type is the negation of
             // this node's (all-node -> child is cut; cut-node -> first child is
-            // all after the cutoff move) -> !cut_node. Matches SF (Step 18
-            // `!cutNode` for non-PV first move vs `search<PV>(... false)`).
+            // all after the cutoff move) -> !cut_node, the usual node-type
+            // alternation.
             // Hardcoding `false` here mislabels every non-PV first move as an
             // all-node and disables the NMP/IIR/TT-cutoff node-type guards
             // along that whole spine.
