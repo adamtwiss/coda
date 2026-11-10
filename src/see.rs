@@ -125,8 +125,7 @@ pub fn see_ge(board: &Board, mv: Move, threshold: i32) -> bool {
         // the pin ray) — but ONLY while the pinner is still on the board. Once
         // the pinner has been captured (including as the very first capture,
         // which is why `to` was cleared from `occ`), the pin is gone and the
-        // piece is free to recapture. Same rule as SF's
-        // `if (pinners(~stm) & occupied) stmAttackers &= ~blockers_for_king(stm)`.
+        // piece is free to recapture.
         if pinners_them & occ != 0 {
             stm_attackers &= !pinned_stm;
             if stm_attackers == 0 {
