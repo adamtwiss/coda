@@ -180,14 +180,14 @@ tunables!(
     // Futility margin: base + per-depth, compared against alpha at the
     // frontier. History adjusts the effective lmr_depth used here, so these
     // interact with the LMR history terms — retune the pair together.
-    (FUT_BASE, 85, 0, 200, 9.0, true),
+    (FUT_BASE, 91, 0, 200, 9.0, true),
     (FUT_PER_DEPTH, 96, 40, 250, 10.5, true),
     // Strong-history exemption for quiet futility: a quiet whose main history
     // exceeds this is never futility-pruned. It was the hardcoded literal 12000
     // sitting inside the gate at search.rs while every other term around it was
     // SPSA-tunable -- so SPSA has been optimising a formula with one frozen
     // input. Exposing it costs nothing and is behaviour-identical at 12000.
-    (FUT_HIST_EXEMPT, 12103, 2000, 16384, 900.0, true),
+    (FUT_HIST_EXEMPT, 12374, 2000, 16384, 900.0, true),
     // Non-core: near-inert in warm-TT games (dead-knob audit 2026-09-24).
     // One SPSA step either way changes under 0.04% of futility prunes, so
     // in core SPSA it would only add gradient noise. Kept at its value.
@@ -200,17 +200,17 @@ tunables!(
     // past the node depth). PRUNE_D_FLOOR bounds how far below zero it goes: the
     // seed of -1 is two plies under the old floor of 1. Tune as a cluster with
     // FUT_* / SEE_QUIET_MULT — the depth change alone shifts every margin.
-    (PRUNE_HIST_DIV, 24952, 1500, 100000, 4900.0, true),
+    (PRUNE_HIST_DIV, 23272, 1500, 100000, 4900.0, true),
     (PRUNE_D_FLOOR, -3, -10, 1, 1.0, true),
     // Share of LMR's estimated reduction (table + node terms) the pruning depth
     // subtracts; 100 = the reduction LMR itself would apply to this move.
-    (PRUNE_NODE_PCT, 100, 40, 200, 12.0, true),
+    (PRUNE_NODE_PCT, 52, 40, 200, 12.0, true),
     // Move-count term: later quiets get a tighter futility margin. Default
     // FUT_PER_DEPTH / 8 — one depth-ply of margin per eight moves; capped at
     // the depth term so the margin never drops below FUT_BASE. Futility is
     // evaluated per move across the quiet tail; LMP still bulk-skips.
     (FUT_MC_PER_MOVE, 12, 0, 40, 2.0, true),
-    (SEE_QUIET_MULT, 16, 5, 80, 3.75, true),
+    (SEE_QUIET_MULT, 21, 5, 80, 3.75, true),
     // Endgame endpoint of SEE_QUIET_MULT (which is the middlegame endpoint),
     // blended on `phase_material` between PHASE_MAT_LO and PHASE_MAT_HI. Same
     // range and c_end as SEE_QUIET_MULT. Value 14 is from an SPSA run on an
@@ -472,18 +472,18 @@ tunables!(
     // Late move pruning: quiets searched before the cutoff, on the shape
     // `(BASE + d²·DEPTH) / (2 - improving)`. BASE dominates at shallow depth
     // and sets how many quiets survive at d=1.
-    (LMP_BASE_10X, 54, 10, 150, 20.0, true),
+    (LMP_BASE_10X, 53, 10, 150, 20.0, true),
     // Endgame endpoint of LMP_BASE_10X (the middlegame endpoint), blended on
     // `phase_material` via PHASE_MAT_LO/HI. The blend runs on the raw _10X
     // values and then takes the same rounding as `tp10`, so with END == mid
     // the result is bit-identical. Value 17 is from an SPSA run on an
     // endgame-only book (#4876; two UHO control tunes held the middlegame
     // value at 52-56); same range and c_end. Non-core.
-    (LMP_BASE_END_10X, 17, 10, 150, 20.0, false),
+    (LMP_BASE_END_10X, 28, 10, 150, 20.0, false),
     // Non-core: near-inert in warm-TT games (dead-knob audit 2026-09-24).
     // One step down changes 0.02% of LMP prunes and one step up none: the
     // move-count limit already outgrows the move list at these depths.
-    (LMP_DEPTH_10X, 127, 40, 200, 20.0, false),
+    (LMP_DEPTH_10X, 138, 40, 200, 20.0, false),
     // Margin-aware LMP. Coda's LMP limit keys on depth and improving only; the
     // fail-low histogram (b_probe_*) shows late-quiet work concentrating at
     // nodes that end up failing low, but its margin is only knowable AFTER the
@@ -512,7 +512,7 @@ tunables!(
     // preferred +23 divided by the measured 3-ply gap between the two medians.
     (LMP_ROOT_KNEE, 19, 10, 24, 1.5, true),
     (LMP_ROOT_COEF, 8, 0, 20, 1.5, true),
-    (LMP_MARGIN_PCT, 58, 40, 100, 6.0, true),
+    (LMP_MARGIN_PCT, 55, 40, 100, 6.0, true),
     // Root-depth-aware LMR relaxation (single-set, self-adapts STC<->LTC):
     // reduce LESS as the OVERALL search depth grows past LMR_ROOT_THRESH
     // (diminishing returns — at LTC the reduced re-search is cheap vs the
@@ -738,7 +738,7 @@ tunables!(
     // before alpha is raised). Default 10 = +1.0 ply (LMR_SCALE centi-ply) per
     // prior alpha-raise.
     (LMR_ALPHA_RAISE_10X, 10, 0, 40, 5.0, false),
-    (FUT_THREATS_MARGIN, 33, 0, 200, 10.0, true),
+    (FUT_THREATS_MARGIN, 43, 0, 200, 10.0, true),
     // Continuation-history weight in quiet move ordering. Range runs to 0 so
     // SPSA can disable the term entirely rather than pinning at a floor.
     (CONT_HIST_MULT_10X, 21, 0, 80, 15.0, true),
