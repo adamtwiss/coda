@@ -200,8 +200,8 @@ tunables!(
     // past the node depth). PRUNE_D_FLOOR bounds how far below zero it goes: the
     // seed of -1 is two plies under the old floor of 1. Tune as a cluster with
     // FUT_* / SEE_QUIET_MULT — the depth change alone shifts every margin.
-    (PRUNE_HIST_DIV, 24952, 4000, 100000, 4900.0, true),
-    (PRUNE_D_FLOOR, -3, -8, 1, 1.0, true),
+    (PRUNE_HIST_DIV, 24952, 1500, 100000, 4900.0, true),
+    (PRUNE_D_FLOOR, -3, -10, 1, 1.0, true),
     // Share of LMR's estimated reduction (table + node terms) the pruning depth
     // subtracts; 100 = the reduction LMR itself would apply to this move.
     (PRUNE_NODE_PCT, 100, 40, 200, 12.0, true),
