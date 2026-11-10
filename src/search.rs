@@ -201,7 +201,10 @@ tunables!(
     // seed of -1 is two plies under the old floor of 1. Tune as a cluster with
     // FUT_* / SEE_QUIET_MULT — the depth change alone shifts every margin.
     (PRUNE_HIST_DIV, 24952, 4000, 100000, 4900.0, true),
-    (PRUNE_D_FLOOR, -1, -6, 1, 1.0, true),
+    (PRUNE_D_FLOOR, -3, -8, 1, 1.0, true),
+    // Share of LMR's estimated reduction (table + node terms) the pruning depth
+    // subtracts; 100 = the reduction LMR itself would apply to this move.
+    (PRUNE_NODE_PCT, 100, 40, 200, 12.0, true),
     // Move-count term: later quiets get a tighter futility margin. Default
     // FUT_PER_DEPTH / 8 — one depth-ply of margin per eight moves; capped at
     // the depth term so the margin never drops below FUT_BASE. Futility is
@@ -6965,8 +6968,24 @@ fn negamax(
         // Quiets: the depth is history-folded (see PRUNE_HIST_DIV) and may go
         // below one, down to PRUNE_D_FLOOR. Captures keep the table-only form.
         let lmr_d = if !is_cap && !is_promo && depth >= 2 {
+            // LMR's own estimate for this move: the table, plus the node-level
+            // terms quiet LMR applies (window/cut/all-node, improving, tt_pv, noisy
+            // TT move). Without them the pruning depth never fell below ~1, which
+            // is why #4811 (node terms with the floor of 1 kept) was flat.
             let r_centi = if move_count > 1 {
-                lmr_reduction((depth as usize).min(63) as i32, (move_count as usize).min(63) as i32)
+                let table = lmr_reduction((depth as usize).min(63) as i32, (move_count as usize).min(63) as i32);
+                let mut r = table;
+                if beta - alpha > 1 {
+                    r -= LMR_SCALE;
+                } else if cut_node {
+                    r += tp(&LMR_CUTNODE_BUMP_CENTI) + ((tt_move == NO_MOVE) as i32) * LMR_SCALE;
+                } else {
+                    r += table * tp(&LMR_ALLNODE_DECAY_NUM) / (256 * depth + 285);
+                }
+                if improving { r -= LMR_SCALE; }
+                if tt_pv { r -= LMR_SCALE; }
+                if tt_move_noisy { r += LMR_SCALE; }
+                r * tp(&PRUNE_NODE_PCT) / 100
             } else { 0 };
             let gp = go_piece(board.piece_at(from));
             let mut hs = info.history.main_score(from, to, enemy_attacks) * 2;
