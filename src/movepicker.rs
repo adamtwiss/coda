@@ -254,6 +254,17 @@ enum Stage {
 
 const PICK_BASE: u8 = Stage::GoodCaptures as u8;
 
+// `trim_quiets` bounds. TRIM_MAX_COUNTED caps the counted-quiet budget the
+// trim accepts (its top-score insertion costs that many steps per counted
+// quiet); TRIM_MIN_DROP is how many more quiets than the budget the list must
+// hold before trimming is worth a pass. Both only gate WHEN the trim runs,
+// never what it keeps, so they cannot change the search.
+const TRIM_MAX_COUNTED: usize = 8;
+const TRIM_MIN_DROP: usize = 8;
+// Score range for which `score * 256 + 255` still fits in an i32.
+const TRIM_SCORE_MIN: i32 = -(1 << 23);
+const TRIM_SCORE_MAX: i32 = (1 << 23) - 1;
+
 pub struct MovePicker {
     stage: Stage,
     tt_move: Move,
@@ -300,6 +311,11 @@ pub struct MovePicker {
     // Checking squares: from which squares does each piece type give direct check?
     // Indexed by piece type (0=PAWN..5=KING). Computed once per node.
     checking_sqs: [Bitboard; 6],
+    // Discovered-check candidates from quiet scoring, kept for `trim_quiets`.
+    dc_candidates: Bitboard,
+    // Set once `trim_quiets` has cut the quiet list; `scores` then holds
+    // the keys `pick_best_trimmed` reads (see `trim_quiets`).
+    trimmed: bool,
 }
 
 impl MovePicker {
@@ -367,6 +383,8 @@ impl MovePicker {
             // so nodes that cut off before the quiet stage never pay the
             // 4 attack computations.
             checking_sqs: [0; 6],
+            dc_candidates: 0,
+            trimmed: false,
         }
     }
 
@@ -404,6 +422,8 @@ impl MovePicker {
             pinned,
             threat_sq: -1,
             checking_sqs: [0; 6], // not used in QS
+            dc_candidates: 0,
+            trimmed: false,
         }
     }
 
@@ -467,6 +487,8 @@ impl MovePicker {
             pinned,
             threat_sq: -1,
             checking_sqs: [0; 6], // not used in evasions
+            dc_candidates: 0,
+            trimmed: false,
         }
     }
 
@@ -652,6 +674,7 @@ impl MovePicker {
             if their_king_bb != 0 {
                 dc_candidates = board.discovered_check_candidates();
             }
+            self.dc_candidates = dc_candidates;
             self.checking_sqs = if their_king_bb != 0 {
                 let their_king_sq = their_king_bb.trailing_zeros();
                 let occ = board.occupied();
@@ -919,6 +942,7 @@ impl MovePicker {
 
     /// Swap in the saved bad captures.
     fn restore_bad_captures(&mut self) {
+        self.trimmed = false;
         self.moves = MoveList::new();
         for i in 0..self.bad_len {
             // SAFETY: generate_and_score_captures wrote bad_moves[i] and
@@ -953,11 +977,176 @@ impl MovePicker {
         }
     }
 
+    /// Cut the remaining quiet list down to the moves search can still pick
+    /// before Late Move Pruning ends the quiet stage, so later picks scan a
+    /// short list. The pick sequence is unchanged, ties included.
+    ///
+    /// Search calls this once LMP is armed at the node, passing
+    /// `max_counted`: an upper bound on how many more *counted* quiets can be
+    /// picked before LMP sets `skip_quiets` (derived from the node's LMP
+    /// limit and current move count; see the call site). A counted quiet is
+    /// one that search is certain to count and to prune once the count is
+    /// over the limit. Every other quiet is kept unconditionally:
+    /// - an illegal move: search skips it without counting. Legality is
+    ///   decided by the test search applies (`is_legal_unchecked_side` with
+    ///   the node's `pinned` and `enemy_attacks`); only king and
+    ///   pinned-piece moves can fail it;
+    /// - castling, whatever its legality or check status;
+    /// - `excluded`: skipped without counting;
+    /// - a promotion: exempt from LMP;
+    /// - when `check_exempt` (LMP's shallow check carve): any quiet that may
+    ///   give check, i.e. lands on a direct-check square or moves a
+    ///   discovered-check candidate. That is a superset of
+    ///   `gives_direct_check`, which is what the carve tests.
+    ///
+    /// The counted quiets search can reach before LMP fires are, in pick
+    /// order, at most the first `max_counted` of them, and pick order never
+    /// increases in score, so keeping every counted quiet whose score is at
+    /// least the `max_counted`-th largest keeps all of them, ties included.
+    /// `max_counted` is capped at `TRIM_MAX_COUNTED`: past that the trim
+    /// keeps most of the list and costs more than it saves.
+    ///
+    /// The untrimmed picks are a selection sort that takes the highest
+    /// score, breaks ties by lowest list position, and swaps the move at the
+    /// front position into the pick's hole. A kept move's score is rewritten
+    /// as `score * 256 + (255 - position)`, so `pick_best_trimmed` reproduces
+    /// both the order and the tie-break with a single comparison and tracks
+    /// the position changes those swaps make.
+    pub fn trim_quiets(&mut self, board: &Board, max_counted: usize, check_exempt: bool, excluded: Move, enemy_attacks: Bitboard) {
+        if self.stage != Stage::Quiets || self.trimmed || max_counted == 0 || max_counted > TRIM_MAX_COUNTED {
+            return;
+        }
+        let start = self.index;
+        let len = self.moves.len;
+        if len - start <= max_counted + TRIM_MIN_DROP {
+            return;
+        }
+        let us = board.side_to_move as usize;
+        let our_king = board.pieces[KING as usize] & board.colors[us];
+        let maybe_illegal = self.pinned | our_king;
+        // Check-exempt sets: moving a discovered-check candidate, or landing
+        // on a direct-check square of the mover's type (indexed by piece
+        // type; the two spare rows, never hit by a generated move, keep
+        // everything).
+        let mut check_from = 0u64;
+        let mut check_to = [0u64, 0, 0, 0, 0, 0, !0, !0];
+        if check_exempt {
+            // No enemy king (never in search) leaves the check sets empty.
+            if board.pieces[KING as usize] & board.colors[1 - us] == 0 {
+                return;
+            }
+            check_from = self.dc_candidates;
+            check_to[..6].copy_from_slice(&self.checking_sqs);
+        }
+
+        // Pass 1: mark the moves kept unconditionally; keep the
+        // `max_counted` best counted scores in `top`, highest first.
+        let mut keep_always = [0u64; 4];
+        let mut top = [i32::MIN; TRIM_MAX_COUNTED];
+        let mut n_counted = 0usize;
+        let mut out_of_range = false;
+        for i in start..len {
+            let m = self.moves.get(i);
+            let from = move_from(m);
+            let to = move_to(m);
+            let s = unsafe { self.scores[i].assume_init() };
+            // Keys below need the score to fit in 24 bits; history scores
+            // are far inside that, so this is a guard, not a case.
+            out_of_range |= s.wrapping_sub(TRIM_SCORE_MIN) as u32
+                > (TRIM_SCORE_MAX - TRIM_SCORE_MIN) as u32;
+            // Castling and promotions (flags 2 and up), the excluded move,
+            // and possible checks are kept.
+            let pt = (board.piece_type_at(from) & 7) as usize;
+            let mut always = ((check_from >> from) | (check_to[pt] >> to)) & 1 != 0
+                || move_flags(m) >= FLAG_CASTLE
+                || m == excluded;
+            if (maybe_illegal >> from) & 1 != 0 {
+                always |= !board.is_legal_unchecked_side(m, self.pinned, enemy_attacks);
+            }
+            if always {
+                keep_always[i >> 6] |= 1u64 << (i & 63);
+            } else {
+                n_counted += 1;
+                // Insertion into the sorted `top`; most scores fail the
+                // first test once `top` has filled.
+                if s > top[max_counted - 1] {
+                    let mut j = max_counted - 1;
+                    while j > 0 && top[j - 1] < s {
+                        top[j] = top[j - 1];
+                        j -= 1;
+                    }
+                    top[j] = s;
+                }
+            }
+        }
+        if out_of_range || n_counted <= max_counted {
+            return;
+        }
+        let threshold = top[max_counted - 1];
+
+        // Pass 2: compact the kept moves in place, in list order, scores
+        // rewritten as keys.
+        let mut w = start;
+        for i in start..len {
+            let s = unsafe { self.scores[i].assume_init() };
+            let keep = (keep_always[i >> 6] >> (i & 63)) & 1 != 0 || s >= threshold;
+            self.moves.set(w, self.moves.get(i));
+            self.scores[w].write((s << 8) | (255 - i as i32));
+            w += keep as usize;
+        }
+        self.moves.len = w;
+        self.trimmed = true;
+    }
+
+    /// `pick_best` over a list cut by `trim_quiets`: the same pick sequence
+    /// as the untrimmed list.
+    ///
+    /// Keys are unique and order by (score, lowest untrimmed position), so the
+    /// highest key is the untrimmed pick. Both lists advance `index` once per
+    /// pick, so `index` is also the untrimmed front position. If the move
+    /// there is kept (its key carries position `index`), the untrimmed swap
+    /// moves it into the pick's position, and its key takes that position.
+    /// Otherwise the swap moves only a dropped move. The kept moves' slots
+    /// carry no order, so the pick is simply swapped out to `index`.
+    #[inline(never)]
+    fn pick_best_trimmed(&mut self) -> Move {
+        let start = self.index;
+        let front_tag = 255 - start as i32;
+        let mut best_idx = start;
+        // SAFETY: slots [index..moves.len) were written by trim_quiets.
+        let mut best_key = unsafe { self.scores[start].assume_init() };
+        let mut front_idx = if best_key & 255 == front_tag { start } else { usize::MAX };
+        for i in (start + 1)..self.moves.len {
+            let k = unsafe { self.scores[i].assume_init() };
+            if k > best_key {
+                best_key = k;
+                best_idx = i;
+            }
+            if k & 255 == front_tag {
+                front_idx = i;
+            }
+        }
+        if front_idx != usize::MAX && front_idx != best_idx {
+            let fk = unsafe { self.scores[front_idx].assume_init() };
+            self.scores[front_idx].write((fk & !255) | (best_key & 255));
+        }
+        if best_idx != start {
+            self.moves.swap(start, best_idx);
+            self.scores.swap(start, best_idx);
+        }
+        let mv = self.moves.get(start);
+        self.index += 1;
+        mv
+    }
+
     /// Selection sort: find best from current index, swap to front, return it.
     /// Selection sort: find best scored move and swap to front.
     fn pick_best(&mut self) -> Move {
         if self.index >= self.moves.len {
             return NO_MOVE;
+        }
+        if self.trimmed {
+            return self.pick_best_trimmed();
         }
 
         let mut best_idx = self.index;

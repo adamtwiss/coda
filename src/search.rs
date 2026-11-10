@@ -6817,6 +6817,9 @@ fn negamax(
     // like a pure short-circuit — it moves the bench ~22%, and the mechanism
     // for that has never been localised.
     let mut skip_quiets = false;
+    // Set once the quiet list has been offered to `trim_quiets` (first quiet
+    // that reaches the LMP gate with LMP armed).
+    let mut lmp_trim_done = false;
 
     // Phase-blended shallow quiet-pruning knobs (LMP base, SEE quiet
     // multiplier), resolved once per node: 4 popcounts on the node's board.
@@ -6929,6 +6932,23 @@ fn negamax(
                 skip_quiets = true;
                 picker.skip_remaining_quiets();
                 continue;
+            }
+            // LMP is now armed for the rest of the node: every input to the
+            // gate above is fixed for the node or moves only towards pruning
+            // sooner (best_score and alpha never fall, so the loss guard
+            // stays open and the margin cut, once on, stays on; move_count
+            // only rises). So each later quiet that search counts raises
+            // move_count by at least one, and once it exceeds this
+            // lmp_limit, the next such quiet that the check carve does not
+            // exempt sets skip_quiets. Hence at most
+            // lmp_limit - move_count + 1 of them can still be picked, and
+            // the picker drops the lower-scored rest. The trim keeps every
+            // quiet that could be skipped uncounted or exempted, so the pick
+            // order is unchanged (see `trim_quiets`).
+            if !lmp_trim_done {
+                lmp_trim_done = true;
+                let max_counted = (lmp_limit - move_count + 1).max(1) as usize;
+                picker.trim_quiets(board, max_counted, depth < 4, info.excluded_move[ply_u], enemy_attacks);
             }
         }
 
