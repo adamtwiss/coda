@@ -14,7 +14,7 @@ use crate::attacks::*;
 use crate::bitboard::*;
 use crate::board::Board;
 use crate::eval::see_value;
-use crate::movegen::{generate_captures, generate_evasions, generate_quiets, MoveList};
+use crate::movegen::{generate_captures_into, generate_evasions_into, generate_quiets_into, MoveList};
 use crate::see::see_ge;
 use crate::types::*;
 
@@ -583,14 +583,20 @@ impl MovePicker {
     /// Generate all captures, partition into good (SEE >= 0) and bad (SEE < 0).
     /// Generate and score captures. TT move is filtered out.
     fn generate_and_score_captures(&mut self, board: &Board) {
-        let caps = generate_captures(board);
-        self.moves = MoveList::new();
+        // Generate straight into the picker's own list, then compact it in
+        // place: kept moves are rewritten at `kept <= i`, so every read of
+        // slot i happens before any write could reach it, and the surviving
+        // order is exactly the generation order.
+        self.moves.clear();
+        generate_captures_into(board, &mut self.moves);
+        let generated = self.moves.len;
+        let mut kept = 0usize;
         self.bad_len = 0;
 
         let history = unsafe { &*self.history };
 
-        for i in 0..caps.len {
-            let m = caps.get(i);
+        for i in 0..generated {
+            let m = self.moves.get(i);
             if m == self.tt_move {
                 continue;
             }
@@ -610,9 +616,9 @@ impl MovePicker {
             if self.no_see_partition {
                 // SF QCAPTURE shape: no SEE here at all. Order by score; the
                 // caller's gate does the one exchange evaluation per move.
-                let idx = self.moves.len;
-                self.moves.push(m);
-                self.scores[idx].write(cap_score);
+                self.moves.set(kept, m);
+                self.scores[kept].write(cap_score);
+                kept += 1;
                 continue;
             }
             let see_threshold = -capt_hist / 18;
@@ -629,11 +635,12 @@ impl MovePicker {
                 }
             } else {
                 // Good capture
-                let idx = self.moves.len;
-                self.moves.push(m);
-                self.scores[idx].write(cap_score);
+                self.moves.set(kept, m);
+                self.scores[kept].write(cap_score);
+                kept += 1;
             }
         }
+        self.moves.len = kept;
         self.index = 0;
     }
 
@@ -670,8 +677,13 @@ impl MovePicker {
             };
         }
 
-        let quiets = generate_quiets(board);
-        self.moves = MoveList::new();
+        // Generated straight into the picker's own list. The TT move (tried
+        // already) is removed up front, order-preserving, so the scoring loop
+        // below writes scores[i] for every slot with no compaction.
+        self.moves.clear();
+        generate_quiets_into(board, &mut self.moves);
+        self.moves.remove(self.tt_move);
+        let n = self.moves.len;
 
         let history = unsafe { &*self.history };
 
@@ -710,11 +722,8 @@ impl MovePicker {
             ((their_pawns & !FILE_A) >> 9) | ((their_pawns & !FILE_H) >> 7)
         };
 
-        for i in 0..quiets.len {
-            let m = quiets.get(i);
-            if m == self.tt_move {
-                continue;
-            }
+        for i in 0..n {
+            let m = self.moves.get(i);
 
             let from = move_from(m);
             let to = move_to(m);
@@ -830,9 +839,7 @@ impl MovePicker {
                 }
             }
 
-            let idx = self.moves.len;
-            self.moves.push(m);
-            self.scores[idx].write(score);
+            self.scores[i].write(score);
         }
         self.index = 0;
     }
@@ -842,8 +849,11 @@ impl MovePicker {
     /// Generate and score evasions.
     ///
     fn generate_and_score_evasions(&mut self, board: &Board) {
-        let all = generate_evasions(board, self.checkers, self.pinned);
-        self.moves = MoveList::new();
+        // In place, TT move removed up front, as in generate_and_score_quiets.
+        self.moves.clear();
+        generate_evasions_into(board, self.checkers, self.pinned, &mut self.moves);
+        self.moves.remove(self.tt_move);
+        let n = self.moves.len;
 
         let history = unsafe { &*self.history };
 
@@ -853,11 +863,8 @@ impl MovePicker {
         let cont_weights = [cm, cm, 1i32, 1]; // ply-1, ply-2, ply-4, ply-6
         let pw = crate::search::tp10(&crate::search::PAWN_HIST_MULT_10X);
 
-        for i in 0..all.len {
-            let m = all.get(i);
-            if m == self.tt_move {
-                continue;
-            }
+        for i in 0..n {
+            let m = self.moves.get(i);
             let from = move_from(m);
             let to = move_to(m);
             let flags = move_flags(m);
@@ -910,16 +917,14 @@ impl MovePicker {
                 s
             };
 
-            let idx = self.moves.len;
-            self.moves.push(m);
-            self.scores[idx].write(score);
+            self.scores[i].write(score);
         }
         self.index = 0;
     }
 
     /// Swap in the saved bad captures.
     fn restore_bad_captures(&mut self) {
-        self.moves = MoveList::new();
+        self.moves.clear();
         for i in 0..self.bad_len {
             // SAFETY: generate_and_score_captures wrote bad_moves[i] and
             // bad_scores[i] for all i < bad_len before incrementing bad_len.
@@ -1222,7 +1227,7 @@ pub struct QMovePicker {
     moves: MoveList,
     /// Scores parallel to `moves`. `[MaybeUninit<i32>; 256]` to skip the
     /// 1KB zero-init per picker (same memset-skip pattern as `MoveList`).
-    /// Invariant: the constructor writes scores[i] for every i in
+    /// Invariant: generate_and_score writes scores[i] for every i in
     /// [0..moves.len) (every branch of the scoring loop assigns), and
     /// `next` only reads within [idx..moves.len).
     scores: [std::mem::MaybeUninit<i32>; 256],
@@ -1232,13 +1237,18 @@ pub struct QMovePicker {
 }
 
 impl QMovePicker {
-    /// Create QS picker: TT move first, then captures scored by MVV-LVA + captHist.
-    /// When in_check, generates all moves (evasions); otherwise captures only.
+    /// Create the ProbCut capture picker: TT move first, then captures scored
+    /// by MVV + captHist.
+    ///
+    /// Two-step construction: `new` only builds the (empty) struct, and the
+    /// caller must then call `generate_and_score` on its own binding. Doing
+    /// the generation inside `new` means the ~1.6KB picker is filled through
+    /// a pointer and then returned by value, which the compiler lowers to a
+    /// full-struct memcpy in negamax; filling it where it lives avoids that.
+    #[inline(always)]
     pub fn new(
         board: &Board,
         tt_move: Move,
-        history: &History,
-        _cont: &ContHist,
         // Passed in — the probcut block runs after the node-entry
         // pinned/checkers computation.
         pinned: Bitboard,
@@ -1247,25 +1257,31 @@ impl QMovePicker {
         // Captures only. This picker's sole caller is ProbCut, which never
         // runs in check — the old in_check/evasion branch here was dead code
         // (QS in-check uses the full MovePicker::new_evasion, history-scored).
-        let moves = generate_captures(board);
-        let mut picker = QMovePicker {
+        QMovePicker {
             tt_move: if tt_move != NO_MOVE && is_pseudo_legal(board, tt_move) { tt_move } else { NO_MOVE },
             tt_stage: true,
-            moves,
-            // SAFETY: uninit MaybeUninit array is sound; the loop below
+            moves: MoveList::new(),
+            // SAFETY: uninit MaybeUninit array is sound; generate_and_score
             // writes scores[i] for every i < moves.len before any read.
             scores: unsafe { std::mem::MaybeUninit::uninit().assume_init() },
             idx: 0,
             pinned,
             checkers,
-        };
+        }
+    }
+
+    /// Generate the captures straight into the picker's own list and score
+    /// them. Must be called exactly once, right after `new`, before `next`.
+    #[inline(never)]
+    pub fn generate_and_score(&mut self, board: &Board, history: &History) {
+        generate_captures_into(board, &mut self.moves);
 
         // Score moves: MVV-LVA + captHist for captures
-        for i in 0..picker.moves.len {
-            let mv = picker.moves.get(i);
+        for i in 0..self.moves.len {
+            let mv = self.moves.get(i);
             // Skip TT move in scoring (will be tried first)
-            if mv == picker.tt_move {
-                picker.scores[i].write(i32::MIN);
+            if mv == self.tt_move {
+                self.scores[i].write(i32::MIN);
                 continue;
             }
 
@@ -1282,7 +1298,7 @@ impl QMovePicker {
                 // use one capture scorer for both search and QS.
                 let mvv = mvv_lva(board, mv);
                 let capt_hist = capt_hist_score_static(board, history, mv);
-                picker.scores[i].write(mvv + capt_hist);
+                self.scores[i].write(mvv + capt_hist);
             } else if is_promotion(mv) {
                 // Non-capture promotion: kept on its ORIGINAL see_value scale,
                 // deliberately. This ranks it ~25x below the main picker's
@@ -1293,14 +1309,12 @@ impl QMovePicker {
                 // evidently changes which cutoffs its verification certifies,
                 // for the worse. Intentional-by-evidence; do not unify without
                 // its own SPRT.
-                picker.scores[i].write(see_value(promotion_piece_type(mv)));
+                self.scores[i].write(see_value(promotion_piece_type(mv)));
             } else {
                 // Unreachable for generate_captures output; defensive score.
-                picker.scores[i].write(-1_000_000);
+                self.scores[i].write(-1_000_000);
             }
         }
-
-        picker
     }
 
     /// Get next move. Returns NO_MOVE when exhausted.
@@ -1317,7 +1331,7 @@ impl QMovePicker {
         while self.idx < self.moves.len {
             // Selection sort: find best remaining
             let mut best_idx = self.idx;
-            // SAFETY (both assume_init): constructor wrote scores[i] for
+            // SAFETY (both assume_init): generate_and_score wrote scores[i] for
             // every i < moves.len; reads here stay within [idx..moves.len).
             let mut best_score = unsafe { self.scores[self.idx].assume_init() };
             for j in (self.idx + 1)..self.moves.len {
