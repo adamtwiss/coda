@@ -500,8 +500,10 @@ pub fn convert_v7(
     // Raw L1 readout: one f32 per L1 unit, a read of the unclamped pre-activation.
     let mut l1_raw_w = Vec::new();
     if l1_raw {
-        if !use_pairwise || bucketed_hidden {
-            return Err("--l1-raw requires a pairwise net with a shared L1".to_string());
+        // Shared readout, also with --bucketed-hidden: it reads the selected
+        // bucket's L1 pre-activations, so one row of l1_size weights.
+        if !use_pairwise {
+            return Err("--l1-raw requires a pairwise net".to_string());
         }
         for _ in 0..l1_size { l1_raw_w.push(read_f32_le(&data, offset)); offset += 4; }
     }
