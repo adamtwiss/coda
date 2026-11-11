@@ -3762,11 +3762,13 @@ impl NNUENet {
         }
 
         // Raw L1 readout (arch_flags2 bit 4): one f32 per L1 unit, after the
-        // output bias. Shared L1 only: a bucketed L1 would need one row per bucket.
+        // output bias. With bucketed hidden layers the readout stays shared: it
+        // reads the selected bucket's L1 pre-activations (the trainer's l1rw is
+        // one row applied after the bucket select), so l1_size weights suffice.
         let mut l1_raw_w: Vec<f32> = Vec::new();
         if has_l1_raw {
-            if !use_pairwise || bucketed_hidden {
-                return Err("raw L1 readout requires a pairwise net with a shared L1".to_string());
+            if !use_pairwise {
+                return Err("raw L1 readout requires a pairwise net".to_string());
             }
             l1_raw_w = vec![0.0f32; l1_size];
             for w in l1_raw_w.iter_mut() { *w = f32::from_bits(read_u32(reader)?); }
