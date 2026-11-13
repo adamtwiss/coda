@@ -6940,6 +6940,10 @@ fn negamax(
         if is_cap && ply > 0 && !in_check && depth <= tp10(&SEE_CAP_DEPTH_10X)
             && mv != tt_move && !is_loss(best_score)
             && FEAT_SEE_PRUNE.load(Ordering::Relaxed)
+            // A checking capture that loses material on SEE is the shape of a
+            // sacrificial attack (Qxh6+ in the 2026-11-13 blindspot game); never
+            // SEE-prune it.
+            && !board.gives_direct_check(mv)
         {
             let cap_ch = crate::movepicker::capt_hist_score_static(board, &info.history, mv);
             let cap_margin = (depth * tp(&SEE_CAP_MULT) + cap_ch * tp(&SEE_CAP_HIST) / 1024).max(0);
@@ -6998,6 +7002,9 @@ fn negamax(
             && !is_loss(best_score)
             && beta < MATE_IN_MAX_PLY  // forced-win guard: don't SEE-prune quiets while proving a win
             && FEAT_SEE_PRUNE.load(Ordering::Relaxed)
+            // Likewise a quiet check: a SEE-losing checking move is a sacrifice,
+            // not a blunder to discard unsearched.
+            && !board.gives_direct_check(mv)
         {
             let see_quiet_threshold = -see_quiet_mult * lmr_d * lmr_d;
             if !see_ge(board, mv, see_quiet_threshold) {
