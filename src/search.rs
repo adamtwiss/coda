@@ -729,8 +729,17 @@ tunables!(
     // at 4 attacked squares finds the -mate line at d15-17 in 0.2-0.4 s (vs d21-25,
     // 1.5-6 s ungated); the futility gate was inconsistent there, so it starts
     // OFF (100 = never fires, 10 > 9 squares) and is left for SPSA.
-    (RFP_KING_ZONE_MAX_10X, 40, 20, 100, 6.0, true),
+    (RFP_KING_ZONE_MAX_10X, 100, 20, 100, 6.0, true),
     (FUT_ATTACK_ZONE_MAX_10X, 100, 20, 100, 6.0, true),
+    // ...and only when the side to move is at least this much material AHEAD (SEE
+    // units): the sacrifice signature — the defender has taken material, so its
+    // static eval clears beta while the mate is still beyond the horizon. Seed
+    // 420 = see_value(KNIGHT), the smallest sacrifice that typically opens the
+    // attack (31.Ng6 in the blindspot game). -2000 disables the condition.
+    // ...and only at remaining depth <= this (the leaf-adjacent cuts that hide a
+    // mating attack; deeper nodes are where an ungated skip costs the most tree).
+    (RFP_KZ_MAX_DEPTH, 99, 1, 99, 1.0, true),
+    (RFP_KZ_MAT_AHEAD, -2000, -2000, 1300, 60.0, true),
     (LMR_THREAT_DIV_10X, 39, 10, 50, 15.0, true),
     (LMR_KING_PRESSURE_DIV_10X, 72, 20, 90, 15.0, true),
     // Reduce later moves more once this node has already raised alpha N times
@@ -6379,7 +6388,18 @@ fn negamax(
             // same corrected eval, already above beta, so it can never refute
             // one (0 of 1.36M in warm-TT games). A real confirmation must search.
             if static_eval - margin >= beta && !tb_loss_rfp_guard
-                && king_zone_pressure < tp10(&RFP_KING_ZONE_MAX_10X) {
+                && !(king_zone_pressure >= tp10(&RFP_KING_ZONE_MAX_10X) && depth <= tp(&RFP_KZ_MAX_DEPTH) && {
+                    // Side-to-move material balance (SEE units), only computed
+                    // once the king-zone condition already holds.
+                    let us_bb = board.colors[board.side_to_move as usize];
+                    let them_bb = board.colors[flip_color(board.side_to_move) as usize];
+                    let mut m = 0i32;
+                    for pt in 0..5u8 {
+                        m += see_value(pt) * ((board.pieces[pt as usize] & us_bb).count_ones() as i32
+                            - (board.pieces[pt as usize] & them_bb).count_ones() as i32);
+                    }
+                    m >= tp(&RFP_KZ_MAT_AHEAD)
+                }) {
                 trace_node!(info, board.hash, ply, "rfp_cut", depth);
                 info.stats.rfp_cutoffs += 1;
                 // RFP_AUDIT (diagnostic): null-verify this static cutoff with
