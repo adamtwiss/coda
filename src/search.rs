@@ -717,6 +717,20 @@ tunables!(
     (NULL_THREAT_ESCAPE_BONUS, 8321, 0, 30000, 1000.0, false),
     (NMP_KING_ZONE_MAX_10X, 22, 20, 90, 15.0, true),
     (PROBCUT_KING_ZONE_MAX_10X, 85, 20, 90, 15.0, true),
+    // King-danger gates on the eval-based prunes (2026-11-13 blindspot: SF19 mated
+    // us after a knight then a queen sacrifice; the sub-trees where the defender is
+    // material up were cut by RFP / futility long before the mate was in view).
+    // RFP is skipped when the side to move has at least this many king-zone
+    // squares attacked (the same king_zone_pressure NMP and ProbCut gate on);
+    // quiet futility is skipped when the side to move attacks at least this many
+    // squares of the ENEMY king zone (the attacker's quiet moves are what futility
+    // throws away once the attack has cost material). Count is out of 9; x10.
+    // Seeds from the blindspot positions (scratchpad sfmate/sweep.py): RFP gated
+    // at 4 attacked squares finds the -mate line at d15-17 in 0.2-0.4 s (vs d21-25,
+    // 1.5-6 s ungated); the futility gate was inconsistent there, so it starts
+    // OFF (100 = never fires, 10 > 9 squares) and is left for SPSA.
+    (RFP_KING_ZONE_MAX_10X, 40, 20, 100, 6.0, true),
+    (FUT_ATTACK_ZONE_MAX_10X, 100, 20, 100, 6.0, true),
     (LMR_THREAT_DIV_10X, 39, 10, 50, 15.0, true),
     (LMR_KING_PRESSURE_DIV_10X, 72, 20, 90, 15.0, true),
     // Reduce later moves more once this node has already raised alpha N times
@@ -6364,7 +6378,8 @@ fn negamax(
             // No qsearch confirmation of the cut: qsearch stands pat on this
             // same corrected eval, already above beta, so it can never refute
             // one (0 of 1.36M in warm-TT games). A real confirmation must search.
-            if static_eval - margin >= beta && !tb_loss_rfp_guard {
+            if static_eval - margin >= beta && !tb_loss_rfp_guard
+                && king_zone_pressure < tp10(&RFP_KING_ZONE_MAX_10X) {
                 trace_node!(info, board.hash, ply, "rfp_cut", depth);
                 info.stats.rfp_cutoffs += 1;
                 // RFP_AUDIT (diagnostic): null-verify this static cutoff with
@@ -6793,6 +6808,7 @@ fn negamax(
     let mut best_move = NO_MOVE;
     let mut best_score = -INFINITY;
     let mut move_count = 0i32;
+    let mut their_zone_attack = -1i32; // lazily computed for the futility king-danger gate
     // Count of how many moves at THIS node have raised alpha so far. Later
     // moves reduce more proportionally (alpha_raises reduction) — once
     // improving moves are found, the rest are progressively less likely to beat
@@ -6971,6 +6987,17 @@ fn negamax(
             && beta < MATE_IN_MAX_PLY  // forced-win guard: don't futility-prune quiets while proving a win
             && FEAT_FUTILITY.load(Ordering::Relaxed)
             && lmr_d <= tp(&FUT_LMR_DEPTH)
+            && (tp10(&FUT_ATTACK_ZONE_MAX_10X) > 9 || {
+                // Our attack on the enemy king zone, computed once per node and
+                // only when a quiet reaches the futility test (skipped while the
+                // gate is off: 10+ can never be reached out of 9 squares).
+                if their_zone_attack < 0 {
+                    let them_king = board.king_sq(flip_color(board.side_to_move));
+                    let zone = crate::attacks::king_attacks(them_king as u32) | (1u64 << them_king);
+                    their_zone_attack = popcount(board.attacks_by_color(board.side_to_move) & zone) as i32;
+                }
+                their_zone_attack < tp10(&FUT_ATTACK_ZONE_MAX_10X)
+            })
         {
             let main_hist = info.history.main_score(from, to, enemy_attacks);
             let hist_adj = main_hist / 128;
