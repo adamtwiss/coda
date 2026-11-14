@@ -1110,6 +1110,42 @@ pub static FEAT_4D_HISTORY: AtomicBool = AtomicBool::new(true); // threat-aware 
 // false positives per depth. NOT a play feature — costs NPS; bench/EPD use.
 pub static RFP_AUDIT: AtomicBool = AtomicBool::new(false);
 
+/// True when the side to move has a non-pawn piece that is attacked by a
+/// cheaper enemy piece (or attacked and undefended), and the most valuable such
+/// piece has no SEE-safe move. Static eval counts that piece at full value while
+/// it is about to be lost, so an RFP cut on it can be badly wrong. Only called
+/// on nodes RFP is about to cut, so its cost (one move generation) is rare.
+fn stm_has_trapped_piece(board: &Board) -> bool {
+    let us = board.side_to_move;
+    let them = flip_color(us);
+    let occ = board.colors[0] | board.colors[1];
+    let mut ours = board.colors[us as usize] & !(board.pieces[PAWN as usize] | board.pieces[KING as usize]);
+    let mut target_sq = 64u32;
+    let mut target_v = 0i32;
+    while ours != 0 {
+        let sq = ours.trailing_zeros();
+        ours &= ours - 1;
+        let v = crate::eval::see_value(board.piece_type_at(sq as u8));
+        let att = board.attackers_to(sq, occ);
+        let mut theirs = att & board.colors[them as usize];
+        if theirs == 0 { continue; }
+        let mut min_att = i32::MAX;
+        while theirs != 0 {
+            let a = theirs.trailing_zeros();
+            theirs &= theirs - 1;
+            min_att = min_att.min(crate::eval::see_value(board.piece_type_at(a as u8)));
+        }
+        let defended = att & board.colors[us as usize] != 0;
+        if (min_att < v || !defended) && v > target_v {
+            target_v = v;
+            target_sq = sq;
+        }
+    }
+    if target_sq == 64 { return false; }
+    let moves = crate::movegen::generate_all_moves(board);
+    !moves.as_slice().iter().any(|&m| move_from(m) as u32 == target_sq && crate::see::see_ge(board, m, 0))
+}
+
 /// Disable all features (pure negamax + eval)
 pub fn disable_all_features() {
     FEAT_NMP.store(false, Ordering::Relaxed); FEAT_RFP.store(false, Ordering::Relaxed);
@@ -6364,7 +6400,9 @@ fn negamax(
             // No qsearch confirmation of the cut: qsearch stands pat on this
             // same corrected eval, already above beta, so it can never refute
             // one (0 of 1.36M in warm-TT games). A real confirmation must search.
-            if static_eval - margin >= beta && !tb_loss_rfp_guard {
+            // A trapped piece is invisible to static eval: the node looks a
+            // full piece better than it is. Search it instead of cutting.
+            if static_eval - margin >= beta && !tb_loss_rfp_guard && !stm_has_trapped_piece(board) {
                 trace_node!(info, board.hash, ply, "rfp_cut", depth);
                 info.stats.rfp_cutoffs += 1;
                 // RFP_AUDIT (diagnostic): null-verify this static cutoff with
