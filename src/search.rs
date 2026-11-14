@@ -1120,6 +1120,9 @@ pub static RFP_DUMP: AtomicBool = AtomicBool::new(false);
 // Research toggle (env RFP_TRAP_SKIP=1): no RFP cut when stm's most valuable
 // threatened piece has no SEE-safe move (threat class 3 above).
 pub static RFP_TRAP_SKIP: AtomicBool = AtomicBool::new(false);
+// Diagnostic (env FUT_DUMP=1): log each futility-pruned quiet with the
+// opponent's threat class after the move (same classes as RFP_DUMP).
+pub static FUT_DUMP: AtomicBool = AtomicBool::new(false);
 
 fn rfp_threat_class(board: &Board) -> (u8, i32) {
     let us = board.side_to_move;
@@ -3189,6 +3192,9 @@ pub(crate) fn init_feature_flags() {
         // Diagnostic audit modes (orthogonal to DISABLE_ALL/NO_XXX).
         if std::env::var("RFP_TRAP_SKIP").is_ok() {
             RFP_TRAP_SKIP.store(true, Ordering::Relaxed);
+        }
+        if std::env::var("FUT_DUMP").is_ok() {
+            FUT_DUMP.store(true, Ordering::Relaxed);
         }
         if std::env::var("RFP_DUMP").is_ok() {
             RFP_DUMP.store(true, Ordering::Relaxed);
@@ -7041,6 +7047,15 @@ fn negamax(
             if futility_value <= alpha && main_hist < tp(&FUT_HIST_EXEMPT) && !board.gives_direct_check(mv) {
                 trace_gate!(info, board.hash, ply, mv, "futility", depth, move_count);
                 info.stats.futility_prunes += 1;
+                if FUT_DUMP.load(Ordering::Relaxed) {
+                    let mut b2 = board.clone();
+                    if b2.make_move(mv) {
+                        let (cls, v) = rfp_threat_class(&b2);
+                        if cls != 0 || b2.hash % 64 == 0 {
+                            eprintln!("FUTDUMP\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}", b2.to_fen(), crate::types::move_to_uci(mv), depth, lmr_d, static_eval, alpha, cls, v);
+                        }
+                    }
+                }
                 // Unlike LMP, futility is move-specific: main history and the
                 // reduced depth can differ across the ordered quiet tail. Let
                 // later quiets face their own predicate instead of assuming
