@@ -1110,6 +1110,52 @@ pub static FEAT_4D_HISTORY: AtomicBool = AtomicBool::new(true); // threat-aware 
 // false positives per depth. NOT a play feature — costs NPS; bench/EPD use.
 pub static RFP_AUDIT: AtomicBool = AtomicBool::new(false);
 
+// Diagnostic-only (env RFP_DUMP=1): at each RFP cutoff, print the node's FEN,
+// depth, eval, beta, margin and a threat class for the side to move, so the
+// cuts can be re-searched offline. Classes: 0 = no piece attacked by a cheaper
+// piece or hanging; 1 = one such piece, which has a safe move; 2 = two or more
+// such pieces; 3 = the most valuable such piece has no SEE-safe move.
+// Class 0 is sampled 1/64 by hash to keep the dump small.
+pub static RFP_DUMP: AtomicBool = AtomicBool::new(false);
+// Research toggle (env RFP_TRAP_SKIP=1): no RFP cut when stm's most valuable
+// threatened piece has no SEE-safe move (threat class 3 above).
+pub static RFP_TRAP_SKIP: AtomicBool = AtomicBool::new(false);
+
+fn rfp_threat_class(board: &Board) -> (u8, i32) {
+    let us = board.side_to_move;
+    let them = flip_color(us);
+    let occ = board.colors[0] | board.colors[1];
+    let mut ours = board.colors[us as usize] & !(board.pieces[PAWN as usize] | board.pieces[KING as usize]);
+    let mut n = 0u32;
+    let mut best_sq = 64u32;
+    let mut best_v = 0i32;
+    while ours != 0 {
+        let sq = ours.trailing_zeros();
+        ours &= ours - 1;
+        let v = crate::eval::see_value(board.piece_type_at(sq as u8));
+        let att = board.attackers_to(sq, occ);
+        let theirs = att & board.colors[them as usize];
+        if theirs == 0 { continue; }
+        let mut min_att = i32::MAX;
+        let mut t = theirs;
+        while t != 0 {
+            let a = t.trailing_zeros();
+            t &= t - 1;
+            min_att = min_att.min(crate::eval::see_value(board.piece_type_at(a as u8)));
+        }
+        let defended = att & board.colors[us as usize] != 0;
+        if min_att < v || !defended {
+            n += 1;
+            if v > best_v { best_v = v; best_sq = sq; }
+        }
+    }
+    if n == 0 { return (0, 0); }
+    let moves = crate::movegen::generate_all_moves(board);
+    let escapes = moves.as_slice().iter().any(|&m| move_from(m) as u32 == best_sq && crate::see::see_ge(board, m, 0));
+    if !escapes { return (3, best_v); }
+    if n >= 2 { (2, best_v) } else { (1, best_v) }
+}
+
 /// Disable all features (pure negamax + eval)
 pub fn disable_all_features() {
     FEAT_NMP.store(false, Ordering::Relaxed); FEAT_RFP.store(false, Ordering::Relaxed);
@@ -3141,6 +3187,12 @@ pub(crate) fn init_feature_flags() {
             if std::env::var("NO_4D_HISTORY").is_ok() { FEAT_4D_HISTORY.store(false, Ordering::Relaxed); }
         }
         // Diagnostic audit modes (orthogonal to DISABLE_ALL/NO_XXX).
+        if std::env::var("RFP_TRAP_SKIP").is_ok() {
+            RFP_TRAP_SKIP.store(true, Ordering::Relaxed);
+        }
+        if std::env::var("RFP_DUMP").is_ok() {
+            RFP_DUMP.store(true, Ordering::Relaxed);
+        }
         if std::env::var("RFP_AUDIT").is_ok() {
             RFP_AUDIT.store(true, Ordering::Relaxed);
             eprintln!("RFP_AUDIT enabled: null-verifying every RFP cutoff (diagnostic, slow)");
@@ -6364,8 +6416,15 @@ fn negamax(
             // No qsearch confirmation of the cut: qsearch stands pat on this
             // same corrected eval, already above beta, so it can never refute
             // one (0 of 1.36M in warm-TT games). A real confirmation must search.
-            if static_eval - margin >= beta && !tb_loss_rfp_guard {
+            if static_eval - margin >= beta && !tb_loss_rfp_guard
+                && !(RFP_TRAP_SKIP.load(Ordering::Relaxed) && rfp_threat_class(board).0 == 3) {
                 trace_node!(info, board.hash, ply, "rfp_cut", depth);
+                if RFP_DUMP.load(Ordering::Relaxed) {
+                    let (cls, v) = rfp_threat_class(board);
+                    if cls != 0 || board.hash % 64 == 0 {
+                        eprintln!("RFPDUMP\t{}\t{}\t{}\t{}\t{}\t{}\t{}", board.to_fen(), depth, static_eval, beta, margin, cls, v);
+                    }
+                }
                 info.stats.rfp_cutoffs += 1;
                 // RFP_AUDIT (diagnostic): null-verify this static cutoff with
                 // the SAME R formula real NMP uses (sans post-capture +1), and
