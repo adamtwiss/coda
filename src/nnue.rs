@@ -5611,32 +5611,54 @@ impl NNUENet {
 }
 
 /// Dirty piece info for lazy materialization.
+///
+/// Holds the move itself, not the list of feature changes it implies. Every
+/// made move pushes one of these, but only about half the nodes are ever
+/// evaluated, so the change list is decoded by `changes()` when an
+/// accumulator update actually needs it. That keeps the per-move cost to one
+/// 8-byte record.
 #[derive(Clone, Copy)]
 pub struct DirtyPiece {
     /// 1 = incremental for both perspectives.
     /// 2/3 = WHITE/BLACK perspective needs refresh; the other perspective
-    /// can still apply the stored deltas.
+    /// can still apply the move's changes.
     /// 4 = both perspectives need refresh.
     pub kind: u8,
-    pub changes: [(bool, u8, u8, u8); 5], // (add, color, pt, sq)
-    pub n_changes: u8,
+    /// Side that moved.
+    us: u8,
+    /// NO_PIECE_TYPE = no changes (null move, or kind 4).
+    moved_pt: u8,
+    /// NO_PIECE_TYPE for a non-capture and for castling. En passant is read
+    /// from the move flag.
+    captured_pt: u8,
+    mv: Move,
+    /// Castling only: the rook's origin and destination.
+    rook_from: u8,
+    rook_to: u8,
 }
+
+/// Feature changes of one move: `(add, color, pt, sq)`, first `.1` valid.
+pub type DirtyChanges = ([(bool, u8, u8, u8); 5], usize);
 
 impl DirtyPiece {
     pub fn recompute() -> Self {
-        DirtyPiece { kind: 4, changes: [(false, 0, 0, 0); 5], n_changes: 0 }
+        DirtyPiece { kind: 4, us: 0, moved_pt: NO_PIECE_TYPE, captured_pt: NO_PIECE_TYPE, mv: 0, rook_from: 0, rook_to: 0 }
     }
-    pub fn incremental(changes: &[(bool, u8, u8, u8)]) -> Self {
-        let mut d = DirtyPiece { kind: 1, changes: [(false, 0, 0, 0); 5], n_changes: changes.len() as u8 };
-        for (i, &c) in changes.iter().enumerate().take(5) {
-            d.changes[i] = c;
-        }
-        d
+    /// A ply that changes no piece (null move).
+    pub fn null_move() -> Self {
+        DirtyPiece { kind: 1, ..Self::recompute() }
     }
-    pub fn refresh_perspective(perspective: u8, changes: &[(bool, u8, u8, u8)]) -> Self {
-        let mut d = Self::incremental(changes);
-        d.kind = if perspective == WHITE { 2 } else { 3 };
-        d
+    /// Incremental record of `mv` by `us`. `rook` is the castling rook's
+    /// (origin, destination), ignored unless `mv` is a castle.
+    #[inline(always)]
+    pub fn of_move(mv: Move, us: u8, moved_pt: u8, captured_pt: u8, rook: (u8, u8)) -> Self {
+        DirtyPiece { kind: 1, us, moved_pt, captured_pt, mv, rook_from: rook.0, rook_to: rook.1 }
+    }
+    /// Mark `perspective` as needing a refresh (its king changed bucket or mirror).
+    #[inline(always)]
+    pub fn with_refresh(mut self, perspective: u8) -> Self {
+        self.kind = 2 + perspective;
+        self
     }
     #[inline(always)]
     pub fn refreshes_perspective(self, perspective: u8) -> bool {
@@ -5645,6 +5667,39 @@ impl DirtyPiece {
     #[inline(always)]
     pub fn refreshes_any(self) -> bool {
         self.kind != 1
+    }
+    /// Number of feature changes, without decoding them.
+    #[inline(always)]
+    pub fn n_changes(self) -> usize {
+        if self.moved_pt == NO_PIECE_TYPE { return 0; }
+        let flags = move_flags(self.mv);
+        let captures = flags == FLAG_EN_PASSANT || self.captured_pt != NO_PIECE_TYPE;
+        2 + captures as usize + 2 * (flags == FLAG_CASTLE) as usize
+    }
+    /// Decode the move into its feature changes: mover off its origin, the
+    /// captured piece off, the mover (or promoted piece) on its destination,
+    /// then the castling rook.
+    #[inline(always)]
+    pub fn changes(self) -> DirtyChanges {
+        let mut c = [(false, 0u8, 0u8, 0u8); 5];
+        if self.moved_pt == NO_PIECE_TYPE { return (c, 0); }
+        let (us, them) = (self.us, flip_color(self.us));
+        let (from, to, flags) = (move_from(self.mv), move_to(self.mv), move_flags(self.mv));
+        let mut n = 0;
+        c[n] = (false, us, self.moved_pt, from); n += 1;
+        if flags == FLAG_EN_PASSANT {
+            let cap_sq = if us == WHITE { to.wrapping_sub(8) } else { to.wrapping_add(8) };
+            c[n] = (false, them, PAWN, cap_sq); n += 1;
+        } else if self.captured_pt != NO_PIECE_TYPE {
+            c[n] = (false, them, self.captured_pt, to); n += 1;
+        }
+        let placed_pt = if is_promotion(self.mv) { promotion_piece_type(self.mv) } else { self.moved_pt };
+        c[n] = (true, us, placed_pt, to); n += 1;
+        if flags == FLAG_CASTLE {
+            c[n] = (false, us, ROOK, self.rook_from); n += 1;
+            c[n] = (true, us, ROOK, self.rook_to); n += 1;
+        }
+        (c, n)
     }
 }
 
@@ -6252,7 +6307,7 @@ impl NNUEAccumulator {
     fn incremental_change_count(&self, from_exclusive: usize, to_inclusive: usize) -> u64 {
         let mut total = 0u64;
         for ply in (from_exclusive + 1)..=to_inclusive {
-            total += self.stack[ply].dirty.n_changes as u64;
+            total += self.stack[ply].dirty.n_changes() as u64;
         }
         total
     }
@@ -6269,7 +6324,7 @@ impl NNUEAccumulator {
         let w_king_sq = board.king_sq(WHITE);
         let b_king_sq = board.king_sq(BLACK);
 
-        let n = dirty.n_changes as usize;
+        let (changes, n) = dirty.changes();
         let mut w_adds: [&[i16]; 8] = [&[]; 8];
         let mut w_subs: [&[i16]; 8] = [&[]; 8];
         let mut b_adds: [&[i16]; 8] = [&[]; 8];
@@ -6280,7 +6335,7 @@ impl NNUEAccumulator {
         let mut nbs = 0usize;
 
         for i in 0..n {
-            let (add, color, pt, sq) = dirty.changes[i];
+            let (add, color, pt, sq) = changes[i];
             let w_idx = net.halfka_index(WHITE, w_king_sq, color, pt, sq);
             let w_row = net.input_weight_row(w_idx);
             let b_idx = net.halfka_index(BLACK, b_king_sq, color, pt, sq);
@@ -6367,7 +6422,7 @@ impl NNUEAccumulator {
 
         let king_sq = board.king_sq(perspective);
 
-        let n = dirty.n_changes as usize;
+        let (changes, n) = dirty.changes();
 
         // Collect add/sub weight rows per perspective. Max ~4 deltas per move
         // (promotion capture = 4); using 8-slot stack arrays gives headroom.
@@ -6377,7 +6432,7 @@ impl NNUEAccumulator {
         let mut ns = 0usize;
 
         for i in 0..n {
-            let (add, color, pt, sq) = dirty.changes[i];
+            let (add, color, pt, sq) = changes[i];
             let idx = net.halfka_index(perspective, king_sq, color, pt, sq);
             let row = net.input_weight_row(idx);
             if add {
@@ -6613,8 +6668,8 @@ impl NNUEAccumulator {
         }
         // The king's origin is the move's KING removal for this colour.
         let mut old_ks = None;
-        for i in 0..dirty.n_changes as usize {
-            let (add, color, pt, sq) = dirty.changes[i];
+        let (changes, n) = dirty.changes();
+        for &(add, color, pt, sq) in &changes[..n] {
             if !add && color == perspective && pt == KING {
                 old_ks = Some(sq);
             }
@@ -6645,7 +6700,7 @@ impl NNUEAccumulator {
         let mut subs: [&[i16]; 9] = [&[]; 9];
         adds[0] = &self.finny[new_slot].acc[..h];
         subs[0] = &self.finny[old_slot].acc[..h];
-        let (nra, nrs) = Self::psq_rows(net, &dirty, perspective, old_ks,
+        let (nra, nrs) = Self::psq_rows(net, &(changes, n), perspective, old_ks,
                                         &mut adds[1..], &mut subs[1..]);
 
         let (deltas, pp) = ts.ply_deltas(top);
@@ -6695,12 +6750,11 @@ impl NNUEAccumulator {
     /// 64-byte loads right behind the 8-byte element stores, which cannot be
     /// store-forwarded: each such load waited for the stores to retire.
     #[inline(always)]
-    fn psq_rows<'a>(net: &'a NNUENet, dirty: &DirtyPiece, perspective: u8, king_sq: u8,
+    fn psq_rows<'a>(net: &'a NNUENet, changes: &DirtyChanges, perspective: u8, king_sq: u8,
                     adds: &mut [&'a [i16]], subs: &mut [&'a [i16]]) -> (usize, usize)
     {
         let (mut na, mut ns) = (0usize, 0usize);
-        for i in 0..dirty.n_changes as usize {
-            let (add, color, pt, sq) = dirty.changes[i];
+        for &(add, color, pt, sq) in &changes.0[..changes.1] {
             let row = net.input_weight_row(net.halfka_index(perspective, king_sq, color, pt, sq));
             if add { adds[na] = row; na += 1; } else { subs[ns] = row; ns += 1; }
         }
@@ -6717,13 +6771,13 @@ impl NNUEAccumulator {
         use crate::pawn_pair::MAX_PAWN_PAIR_DELTAS;
         debug_assert!(ply > 0);
         let h = self.hidden_size;
-        let dirty = self.stack[ply].dirty;
+        let changes = self.stack[ply].dirty.changes();
         let w_king = board.king_sq(WHITE);
         let b_king = board.king_sq(BLACK);
         let (mut wa, mut ws): ([&[i16]; 8], [&[i16]; 8]) = ([&[]; 8], [&[]; 8]);
         let (mut ba, mut bs): ([&[i16]; 8], [&[i16]; 8]) = ([&[]; 8], [&[]; 8]);
-        let (nwa, nws) = Self::psq_rows(net, &dirty, WHITE, w_king, &mut wa, &mut ws);
-        let (nba, nbs) = Self::psq_rows(net, &dirty, BLACK, b_king, &mut ba, &mut bs);
+        let (nwa, nws) = Self::psq_rows(net, &changes, WHITE, w_king, &mut wa, &mut ws);
+        let (nba, nbs) = Self::psq_rows(net, &changes, BLACK, b_king, &mut ba, &mut bs);
 
         let (deltas, pp) = ts.ply_deltas(ply);
         let mut s0 = std::mem::MaybeUninit::<[usize; MAX_THREAT_DELTAS + MAX_PAWN_PAIR_DELTAS]>::uninit();
@@ -6766,9 +6820,9 @@ impl NNUEAccumulator {
         use crate::pawn_pair::MAX_PAWN_PAIR_DELTAS;
         debug_assert!(ply > 0);
         let h = self.hidden_size;
-        let dirty = self.stack[ply].dirty;
+        let changes = self.stack[ply].dirty.changes();
         let (mut pa, mut ps): ([&[i16]; 8], [&[i16]; 8]) = ([&[]; 8], [&[]; 8]);
-        let (npa, nps) = Self::psq_rows(net, &dirty, perspective, king, &mut pa, &mut ps);
+        let (npa, nps) = Self::psq_rows(net, &changes, perspective, king, &mut pa, &mut ps);
 
         let (deltas, pp) = ts.ply_deltas(ply);
         let mut s0 = std::mem::MaybeUninit::<[usize; MAX_THREAT_DELTAS + MAX_PAWN_PAIR_DELTAS]>::uninit();
@@ -6815,7 +6869,7 @@ impl NNUEAccumulator {
             #[cfg(feature = "profile-materialize")]
             {
                 crate::nnue::mat_stats::record_perspective_incrementals(2);
-                crate::nnue::mat_stats::record_incremental(dirty.n_changes as u64);
+                crate::nnue::mat_stats::record_incremental(dirty.n_changes() as u64);
             }
             return;
         }
@@ -9570,7 +9624,7 @@ mod tests {
         use crate::board::Board;
         use crate::movegen::generate_legal_moves;
         use crate::search::build_dirty_piece;
-        use crate::types::{flip_color, move_from};
+        use crate::types::move_from;
 
         crate::init();
 
@@ -9643,10 +9697,9 @@ mod tests {
                     }
 
                     let us = board.side_to_move;
-                    let them = flip_color(us);
                     let moved_pt = board.piece_type_at(move_from(mv));
                     let captured_pt = board.captured_piece_type(mv);
-                    let dirty = build_dirty_piece(mv, us, them, moved_pt, captured_pt, &board.castle_rooks, &net);
+                    let dirty = build_dirty_piece(mv, us, moved_pt, captured_pt, &board.castle_rooks, &net);
 
                     let ok = board.make_move(mv);
                     assert!(ok, "psq fuzz {} game {} ply {}: move {} illegal?",
@@ -9761,7 +9814,7 @@ mod tests {
         use crate::movegen::generate_legal_moves;
         use crate::search::build_dirty_piece;
         use crate::threat_accum::ThreatStack;
-        use crate::types::{flip_color, move_from};
+        use crate::types::move_from;
 
         crate::init();
         let net = match try_load_v9_net() {
@@ -9822,7 +9875,7 @@ mod tests {
                         } else if action >= 92 && depth < 24 && !board.in_check()
                             && !null_stack.last().copied().unwrap_or(false)
                         {
-                            acc.push(DirtyPiece::incremental(&[]));
+                            acc.push(DirtyPiece::null_move());
                             ts.push(NO_MOVE, NO_PIECE_TYPE);
                             board.make_null_move();
                             null_stack.push(true);
@@ -9846,7 +9899,7 @@ mod tests {
                             let us = board.side_to_move;
                             let moved_pt = board.piece_type_at(move_from(mv));
                             let captured_pt = board.captured_piece_type(mv);
-                            let dirty = build_dirty_piece(mv, us, flip_color(us), moved_pt, captured_pt,
+                            let dirty = build_dirty_piece(mv, us, moved_pt, captured_pt,
                                                           &board.castle_rooks, &net);
                             acc.push(dirty);
                             ts.push(NO_MOVE, NO_PIECE_TYPE);
@@ -9978,7 +10031,7 @@ mod tests {
         let _space = crate::threats::FEATURE_SPACE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         use crate::board::Board;
         use crate::search::build_dirty_piece;
-        use crate::types::{flip_color, NO_PIECE_TYPE, make_move, FLAG_NONE};
+        use crate::types::{NO_PIECE_TYPE, make_move, FLAG_NONE};
 
         crate::init();
 
@@ -10036,11 +10089,10 @@ mod tests {
         for (i, &(from, to)) in sequence.iter().enumerate() {
             let mv = make_move(from, to, FLAG_NONE);
             let us = board.side_to_move;
-            let them = flip_color(us);
             let moved_pt = board.piece_type_at(from);
             let captured_pt = board.piece_type_at(to);
             assert_eq!(captured_pt, NO_PIECE_TYPE, "king march: no captures expected");
-            let dirty = build_dirty_piece(mv, us, them, moved_pt, captured_pt, &board.castle_rooks, &net);
+            let dirty = build_dirty_piece(mv, us, moved_pt, captured_pt, &board.castle_rooks, &net);
 
             let ok = board.make_move(mv);
             assert!(ok, "king march step {}: move illegal {}→{}", i, from, to);

@@ -2687,93 +2687,43 @@ fn tt_cutoff_child_disagrees(
 }
 
 /// Build a DirtyPiece for lazy NNUE accumulator update.
-/// `us`/`them` are the sides BEFORE the move.
+/// `us` is the side to move BEFORE the move.
 /// `net`: NNUE net whose king-bucket layout determines bucket/mirror
 ///   changes on king moves. Must be the same net that will later apply
 ///   the DirtyPiece to the accumulator; using the wrong net here produces
 ///   silently-wrong "refresh needed" decisions.
+///
+/// Only what cannot be recovered later is worked out here: the castling
+/// rook's squares (the board's castling geometry) and whether a king move
+/// crosses a bucket or mirror boundary. The feature changes themselves are
+/// decoded from the move when an accumulator update needs them.
 #[inline]
 pub fn build_dirty_piece(
     mv: Move,
     us: u8,
-    them: u8,
     moved_pt: u8,
     captured_pt: u8,
     castle_rooks: &[u8; 4],
     net: &crate::nnue::NNUENet,
 ) -> DirtyPiece {
-    let from = move_from(mv);
-    let to = move_to(mv);
-    let flags = move_flags(mv);
     // Castling never captures (a 960 king can land on its own rook's square).
-    let captured_pt = if flags == FLAG_CASTLE { NO_PIECE_TYPE } else { captured_pt };
+    let (captured_pt, rook) = if move_flags(mv) == FLAG_CASTLE {
+        (NO_PIECE_TYPE, crate::board::castle_rook_squares(castle_rooks, us, move_to(mv)))
+    } else {
+        (captured_pt, (0, 0))
+    };
+    let d = DirtyPiece::of_move(mv, us, moved_pt, captured_pt, rook);
 
     if moved_pt == KING {
-        let mut from_ks = from as usize;
-        let mut to_ks = to as usize;
+        let mut from_ks = move_from(mv) as usize;
+        let mut to_ks = move_to(mv) as usize;
         if us == BLACK { from_ks ^= 56; to_ks ^= 56; }
-
-        let from_bucket = net.king_bucket(from_ks);
-        let to_bucket = net.king_bucket(to_ks);
-        let from_mirror = net.king_mirror(from_ks);
-        let to_mirror = net.king_mirror(to_ks);
-
-        let mut changes: [(bool, u8, u8, u8); 5] = [(false, 0, 0, 0); 5];
-        let mut n = 0;
-
-        // Remove king from origin
-        changes[n] = (false, us, KING, from); n += 1;
-
-        // Remove captured piece (king captures)
-        if captured_pt != NO_PIECE_TYPE {
-            changes[n] = (false, them, captured_pt, to); n += 1;
+        if net.king_bucket(from_ks) != net.king_bucket(to_ks)
+            || net.king_mirror(from_ks) != net.king_mirror(to_ks)
+        {
+            return d.with_refresh(us);
         }
-
-        // Add king at destination
-        changes[n] = (true, us, KING, to); n += 1;
-
-        // Castling: also move the rook
-        if flags == FLAG_CASTLE {
-            let (rook_from, rook_to) = crate::board::castle_rook_squares(castle_rooks, us, to);
-            changes[n] = (false, us, ROOK, rook_from); n += 1;
-            changes[n] = (true, us, ROOK, rook_to); n += 1;
-        }
-
-        if from_bucket != to_bucket || from_mirror != to_mirror {
-            return DirtyPiece::refresh_perspective(us, &changes[..n]);
-        }
-        return DirtyPiece::incremental(&changes[..n]);
     }
-
-    let mut changes: [(bool, u8, u8, u8); 5] = [(false, 0, 0, 0); 5];
-    let mut n = 0;
-
-    // Remove moved piece from origin
-    changes[n] = (false, us, moved_pt, from); n += 1;
-
-    // Remove captured piece
-    if flags == FLAG_EN_PASSANT {
-        let cap_sq = if us == WHITE { to.wrapping_sub(8) } else { to.wrapping_add(8) };
-        changes[n] = (false, them, PAWN, cap_sq); n += 1;
-    } else if captured_pt != NO_PIECE_TYPE {
-        changes[n] = (false, them, captured_pt, to); n += 1;
-    }
-
-    // Add piece at destination (possibly promoted)
-    let placed_pt = if is_promotion(mv) { promotion_piece_type(mv) } else { moved_pt };
-    changes[n] = (true, us, placed_pt, to); n += 1;
-
-    // Castling: also move the rook
-    if flags == FLAG_CASTLE {
-        let (rook_from, rook_to) = crate::board::castle_rook_squares(castle_rooks, us, to);
-        changes[n] = (false, us, ROOK, rook_from); n += 1;
-        changes[n] = (true, us, ROOK, rook_to); n += 1;
-    }
-
-    let mut d = DirtyPiece::recompute();
-    d.kind = 1;
-    d.n_changes = n as u8;
-    d.changes = changes;
     d
 }
 
@@ -6442,7 +6392,7 @@ fn negamax(
                     if depth - r < 1 { r = depth - 1; }
                     info.rfp_audit_active = true;
                     board.make_null_move();
-                    if let Some(acc) = &mut info.nnue_acc { acc.push(DirtyPiece::incremental(&[])); }
+                    if let Some(acc) = &mut info.nnue_acc { acc.push(DirtyPiece::null_move()); }
                     if info.threat_stack.active { info.threat_stack.push(crate::types::NO_MOVE, crate::types::NO_PIECE_TYPE); }
                     if ply_u <= MAX_PLY {
                         info.moved_piece_stack[ply_u] = 0;
@@ -6512,7 +6462,7 @@ fn negamax(
         board.make_null_move();
         info.tt.prefetch(board.hash);
         let null_key = board.hash; // save hash for threat detection after unmake
-        if let Some(acc) = &mut info.nnue_acc { acc.push(DirtyPiece::incremental(&[])); }
+        if let Some(acc) = &mut info.nnue_acc { acc.push(DirtyPiece::null_move()); }
         if info.threat_stack.active { info.threat_stack.push(crate::types::NO_MOVE, crate::types::NO_PIECE_TYPE); }
         // Set the null sentinel on moved_piece_stack /
         // moved_to_stack at ply_u. Without this, the child at ply+1 reads
@@ -6681,7 +6631,7 @@ fn negamax(
             let pc_moved_piece = board.piece_at(move_from(mv));
             let pc_captured_pt = board.captured_piece_type(mv);
             let pc_dirty = if let Some(net) = info.nnue_net.as_deref() {
-                build_dirty_piece(mv, board.side_to_move, flip_color(board.side_to_move), pc_moved_pt, pc_captured_pt, &board.castle_rooks, net)
+                build_dirty_piece(mv, board.side_to_move, pc_moved_pt, pc_captured_pt, &board.castle_rooks, net)
             } else { DirtyPiece::recompute() };
 
             if let Some(acc) = &mut info.nnue_acc { acc.push(pc_dirty); }
@@ -7232,7 +7182,7 @@ let singular_beta = tt_score_local - depth;
 
         // Build NNUE dirty piece info BEFORE make_move
         let dirty = if let Some(net) = info.nnue_net.as_deref() {
-            build_dirty_piece(mv, us, flip_color(us), moved_pt, captured_pt, &board.castle_rooks, net)
+            build_dirty_piece(mv, us, moved_pt, captured_pt, &board.castle_rooks, net)
         } else { DirtyPiece::recompute() };
 
         // Push NNUE accumulator
@@ -8474,7 +8424,7 @@ fn quiescence_with_depth(
             let qs_moved_pt = board.piece_type_at(move_from(mv));
             let qs_captured_pt = board.captured_piece_type(mv);
             let qs_dirty = if let Some(net) = info.nnue_net.as_deref() {
-                build_dirty_piece(mv, board.side_to_move, flip_color(board.side_to_move), qs_moved_pt, qs_captured_pt, &board.castle_rooks, net)
+                build_dirty_piece(mv, board.side_to_move, qs_moved_pt, qs_captured_pt, &board.castle_rooks, net)
             } else { DirtyPiece::recompute() };
 
             // Record on search stack so deeper QS evasion's MovePicker::new_evasion
@@ -8723,7 +8673,7 @@ fn quiescence_with_depth(
         let qs_moved_pt = board.piece_type_at(move_from(mv));
         let qs_captured_pt = board.captured_piece_type(mv);
         let qs_dirty = if let Some(net) = info.nnue_net.as_deref() {
-            build_dirty_piece(mv, board.side_to_move, flip_color(board.side_to_move), qs_moved_pt, qs_captured_pt, &board.castle_rooks, net)
+            build_dirty_piece(mv, board.side_to_move, qs_moved_pt, qs_captured_pt, &board.castle_rooks, net)
         } else { DirtyPiece::recompute() };
 
         // Record on search stack — same reason as the evasion path above.
