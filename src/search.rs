@@ -123,6 +123,10 @@ tunables!(
     // this depth the cutoff is taken unverified; above it the re-search acts
     // as the zugzwang guard.
     (RFP_DEPTH, 17, 2, 20, 2.0, true),
+    // Trapped-piece RFP exemption only at depth >= this. Shallow cuts are
+    // cheap to get wrong and frequent (the check costs NPS); 6 is where the
+    // corpus study's deep sample started (depth >= 6 ~5% of RFP cuts).
+    (RFP_TRAP_MIN_DEPTH, 6, 2, 17, 1.0, false),
     (RFP_MARGIN_IMP, 25, 0, 150, 6.0, true),
     (RFP_MARGIN_NOIMP, 36, 0, 200, 7.5, true),
     // Root-depth-aware RFP relaxation (single-set, self-adapts STC<->LTC):
@@ -1114,7 +1118,8 @@ pub static RFP_AUDIT: AtomicBool = AtomicBool::new(false);
 /// cheaper enemy piece (or attacked and undefended), and the most valuable such
 /// piece has no SEE-safe move. Static eval counts that piece at full value while
 /// it is about to be lost, so an RFP cut on it can be badly wrong. Only called
-/// on nodes RFP is about to cut, so its cost (one move generation) is rare.
+/// on deep nodes RFP is about to cut (see RFP_TRAP_MIN_DEPTH): its cost is one
+/// move generation, too much to pay on every shallow cut.
 fn stm_has_trapped_piece(board: &Board) -> bool {
     let us = board.side_to_move;
     let them = flip_color(us);
@@ -6402,7 +6407,8 @@ fn negamax(
             // one (0 of 1.36M in warm-TT games). A real confirmation must search.
             // A trapped piece is invisible to static eval: the node looks a
             // full piece better than it is. Search it instead of cutting.
-            if static_eval - margin >= beta && !tb_loss_rfp_guard && !stm_has_trapped_piece(board) {
+            if static_eval - margin >= beta && !tb_loss_rfp_guard
+                && !(depth >= tp(&RFP_TRAP_MIN_DEPTH) && stm_has_trapped_piece(board)) {
                 trace_node!(info, board.hash, ply, "rfp_cut", depth);
                 info.stats.rfp_cutoffs += 1;
                 // RFP_AUDIT (diagnostic): null-verify this static cutoff with
