@@ -1118,6 +1118,20 @@ pub static RFP_AUDIT: AtomicBool = AtomicBool::new(false);
 /// it is about to be lost, so an RFP cut on it can be badly wrong. Only called
 /// on deep nodes RFP is about to cut (see RFP_TRAP_MIN_DEPTH): its cost is one
 /// move generation, too much to pay on every shallow cut.
+/// Re-search an RFP node whose side to move has a trapped piece, at half its
+/// depth and with RFP off at this ply, and report whether it still fails high.
+/// Most such cuts are right (the piece can be traded off or the position is
+/// winning anyway), so a cheap confirmation keeps them; only refuted cuts get
+/// the full search. Half depth is enough to see a trapped piece lost, which
+/// takes two or three plies.
+fn rfp_trap_cut_holds(board: &mut Board, info: &mut SearchInfo, beta: i32, depth: i32, ply: i32, cut_node: bool) -> bool {
+    let saved = info.rfp_verify_ply;
+    info.rfp_verify_ply = ply;
+    let v = negamax(board, info, beta - 1, beta, depth / 2, ply, cut_node);
+    info.rfp_verify_ply = saved;
+    v >= beta
+}
+
 fn stm_has_trapped_piece(board: &Board) -> bool {
     let us = board.side_to_move;
     let them = flip_color(us);
@@ -1556,6 +1570,9 @@ pub struct SearchInfo {
     /// nested audits (each audited cutoff would otherwise spawn audits at
     /// every RFP cutoff inside its own verification, compounding cost).
     pub rfp_audit_active: bool,
+    /// Ply whose RFP is switched off while a trapped-piece verification
+    /// search re-enters that same node (-1 = none). See rfp_trap_cut_holds.
+    pub rfp_verify_ply: i32,
     pub tt: std::sync::Arc<TT>,  // shared across Lazy SMP threads
     pub history: Box<History>,
     /// Continuation history, shared by all threads of a search.
@@ -1978,6 +1995,7 @@ impl SearchInfo {
             syzygy: None,
             tb_probe_depth: 1,
             rfp_audit_active: false,
+            rfp_verify_ply: -1,
         }
     }
 
@@ -6387,6 +6405,7 @@ fn negamax(
         // TB/mate guard: every peer skips RFP when eval is near mate/TB range.
         // Without this, RFP could cut a node where NNUE sees forced mate. (RFP audit RFP-3)
         if depth <= tp(&RFP_DEPTH) && ply > 0 && !tt_pv && !tt_move_is_quiet && info.excluded_move[ply_u] == NO_MOVE && FEAT_RFP.load(Ordering::Relaxed)
+            && info.rfp_verify_ply != ply
             && static_eval.abs() < MATE_SCORE - 200 {
             let mut margin = if improving { depth * tp(&RFP_MARGIN_IMP) } else { depth * tp(&RFP_MARGIN_NOIMP) };
             // Root-depth-aware relaxation: + depth*(root_depth-thresh)+ *coef/100.
@@ -6404,9 +6423,11 @@ fn negamax(
             // same corrected eval, already above beta, so it can never refute
             // one (0 of 1.36M in warm-TT games). A real confirmation must search.
             // A trapped piece is invisible to static eval: the node looks a
-            // full piece better than it is. Search it instead of cutting.
+            // full piece better than it is. Confirm such a cut with a
+            // half-depth search of this node before taking it.
             if static_eval - margin >= beta && !tb_loss_rfp_guard
-                && !(depth >= tp(&RFP_TRAP_MIN_DEPTH) && stm_has_trapped_piece(board)) {
+                && !(depth >= tp(&RFP_TRAP_MIN_DEPTH) && stm_has_trapped_piece(board)
+                     && !rfp_trap_cut_holds(board, info, beta, depth, ply, cut_node)) {
                 trace_node!(info, board.hash, ply, "rfp_cut", depth);
                 info.stats.rfp_cutoffs += 1;
                 // RFP_AUDIT (diagnostic): null-verify this static cutoff with
