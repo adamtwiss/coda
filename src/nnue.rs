@@ -6641,13 +6641,12 @@ impl NNUEAccumulator {
         debug_assert_ne!(old_slot, new_slot);
 
         let h = self.hidden_size;
-        let (ra, nra, rs, nrs) = Self::psq_rows(net, &dirty, perspective, old_ks);
         let mut adds: [&[i16]; 9] = [&[]; 9];
         let mut subs: [&[i16]; 9] = [&[]; 9];
         adds[0] = &self.finny[new_slot].acc[..h];
         subs[0] = &self.finny[old_slot].acc[..h];
-        adds[1..1 + nra].copy_from_slice(&ra[..nra]);
-        subs[1..1 + nrs].copy_from_slice(&rs[..nrs]);
+        let (nra, nrs) = Self::psq_rows(net, &dirty, perspective, old_ks,
+                                        &mut adds[1..], &mut subs[1..]);
 
         let (deltas, pp) = ts.ply_deltas(top);
         let mut s0 = std::mem::MaybeUninit::<[usize; MAX_THREAT_DELTAS + MAX_PAWN_PAIR_DELTAS]>::uninit();
@@ -6688,22 +6687,24 @@ impl NNUEAccumulator {
         crate::threats::add_weight_rows(dst, &net.threat_weights, h, indices);
     }
 
-    /// PSQ add/sub rows of the move that produced a ply, for one perspective,
-    /// in fixed 8-slot arrays (a move changes at most 5 features).
+    /// PSQ add/sub rows of the move that produced a ply, for one perspective
+    /// (a move changes at most 5 features).
+    ///
+    /// Rows are written straight into the caller's arrays and only the counts
+    /// are returned. Returning the arrays by value had them copied out with
+    /// 64-byte loads right behind the 8-byte element stores, which cannot be
+    /// store-forwarded: each such load waited for the stores to retire.
     #[inline(always)]
-    #[allow(clippy::type_complexity)]
-    fn psq_rows<'a>(net: &'a NNUENet, dirty: &DirtyPiece, perspective: u8, king_sq: u8)
-        -> ([&'a [i16]; 8], usize, [&'a [i16]; 8], usize)
+    fn psq_rows<'a>(net: &'a NNUENet, dirty: &DirtyPiece, perspective: u8, king_sq: u8,
+                    adds: &mut [&'a [i16]], subs: &mut [&'a [i16]]) -> (usize, usize)
     {
-        let mut adds: [&[i16]; 8] = [&[]; 8];
-        let mut subs: [&[i16]; 8] = [&[]; 8];
         let (mut na, mut ns) = (0usize, 0usize);
         for i in 0..dirty.n_changes as usize {
             let (add, color, pt, sq) = dirty.changes[i];
             let row = net.input_weight_row(net.halfka_index(perspective, king_sq, color, pt, sq));
             if add { adds[na] = row; na += 1; } else { subs[ns] = row; ns += 1; }
         }
-        (adds, na, subs, ns)
+        (na, ns)
     }
 
     /// Fused incremental update of both perspectives of `ply` from `ply - 1`.
@@ -6719,8 +6720,10 @@ impl NNUEAccumulator {
         let dirty = self.stack[ply].dirty;
         let w_king = board.king_sq(WHITE);
         let b_king = board.king_sq(BLACK);
-        let (wa, nwa, ws, nws) = Self::psq_rows(net, &dirty, WHITE, w_king);
-        let (ba, nba, bs, nbs) = Self::psq_rows(net, &dirty, BLACK, b_king);
+        let (mut wa, mut ws): ([&[i16]; 8], [&[i16]; 8]) = ([&[]; 8], [&[]; 8]);
+        let (mut ba, mut bs): ([&[i16]; 8], [&[i16]; 8]) = ([&[]; 8], [&[]; 8]);
+        let (nwa, nws) = Self::psq_rows(net, &dirty, WHITE, w_king, &mut wa, &mut ws);
+        let (nba, nbs) = Self::psq_rows(net, &dirty, BLACK, b_king, &mut ba, &mut bs);
 
         let (deltas, pp) = ts.ply_deltas(ply);
         let mut s0 = std::mem::MaybeUninit::<[usize; MAX_THREAT_DELTAS + MAX_PAWN_PAIR_DELTAS]>::uninit();
@@ -6764,7 +6767,8 @@ impl NNUEAccumulator {
         debug_assert!(ply > 0);
         let h = self.hidden_size;
         let dirty = self.stack[ply].dirty;
-                let (pa, npa, ps, nps) = Self::psq_rows(net, &dirty, perspective, king);
+        let (mut pa, mut ps): ([&[i16]; 8], [&[i16]; 8]) = ([&[]; 8], [&[]; 8]);
+        let (npa, nps) = Self::psq_rows(net, &dirty, perspective, king, &mut pa, &mut ps);
 
         let (deltas, pp) = ts.ply_deltas(ply);
         let mut s0 = std::mem::MaybeUninit::<[usize; MAX_THREAT_DELTAS + MAX_PAWN_PAIR_DELTAS]>::uninit();

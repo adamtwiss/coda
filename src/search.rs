@@ -789,23 +789,21 @@ tunables!(
     // no per-move delta generation, and the accumulator re-enumerates from the
     // board instead of replaying delta edges.
     //
-    // Delta generation is EAGER (every make_move) while consumption is LAZY
-    // (only on eval), so every node pays generation but only the evaluating
-    // minority consumes it. Measured evals/node is 0.572 in the opening and
-    // 0.186 in the endgame, i.e. the endgame discards the work ~5 times out of
-    // 6 — which is why `push_threats_for_piece` costs MORE there (5.9% of
-    // runtime) than in the opening (4.1%) despite a third the eval rate.
-    //
-    // Refresh mode deletes that generation and pays a re-enumeration instead.
-    // Measured +7.8% nps at <=10 pieces (median +8.6%, positive in 17/20
-    // positions, against a same-config control at 8/20) but -21.6% at 17-24
-    // and -38.2% at 25-32, so it is worth it only where evals are rare.
+    // Refresh mode also runs the accumulator unfused, so it gives up the
+    // shared PSQ+threat pass and the king-bucket block swap. It pays only
+    // where evals are rare enough that re-enumerating a small board beats
+    // replaying. Measured with lazy delta generation and the fused
+    // accumulator in place, replay vs refresh nps by root piece count (14
+    // positions each, node counts identical): 7: -3.7%, 8: -2.9%, 9: -0.1%,
+    // 10: +0.9%, 11: +4.0%, 12: +6.1%, 13: +7.7%, 14: +9.5%. The crossover
+    // sits at 9, hence the default. (The earlier, higher setting was measured
+    // against eager generation, which paid for deltas at every make_move.)
     //
     // Keyed on ROOT piece count because the generate/consume contract must be
     // decided before the first make_move, and both sides must agree — replaying
     // from deltas that were never generated would silently corrupt the
     // accumulator. 0 = off.
-    (THREAT_REFRESH_PIECE_MAX, 12, 0, 32, 2.0, false),
+    (THREAT_REFRESH_PIECE_MAX, 9, 0, 32, 2.0, false),
     // Fail-low prior-countermove cont-hist bonus, % of history_bonus(depth)
     // (SF fail-low history harvesting).
     (FAIL_LOW_PREV_BONUS_PCT, 59, 0, 150, 15.0, false),
