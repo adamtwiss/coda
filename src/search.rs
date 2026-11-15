@@ -240,9 +240,9 @@ tunables!(
     // wants deliberate, TC-matched, cross-engine and ponder-validated tuning,
     // not incidental perturbation by a broad STC sweep where a noisy movement
     // regresses real games. Still UCI-loadable for deliberate TM tunes.
-    (TM_INC_COVER_REF, 20, 5, 60, 4.0, false),
+    (TM_INC_COVER_REF, 19, 5, 60, 4.0, false),
     (TM_MULT_CEIL_MIN_10X, 15, 10, 40, 2.0, false),
-    (TM_MULT_CEIL_MAX_10X, 130, 40, 140, 8.0, false),
+    (TM_MULT_CEIL_MAX_10X, 129, 40, 140, 8.0, false),
     // Cross-thread best-move-instability TM factor (a common cross-engine
     // idea). factor = BASE/1000 + MULT/1000 * (Σ per-thread bmc)/n_threads,
     // applied to the soft budget only at Threads>1. Wants a focused TM-cluster
@@ -255,8 +255,8 @@ tunables!(
     // already-calibrated factor product — that contaminates the raw test. At
     // 1.0 the factor only scales UP on genuine cross-thread churn; a retune
     // can lift BASE if our own data says it should.
-    (TM_BMC_INSTAB_BASE, 1000, 900, 1500, 25.0, false),
-    (TM_BMC_INSTAB_MULT, 2315, 500, 4000, 100.0, false),
+    (TM_BMC_INSTAB_BASE, 997, 900, 1500, 25.0, false),
+    (TM_BMC_INSTAB_MULT, 2301, 500, 4000, 100.0, false),
     // Subtree factor = (BASE/100 - best_move_node_fraction) * 1.4, floor 0.55
     // (the floor cannot bind at the 1.62 default — frac would need to exceed
     // 1.23).
@@ -267,7 +267,7 @@ tunables!(
     // own search" is a poor confidence proxy against a stronger engine, so the
     // upward bias is deliberate insurance — and self-play cannot see the cost.
     // Cross-engine RR only.
-    (TM_SUBTREE_BASE_100, 162, 100, 180, 4.0, false),
+    (TM_SUBTREE_BASE_100, 161, 100, 180, 4.0, false),
     // Low-inc absolute single-move ceiling — the companion to the inc_cover
     // multiplier cap above.
     // inc_cover caps the factor MULTIPLIER, so adjusted_soft stays
@@ -284,8 +284,8 @@ tunables!(
     // MULT=30, FLOOR=10s leaves standard OB TCs (10+0.1/40+0.4/60+0.6) and
     // rich TCs (600+10) essentially untouched (the 46%/60% windows still
     // bind), while capping 600+1 at 40s (was 276s) and 60+0.1 at 13s.
-    (TM_INC_HARD_MULT, 30, 0, 120, 4.0, false),
-    (TM_INC_HARD_FLOOR_MS, 10000, 0, 60000, 1000.0, false),
+    (TM_INC_HARD_MULT, 31, 0, 120, 4.0, false),
+    (TM_INC_HARD_FLOOR_MS, 9846, 0, 60000, 1000.0, false),
     // Moves-left estimate for increment sudden-death pacing (see
     // `moves_left_estimate`): moves_left = max(FLOOR, START - SLOPE/100 * fm),
     // fitted to the median number of moves still to come in Coda's own
@@ -322,21 +322,21 @@ tunables!(
     // fixed-depth and never consults the budgets), so a TM tune cannot move the
     // bench — do not read an unchanged bench as "the tune did nothing".
     (TM_MAX_BANK_1000, 599, 400, 750, 15.0, false),   // max_time = clock * N/1000
-    (TM_HARD_WINDOW_PCT, 47, 25, 65, 2.5, false),     // hard_time = clock * N/100
+    (TM_HARD_WINDOW_PCT, 48, 25, 65, 2.5, false),     // hard_time = clock * N/100
     (TM_OPT_WINDOW_PCT, 73, 45, 95, 3.0, false),      // opt = computed * N/100
     (TM_INC_FRAC_PCT, 93, 40, 100, 4.0, false),       // computed += inc * N/100
-    (TM_DEFAULT_MTG, 24, 14, 40, 1.5, false),         // sudden-death moves-to-go
-    (TM_STAB_0_100, 175, 100, 260, 8.0, false),       // stability table [0] * 1/100
-    (TM_STAB_1_100, 122, 80, 180, 5.0, false),        // stability table [1]
+    (TM_DEFAULT_MTG, 25, 14, 40, 1.5, false),         // sudden-death moves-to-go
+    (TM_STAB_0_100, 177, 100, 260, 8.0, false),       // stability table [0] * 1/100
+    (TM_STAB_1_100, 123, 80, 180, 5.0, false),        // stability table [1]
     (TM_STAB_2_100, 90, 60, 130, 3.0, false),         // stability table [2]
     (TM_STAB_3_100, 80, 50, 120, 3.0, false),         // stability table [3]
     (TM_STAB_4_100, 74, 40, 110, 3.0, false),         // stability table [4+]
-    (TM_FAIL_LOW_BONUS_1000, 350, 100, 700, 20.0, false), // 1 + N/1000 * fail_lows
-    (TM_FORCED_STRONG_1000, 381, 150, 700, 20.0, false),  // strong-forced * N/1000
-    (TM_FORCED_WEAK_1000, 631, 300, 950, 25.0, false),    // weak-forced * N/1000
-    (TM_SUBTREE_MULT_100, 140, 90, 200, 4.0, false),      // (base-frac) * N/100
-    (TM_FORCED_MARGIN_WEAK, 170, 80, 320, 8.0, false),    // weak-forced cp margin
-    (TM_FORCED_MARGIN_STRONG, 400, 200, 620, 12.0, false),// strong-forced cp margin
+    (TM_FAIL_LOW_BONUS_1000, 345, 100, 700, 20.0, false), // 1 + N/1000 * fail_lows
+    (TM_FORCED_STRONG_1000, 377, 150, 700, 20.0, false),  // strong-forced * N/1000
+    (TM_FORCED_WEAK_1000, 626, 300, 950, 25.0, false),    // weak-forced * N/1000
+    (TM_SUBTREE_MULT_100, 141, 90, 200, 4.0, false),      // (base-frac) * N/100
+    (TM_FORCED_MARGIN_WEAK, 171, 80, 320, 8.0, false),    // weak-forced cp margin
+    (TM_FORCED_MARGIN_STRONG, 395, 200, 620, 12.0, false),// strong-forced cp margin
     // Behind-on-clock damp (idea from another engine's public design notes;
     // the shape and every constant here are Coda's own). When our clock is
     // behind the opponent's, scale the optimum budget DOWN by
@@ -354,8 +354,8 @@ tunables!(
     //     target, so the deficit rule may cut the target by at most that same
     //     proportion again and a large deficit can never starve the search.
     // Bench-invariant (TM is never consulted at fixed depth).
-    (TM_BEHIND_SLOPE_PCT, 100, 0, 300, 15.0, false),
-    (TM_BEHIND_FLOOR_PCT, 73, 45, 100, 3.0, false),
+    (TM_BEHIND_SLOPE_PCT, 96, 0, 300, 15.0, false),
+    (TM_BEHIND_FLOOR_PCT, 74, 45, 100, 3.0, false),
     // Surprise reply (idea from another engine's public design notes; the
     // form and constant are Coda's own). When the opponent did NOT play the
     // reply our previous search predicted (its pv[1]), this move's search is
@@ -371,7 +371,7 @@ tunables!(
     // the top of the table and is unchanged. The product's caps all still bind.
     // Off when Ponder is enabled — see `reply_was_surprise`.
     // Bench-invariant (TM is never consulted at fixed depth).
-    (TM_SURPRISE_STAB_STEPS_100, 100, 0, 300, 15.0, false),
+    (TM_SURPRISE_STAB_STEPS_100, 99, 0, 300, 15.0, false),
     (LMR_HIST_DIV, 25005, 2000, 100000, 4900.0, true),
     // Capture-LMR history divisor. Separate from the quiet divisor above:
     // capture history is single-source, so it needs a smaller divisor than
@@ -809,7 +809,7 @@ tunables!(
     // worsening over the game horizon — the regime where LTC games are lost.
     // Complements the within-search drop term (fixed 0.0025). Default matches
     // that scale (25 → 0.0025). TM change: validate via local cross-engine RR.
-    (CROSS_MOVE_TREND, 25, 0, 150, 8.0, false),
+    (CROSS_MOVE_TREND, 23, 0, 150, 8.0, false),
     // Converts SEE material (centipawns) into eval units for QS delta pruning:
     // `stand_pat + see_value(victim) * SCALE/100`. It is therefore the
     // material<->eval exchange rate, and a net whose eval sits on a different
