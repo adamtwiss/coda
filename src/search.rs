@@ -114,17 +114,17 @@ tunables!(
     // effective value, so such a parameter can post a large SPSA percentage
     // while changing nothing at all. Check the bucket before acting on a mover.
     (NMP_BASE_R_10X, 60, 20, 80, 15.0, true),
-    (NMP_DEPTH_DIV_10X, 40, 10, 200, 15.0, true),
-    (NMP_EVAL_DIV, 54, 50, 400, 17.5, true),
+    (NMP_DEPTH_DIV_10X, 36, 10, 200, 15.0, true),
+    (NMP_EVAL_DIV, 51, 50, 400, 17.5, true),
     (NMP_EVAL_MAX_10X, 35, 10, 60, 5.0, false),
     // Depth at/above which an NMP cutoff must be re-searched to verify it.
     // Must stay ABOVE the min-depth gate: if it sits below, every NMP cutoff
     // pays a verification re-search and NMP never gets a cheap cutoff. Below
     // this depth the cutoff is taken unverified; above it the re-search acts
     // as the zugzwang guard.
-    (RFP_DEPTH, 17, 2, 20, 2.0, true),
-    (RFP_MARGIN_IMP, 25, 0, 150, 6.0, true),
-    (RFP_MARGIN_NOIMP, 36, 0, 200, 7.5, true),
+    (RFP_DEPTH, 18, 2, 20, 2.0, true),
+    (RFP_MARGIN_IMP, 27, 0, 150, 6.0, true),
+    (RFP_MARGIN_NOIMP, 38, 0, 200, 7.5, true),
     // Root-depth-aware RFP relaxation (single-set, self-adapts STC<->LTC):
     // demand MORE static-eval confidence to RFP-cut as the OVERALL search
     // depth grows past RFP_ROOT_THRESH (diminishing-returns of depth — the
@@ -136,14 +136,14 @@ tunables!(
     // on 39% of moves overall — 0% in the opening but 92% through the late
     // middlegame. Cold-TT probes understate this badly.
     (RFP_ROOT_THRESH, 18, 6, 30, 1.5, true),
-    (RFP_ROOT_COEF, 20, 0, 150, 7.5, false),
+    (RFP_ROOT_COEF, 18, 0, 150, 7.5, false),
     // Additional depth-local RFP relaxation: current main already scales RFP
     // by overall root depth; this term raises the margin for high remaining
     // depth regardless of TC. Consensus engines either cap RFP around d9-11
     // or use a quadratic/deepening margin so static eval does not keep
     // cheaply pruning d12+ nodes.
-    (RFP_DEEP_KNEE_10X, 44, 40, 170, 20.0, true),
-    (RFP_DEEP_LINEAR, 53, 0, 200, 10.0, true),
+    (RFP_DEEP_KNEE_10X, 40, 40, 170, 20.0, true),
+    (RFP_DEEP_LINEAR, 55, 0, 200, 10.0, true),
     // RFP return blend, in percent. 0 returns `static_eval - margin` (the
     // long-standing return); 100 returns the midpoint of static eval and beta.
     // Values in between interpolate linearly between those two returns.
@@ -158,12 +158,12 @@ tunables!(
     // a little more and large-surplus cuts a lot less. The range goes to 0 so
     // that SPSA can switch the blend back off. SPSA #4831 (4k iterations)
     // moved it from 100 to 97.
-    (RFP_RET_BLEND_PCT, 97, 0, 100, 10.0, true),
+    (RFP_RET_BLEND_PCT, 90, 0, 100, 10.0, true),
     // Razoring: drop straight to qsearch when static eval is far enough below
     // alpha that a full search is unlikely to recover it. Margin scales with
     // depth, gated to shallow depths only.
-    (RAZOR_MULT, 294, 100, 500, 20.0, false),
-    (RAZOR_DEPTH_10X, 34, 10, 80, 5.0, true),
+    (RAZOR_MULT, 300, 100, 500, 20.0, false),
+    (RAZOR_DEPTH_10X, 35, 10, 80, 5.0, true),
     // Razoring is disabled once |alpha| exceeds this, so it only fires in
     // positions that are still in the balance. The MAX IS DELIBERATELY FAR
     // BELOW TB_WIN (28800): the tablebase floor/ceiling can only be set when
@@ -171,33 +171,33 @@ tunables!(
     // razoring and a proven TB result mutually exclusive, and therefore what
     // lets razoring skip the TB guard that RFP needs. Do not raise the max
     // into TB range without re-deriving that argument.
-    (RAZOR_ALPHA_MAX, 2000, 500, 8000, 150.0, false),
+    (RAZOR_ALPHA_MAX, 1968, 500, 8000, 150.0, false),
     // Weak-winning-confirmation guard: when alpha already represents an
     // advantage this large, decline a razor cut whose qsearch result only
     // grazes alpha by less than the margin below, and search it instead.
-    (RAZOR_WEAK_ALPHA, 200, 0, 1000, 20.0, false),
-    (RAZOR_WEAK_MARGIN, 32, 0, 150, 5.0, false),
+    (RAZOR_WEAK_ALPHA, 197, 0, 1000, 20.0, false),
+    (RAZOR_WEAK_MARGIN, 33, 0, 150, 5.0, false),
     // Futility margin: base + per-depth, compared against alpha at the
     // frontier. History adjusts the effective lmr_depth used here, so these
     // interact with the LMR history terms — retune the pair together.
-    (FUT_BASE, 85, 0, 200, 9.0, true),
+    (FUT_BASE, 88, 0, 200, 9.0, true),
     (FUT_PER_DEPTH, 96, 40, 250, 10.5, true),
     // Strong-history exemption for quiet futility: a quiet whose main history
     // exceeds this is never futility-pruned. It was the hardcoded literal 12000
     // sitting inside the gate at search.rs while every other term around it was
     // SPSA-tunable -- so SPSA has been optimising a formula with one frozen
     // input. Exposing it costs nothing and is behaviour-identical at 12000.
-    (FUT_HIST_EXEMPT, 12103, 2000, 16384, 900.0, true),
+    (FUT_HIST_EXEMPT, 12072, 2000, 16384, 900.0, true),
     // Non-core: near-inert in warm-TT games (dead-knob audit 2026-09-24).
     // One SPSA step either way changes under 0.04% of futility prunes, so
     // in core SPSA it would only add gradient noise. Kept at its value.
-    (FUT_LMR_DEPTH, 14, 6, 24, 2.0, false),
+    (FUT_LMR_DEPTH, 15, 6, 24, 2.0, false),
     // Move-count term: later quiets get a tighter futility margin. Default
     // FUT_PER_DEPTH / 8 — one depth-ply of margin per eight moves; capped at
     // the depth term so the margin never drops below FUT_BASE. Futility is
     // evaluated per move across the quiet tail; LMP still bulk-skips.
-    (FUT_MC_PER_MOVE, 12, 0, 40, 2.0, true),
-    (SEE_QUIET_MULT, 16, 5, 80, 3.75, true),
+    (FUT_MC_PER_MOVE, 13, 0, 40, 2.0, true),
+    (SEE_QUIET_MULT, 18, 5, 80, 3.75, true),
     // Endgame endpoint of SEE_QUIET_MULT (which is the middlegame endpoint),
     // blended on `phase_material` between PHASE_MAT_LO and PHASE_MAT_HI. Same
     // range and c_end as SEE_QUIET_MULT. Value 14 is from an SPSA run on an
@@ -215,8 +215,8 @@ tunables!(
     // SPRT'd on UHO with the same endpoints: this step won (#4890 +1.6), a
     // ramp 2128..4500 was flat (#4891) and a ramp from the full board lost
     // (#4892) -- the endgame values only pay in endgame material. Non-core.
-    (PHASE_MAT_HI, 2601, 0, 7974, 400.0, false),
-    (PHASE_MAT_LO, 2600, 0, 7974, 400.0, false),
+    (PHASE_MAT_HI, 2609, 0, 7974, 400.0, false),
+    (PHASE_MAT_LO, 2640, 0, 7974, 400.0, false),
     // Low-increment TM multiplier ceiling. The factor product
     // (stability×fail-low×forced×subtree×score-trend, up to ~13.8×) is only
     // clamped for no_inc; at increments that are SMALL RELATIVE TO THE CLOCK
@@ -314,7 +314,7 @@ tunables!(
     // eight games past move 110 on that cost alone), so the reserve has to
     // carry the long tail: 15 ms x 110 moves, the 99th percentile of moves
     // still to play at fullmove 40-60 in the same lichess games = 1650 ms.
-    (NO_INC_RESERVE_MS, 1590, 0, 4000, 100.0, false),
+    (NO_INC_RESERVE_MS, 1556, 0, 4000, 100.0, false),
     // TM window + factor constants. Coda's own parameters, tuned and validated
     // on Coda's own search and net; provenance in
     // docs/license_analysis_2026-07-13.md. All non-core, for the reason given
@@ -372,14 +372,14 @@ tunables!(
     // Off when Ponder is enabled — see `reply_was_surprise`.
     // Bench-invariant (TM is never consulted at fixed depth).
     (TM_SURPRISE_STAB_STEPS_100, 100, 0, 300, 15.0, false),
-    (LMR_HIST_DIV, 24952, 2000, 100000, 4900.0, true),
+    (LMR_HIST_DIV, 25005, 2000, 100000, 4900.0, true),
     // Capture-LMR history divisor. Separate from the quiet divisor above:
     // capture history is single-source, so it needs a smaller divisor than
     // quiet history to produce an equivalent reduction magnitude. Both are
     // continuous (`R -= hist / DIV`), not stepped.
-    (LMR_HIST_DIV_CAP, 3576, 1000, 20000, 1500.0, true),
-    (LMR_C_QUIET, 181, 40, 300, 13.0, true),
-    (LMR_C_CAP, 255, 80, 350, 12.5, true),
+    (LMR_HIST_DIV_CAP, 3364, 1000, 20000, 1500.0, true),
+    (LMR_C_QUIET, 191, 40, 300, 13.0, true),
+    (LMR_C_CAP, 257, 80, 350, 12.5, true),
     // Capture-LMR victim relief, in centi-ply per pawn (100 SEE units) of
     // victim value ABOVE a pawn: `R -= (see_value(victim) - see_value(PAWN))
     // * VICTIM_CENTI / 100`. Pawn captures get nothing, so the term is purely
@@ -408,16 +408,16 @@ tunables!(
     //             inflation `r += r*NUM/(256d+285)`, so proportionally MORE
     //             reduction shallow and LESS deep. A flat +1-ply all-node
     //             bump is the wrong shape for this.
-    (LMR_BASE_CENTI, 50, 0, 120, 6.0, true),
-    (LMR_ALLNODE_DECAY_NUM, 307, 0, 1600, 80.0, true),
+    (LMR_BASE_CENTI, 49, 0, 120, 6.0, true),
+    (LMR_ALLNODE_DECAY_NUM, 314, 0, 1600, 80.0, true),
     // Cut-node LMR bump, in centi-ply. Cut nodes reduce by this amount
     // (plus a further ply with no TT move); all-nodes keep +1.
-    (LMR_CUTNODE_BUMP_CENTI, 271, 100, 500, 40.0, true),
+    (LMR_CUTNODE_BUMP_CENTI, 253, 100, 500, 40.0, true),
     // LMR correction terms — sub-ply, in centi-ply, needing the fractional
     // accumulator to express. Kept small because Coda's ln(d)·ln(m) base
     // already carries a move-count term. Ranges run to 0 so SPSA can kill
     // dead terms.
-    (LMR_TTALPHA_CENTI, 32, 0, 150, 8.0, true),
+    (LMR_TTALPHA_CENTI, 34, 0, 150, 8.0, true),
     // Child-eval LMR (idea from Incipit, where it was invented independently):
     // after the move is made, compare the child's corrected static eval
     // (from this node's side) with alpha. A move whose resulting position
@@ -426,8 +426,8 @@ tunables!(
     // i.e. the same cp-per-ply exchange rate futility uses for its depth
     // margin. CAP bounds the term at one ply (LMR_SCALE) either way; its range
     // stops short of 0 so SPSA cannot silently disable the term.
-    (LMR_CHILD_EVAL_DIV, 96, 40, 400, 12.0, true),
-    (LMR_CHILD_EVAL_CAP_CENTI, 100, 25, 200, 12.0, true),
+    (LMR_CHILD_EVAL_DIV, 97, 40, 400, 12.0, true),
+    (LMR_CHILD_EVAL_CAP_CENTI, 101, 25, 200, 12.0, true),
     // Clock-keyed: LMR_TTALPHA_CENTI is the deep (root depth >= 17) value, the LTC walk #3709's 25; the
     // shallow value (root depth <= 14) is the STC walk #3701's 36 — see clock_blend.
     (LMR_TTALPHA_SHALLOW_CENTI, 36, 0, 150, 8.0, false),
@@ -435,11 +435,11 @@ tunables!(
     // twice under this node, reduce late moves more (with extra at non-PV
     // all-nodes). Seeded below source values for the double-counting reason
     // above. The >2 threshold is fixed, not a knob.
-    (LMR_CUTOFF_CNT_CENTI, 61, 0, 250, 12.0, true),
-    (LMR_CUTOFF_ALLNODE_CENTI, 21, 0, 150, 8.0, true),
+    (LMR_CUTOFF_CNT_CENTI, 56, 0, 250, 12.0, true),
+    (LMR_CUTOFF_ALLNODE_CENTI, 22, 0, 150, 8.0, true),
     // Minimum depth at which singular extension is attempted. Too low and
     // singular_depth is itself too shallow to judge singularity reliably.
-    (SE_DEPTH_10X, 40, 40, 200, 20.0, true),
+    (SE_DEPTH_10X, 44, 40, 200, 20.0, true),
     // Root-depth-aware uplift on the singular-extension depth gate, the same
     // shape as LMP_ROOT_* and as the RFP_ROOT_* correction those both follow.
     // SE_DEPTH_10X now holds the deep-search value: the LTC core tune left it
@@ -452,25 +452,25 @@ tunables!(
     // as LMP_ROOT_KNEE: 14 at 100ms/move, 17 at 1s, 22 at 4s), so the uplift
     // is zero at LTC and main is unchanged there. COEF = 4 = the STC walk's
     // preferred +13 (in tenths of a ply) over the measured 3-ply gap.
-    (SE_ROOT_KNEE, 17, 10, 24, 1.5, true),
+    (SE_ROOT_KNEE, 18, 10, 24, 1.5, true),
     (SE_ROOT_COEF, 4, 0, 15, 1.5, true),
-    (ASP_DELTA, 11, 5, 30, 1.5, false),
-    (ASP_SCORE_DIV, 12000, 8000, 50000, 2100.0, false),
+    (ASP_DELTA, 10, 5, 30, 1.5, false),
+    (ASP_SCORE_DIV, 11947, 8000, 50000, 2100.0, false),
     // Late move pruning: quiets searched before the cutoff, on the shape
     // `(BASE + d²·DEPTH) / (2 - improving)`. BASE dominates at shallow depth
     // and sets how many quiets survive at d=1.
-    (LMP_BASE_10X, 54, 10, 150, 20.0, true),
+    (LMP_BASE_10X, 57, 10, 150, 20.0, true),
     // Endgame endpoint of LMP_BASE_10X (the middlegame endpoint), blended on
     // `phase_material` via PHASE_MAT_LO/HI. The blend runs on the raw _10X
     // values and then takes the same rounding as `tp10`, so with END == mid
     // the result is bit-identical. Value 17 is from an SPSA run on an
     // endgame-only book (#4876; two UHO control tunes held the middlegame
     // value at 52-56); same range and c_end. Non-core.
-    (LMP_BASE_END_10X, 17, 10, 150, 20.0, false),
+    (LMP_BASE_END_10X, 19, 10, 150, 20.0, false),
     // Non-core: near-inert in warm-TT games (dead-knob audit 2026-09-24).
     // One step down changes 0.02% of LMP prunes and one step up none: the
     // move-count limit already outgrows the move list at these depths.
-    (LMP_DEPTH_10X, 127, 40, 200, 20.0, false),
+    (LMP_DEPTH_10X, 130, 40, 200, 20.0, false),
     // Margin-aware LMP. Coda's LMP limit keys on depth and improving only; the
     // fail-low histogram (b_probe_*) shows late-quiet work concentrating at
     // nodes that end up failing low, but its margin is only knowable AFTER the
@@ -483,7 +483,7 @@ tunables!(
     // again on the v10 net 2026-08-17, and the idea was closed then without
     // implementation. Tested anyway at Adam's request (2026-08-17) since the
     // predictor here differs from the post-hoc selector that was measured.
-    (LMP_MARGIN_THRESH, 54, 50, 500, 35.0, true),
+    (LMP_MARGIN_THRESH, 50, 50, 500, 35.0, true),
     // Root-depth-aware uplift on the LMP predictive margin, same shape as the
     // RFP_ROOT_* correction above with the sign flipped: that one demands MORE
     // confidence as the search gets deeper, this one demands more as it gets
@@ -499,7 +499,7 @@ tunables!(
     // preferred +23 divided by the measured 3-ply gap between the two medians.
     (LMP_ROOT_KNEE, 19, 10, 24, 1.5, true),
     (LMP_ROOT_COEF, 8, 0, 20, 1.5, true),
-    (LMP_MARGIN_PCT, 58, 40, 100, 6.0, true),
+    (LMP_MARGIN_PCT, 60, 40, 100, 6.0, true),
     // Root-depth-aware LMR relaxation (single-set, self-adapts STC<->LTC):
     // reduce LESS as the OVERALL search depth grows past LMR_ROOT_THRESH
     // (diminishing returns — at LTC the reduced re-search is cheap vs the
@@ -513,7 +513,7 @@ tunables!(
     // what makes this term look dead — warm caches roughly double reached
     // depth, so measure with the TT warm or the answer inverts.
     (LMR_ROOT_THRESH, 15, 6, 30, 1.5, false),
-    (LMR_ROOT_COEF_10X, 0, 0, 800, 40.0, true),
+    (LMR_ROOT_COEF_10X, 4, 0, 800, 40.0, true),
     (BAD_NOISY_MARGIN, 85, 30, 150, 6.0, true),
     // BNFP optimistic-gain credit. The bound credits the captured piece at
     // VICTIM_PCT% of its eval-unit value, i.e. see_value(victim) bridged by
@@ -521,14 +521,14 @@ tunables!(
     // the same units as static_eval and BAD_NOISY_MARGIN. (A June test credited
     // raw see_value, which at SEE_MATERIAL_SCALE=211 is under half the victim's
     // eval-unit worth.) Seeded at 100 = the full optimistic gain.
-    (BNFP_VICTIM_PCT, 100, 0, 150, 10.0, true),
+    (BNFP_VICTIM_PCT, 101, 0, 150, 10.0, true),
     // BNFP capture-history credit: capt_hist / DIV. Derivation: capt_hist is
     // bounded by MAX_HISTORY = 16384, and one minor in eval units is
     // see_value(KNIGHT) * SEE_MATERIAL_SCALE / 100 = 420 * 2.11 = 886, so
     // 16384 / 886 = 18.5 -> 18 makes a maxed-out history worth about one minor
     // (and a fully negative one take about one minor off the bound).
-    (BNFP_CAPT_HIST_DIV, 18, 6, 60, 3.0, true),
-    (PROBCUT_MARGIN, 164, 80, 300, 11.0, true),
+    (BNFP_CAPT_HIST_DIV, 19, 6, 60, 3.0, true),
+    (PROBCUT_MARGIN, 167, 80, 300, 11.0, true),
     // ProbCut margin reduction when improving (Stockfish/Alexandria shape):
     // improving positions verify against a lower beta, non-improving nodes
     // keep the safer base margin. Effective improving margin is
@@ -538,26 +538,26 @@ tunables!(
     // shallow root depths than deep ones, so add an offset below
     // PROBCUT_ROOT_THRESH and fade it out as root depth grows.
     (PROBCUT_ROOT_THRESH, 17, 8, 28, 1.5, true),
-    (PROBCUT_ROOT_FADE_10X, 47, 10, 120, 10.0, true),
+    (PROBCUT_ROOT_FADE_10X, 44, 10, 120, 10.0, true),
     (PROBCUT_ROOT_MARGIN, 74, 0, 120, 8.0, false),
-    (HINDSIGHT_THRESH, 122, 50, 400, 17.5, true),
-    (QS_DELTA_MARGIN, 361, 100, 500, 20.0, true),
+    (HINDSIGHT_THRESH, 126, 50, 400, 17.5, true),
+    (QS_DELTA_MARGIN, 360, 100, 500, 20.0, true),
     // Cap on captures actually SEARCHED in qsearch (delta/SEE-pruned moves
     // are not charged against it). Counting pruned moves here would let SPSA
     // detune the cap to near-off, which is what an earlier counting bug did.
     (QS_MAX_CAPTURES, 3, 2, 32, 2.0, false),
-    (CORR_W_PAWN, 126, 100, 600, 25.0, true),
-    (CORR_W_NP, 133, 0, 400, 17.5, true),
+    (CORR_W_PAWN, 123, 100, 600, 25.0, true),
+    (CORR_W_NP, 127, 0, 400, 17.5, true),
     // There is deliberately no minor-key or major-key correction source:
     // both are strict subsets of non_pawn_key, so such terms are redundant
     // with np_corr and simply consume SPSA budget at weight 0.
-    (CORR_W_CONT, 194, 0, 400, 18.5, true),
+    (CORR_W_CONT, 195, 0, 400, 18.5, true),
     // Transition (zobrist-delta) correction weight (Cinder idea): correction
     // keyed by hash(ply-1) ^ hash(ply) — a hash of the last move IN CONTEXT
     // (from+to+captured+side), richer than cont_corr's [piece][to]. Captures
     // "this structural CHANGE tends to be mis-evaluated."
-    (CORR_W_TRANS, 103, 0, 400, 18.5, true),
-    (FH_BLEND_DEPTH_10X, 21, 0, 80, 15.0, false),
+    (CORR_W_TRANS, 111, 0, 400, 18.5, true),
+    (FH_BLEND_DEPTH_10X, 17, 0, 80, 15.0, false),
     // TT_DAMP_TT_WEIGHT: weight of tt_score in TT-LOWER non-PV cutoff score
     // dampening. Formula: (W*tt_score + beta) / (W+1).
     (TT_DAMP_TT_WEIGHT_10X, 31, 10, 100, 5.0, false),
@@ -575,29 +575,29 @@ tunables!(
     // Max 4 = that refusal margin (one contradiction then reopens the slot);
     // 0 disables the mechanism.
     (TT_CONTRA_DECAY, 1, 0, 4, 0.5, false),
-    (HIST_BONUS_MULT, 230, 50, 400, 17.5, true),
-    (HIST_BONUS_MAX, 1793, 500, 3000, 125.0, true),
+    (HIST_BONUS_MULT, 236, 50, 400, 17.5, true),
+    (HIST_BONUS_MAX, 1809, 500, 3000, 125.0, true),
     // History bonus uses the offset shape `clamp(0, MAX, MULT*d - OFFSET)`
     // rather than `min(MAX, MULT*d)`. Without the offset the formula
     // saturates early and d=5 and d=10 earn the same bonus; the offset buys
     // depth discrimination. Capture history uses the same shape.
-    (HIST_BONUS_OFFSET, 18, 0, 400, 25.0, false),
-    (CAP_HIST_MULT, 340, 50, 400, 17.5, true),
-    (CAP_HIST_MAX, 1949, 500, 3000, 125.0, true),
+    (HIST_BONUS_OFFSET, 11, 0, 400, 25.0, false),
+    (CAP_HIST_MULT, 337, 50, 400, 17.5, true),
+    (CAP_HIST_MAX, 1946, 500, 3000, 125.0, true),
     // Malus constants are SEPARATE from the bonus constants rather than
     // hardwired to -bonus, so SPSA can tune the two slopes independently.
     // Whether malus should be steeper or shallower than bonus is
     // engine-specific and only discoverable by tuning.
-    (HIST_MALUS_MULT, 503, 50, 900, 40.0, true),
-    (HIST_MALUS_OFFSET, 30, 0, 400, 25.0, false),
-    (HIST_MALUS_MAX, 1136, 500, 4000, 175.0, true),
-    (CAP_HIST_MALUS_MULT, 297, 50, 900, 40.0, true),
-    (CAP_HIST_MALUS_BASE, 42, 0, 400, 25.0, false),
-    (CAP_HIST_MALUS_MAX, 2294, 500, 4000, 175.0, true),
+    (HIST_MALUS_MULT, 498, 50, 900, 40.0, true),
+    (HIST_MALUS_OFFSET, 31, 0, 400, 25.0, false),
+    (HIST_MALUS_MAX, 1107, 500, 4000, 175.0, true),
+    (CAP_HIST_MALUS_MULT, 295, 50, 900, 40.0, true),
+    (CAP_HIST_MALUS_BASE, 26, 0, 400, 25.0, false),
+    (CAP_HIST_MALUS_MAX, 2339, 500, 4000, 175.0, true),
     // numFailHighs multiplicative history scaling (Starzix pattern):
     //   bonus = raw + raw * min(num_fail_highs, NFH_CAP) / NFH_DIV
     // so 0..NFH_CAP cascades produce 1.0x .. (1 + NFH_CAP/NFH_DIV)x bonus.
-    (NFH_CAP_10X, 33, 10, 60, 10.0, false),
+    (NFH_CAP_10X, 32, 10, 60, 10.0, false),
     // Consumed as FIXED-POINT (stored/10) so SPSA keeps sub-integer
     // precision on the divisor.
     (NFH_DIV_10X, 49, 20, 120, 10.0, false),
@@ -605,7 +605,7 @@ tunables!(
     // cutoffs, amplify the best move's bonus by
     // (quiets+caps searched)/HIST_SIBLING_DIV — a move that cut off after
     // more competition proved itself more strongly.
-    (HIST_SIBLING_DIV, 167, 64, 1024, 40.0, true),
+    (HIST_SIBLING_DIV, 170, 64, 1024, 40.0, true),
     // PV/quiet/correction-aware double-extension margin (Stockfish shape).
     //
     // dext_margin = DEXT_MARGIN_PV   * is_pv
@@ -627,9 +627,9 @@ tunables!(
     //
     // TRIPLE extension is intentionally NOT part of this shape — it has been
     // tested for Coda's regime and the signal was not there.
-    (DEXT_MARGIN_PV, 169, 50, 400, 15.0, false),
+    (DEXT_MARGIN_PV, 170, 50, 400, 15.0, false),
     (DEXT_MARGIN_QUIET, 17, 0, 100, 4.0, false),
-    (DEXT_MARGIN_CORR, 18, 0, 64, 3.0, true),
+    (DEXT_MARGIN_CORR, 17, 0, 64, 3.0, true),
     (DEXT_MARGIN_BASE, 29, -50, 150, 6.0, true),
     // Non-core: near-inert in warm-TT games (dead-knob audit 2026-09-24).
     // The cap binds on 0.02-0.15% of double-extension decisions. It is a
@@ -647,7 +647,7 @@ tunables!(
     // to 640, the internal value already used for a decided root elsewhere in
     // this file. Non-core: it wants a focused tune, not a slot in a broad
     // sweep.
-    (TT_HM_GUARD_MARGIN, 64, 0, 640, 30.0, false),
+    (TT_HM_GUARD_MARGIN, 66, 0, 640, 30.0, false),
     // Root-decidedness gate on POSITIVE singular extensions. When the root score
     // says the game is already decided, the singular test stops discriminating:
     // every alternative falls below `tt_score - depth`, so nearly every node
@@ -676,9 +676,9 @@ tunables!(
     // displayed) fires the gate on nearly every non-drawish position and costs
     // 30% of bench — a units slip worth naming, since nothing about the number
     // looks wrong without the conversion.
-    (SE_ROOT_DECIDED_CP, 755, 250, 5000, 150.0, true),
+    (SE_ROOT_DECIDED_CP, 824, 250, 5000, 150.0, true),
     (SE_ROOT_DECIDED_DEPTH, 8, 4, 32, 2.0, true),
-    (QUIET_CHECK_BONUS, 14805, 2000, 30000, 1400.0, false),
+    (QUIET_CHECK_BONUS, 15203, 2000, 30000, 1400.0, false),
     // SEE gate on the quiet check bonus (a common cross-engine idea: only
     // bonus a check that is not badly losing). Without it Coda orders losing
     // check-sacs into the first-searched slot. Margin on Coda's pawn=100 scale:
@@ -687,53 +687,53 @@ tunables!(
     // are sums of piece values, so every margin in 0..=99 behaves
     // identically (bench-verified at 0, 50, 78 and 99); SPSA steps inside
     // the plateau are pure noise. Change it only in whole-pawn steps.
-    (QUIET_CHECK_SEE_MARGIN, 78, 0, 300, 12.0, false),
+    (QUIET_CHECK_SEE_MARGIN, 80, 0, 300, 12.0, false),
     // Effective correction magnitude is sum(W) / (DIV * GRAIN_T), so this
     // divisor trades off directly against the CORR_W_* weights — the pair is
     // degenerate and must be read together, never one in isolation. The floor
     // is deliberately low: a bound this parameter pins against would be setting
     // the value instead of the optimum. Keep c_end well under the operating
     // point, or perturbations clamp against the floor every iteration.
-    (CORR_HIST_DIV, 299, 64, 4096, 64.0, true),
+    (CORR_HIST_DIV, 302, 64, 4096, 64.0, true),
     // Caps the per-update weight. The ceiling suits depth-proportional weights;
     // a much lower cap only makes sense in a sign-only (error-clamped) regime.
     (CORR_UPDATE_WEIGHT_MAX, 15, 4, 48, 2.2, true),
     // Fixed-point /10.
-    (CORR_BONUS_CAP_DIV_10X, 38, 10, 160, 15.0, false),
-    (CORR_HIST_GRAIN_T, 13, 1, 32, 1.55, false),
+    (CORR_BONUS_CAP_DIV_10X, 48, 10, 160, 15.0, false),
+    (CORR_HIST_GRAIN_T, 12, 1, 32, 1.55, false),
     // Correction-history output scaling — the output is scaled rather than the
     // input pre-clamped:
     //   bonus = err * (depth+1).min(W) / CORR_ERR_DIV
     // clamped at the gravity cap only.
-    (CORR_ERR_DIV_10X, 55, 20, 640, 30.0, false),
-    (ESCAPE_BONUS_R, 8181, 3000, 30000, 1350.0, false),
+    (CORR_ERR_DIV_10X, 58, 20, 640, 30.0, false),
+    (ESCAPE_BONUS_R, 8667, 3000, 30000, 1350.0, false),
     // Threat-escape ordering bonuses by escaping piece type. Ablating the
     // queen/minor terms measured only slightly load-bearing, so they are kept
     // tunable rather than hardcoded — their optimum drifts with the
     // cont-hist / NMP / margin shape around them.
-    (ESCAPE_BONUS_Q, 17819, 0, 30000, 1500.0, false),
-    (ESCAPE_BONUS_MINOR, 5250, 0, 30000, 1000.0, false),
+    (ESCAPE_BONUS_Q, 17681, 0, 30000, 1500.0, false),
+    (ESCAPE_BONUS_MINOR, 4545, 0, 30000, 1000.0, false),
     // Null-move threat-escape bonus in quiet ordering.
-    (NULL_THREAT_ESCAPE_BONUS, 8321, 0, 30000, 1000.0, false),
-    (NMP_KING_ZONE_MAX_10X, 22, 20, 90, 15.0, true),
-    (PROBCUT_KING_ZONE_MAX_10X, 85, 20, 90, 15.0, true),
-    (LMR_THREAT_DIV_10X, 39, 10, 50, 15.0, true),
-    (LMR_KING_PRESSURE_DIV_10X, 72, 20, 90, 15.0, true),
+    (NULL_THREAT_ESCAPE_BONUS, 8354, 0, 30000, 1000.0, false),
+    (NMP_KING_ZONE_MAX_10X, 26, 20, 90, 15.0, true),
+    (PROBCUT_KING_ZONE_MAX_10X, 89, 20, 90, 15.0, true),
+    (LMR_THREAT_DIV_10X, 37, 10, 50, 15.0, true),
+    (LMR_KING_PRESSURE_DIV_10X, 70, 20, 90, 15.0, true),
     // Reduce later moves more once this node has already raised alpha N times
     // (alpha_raises reduction, a known LMR refinement). Fixed-point ×10: reduction += raises *
     // VALUE/10. Only fires at PV nodes (cut nodes break on the first fail-high
     // before alpha is raised). Default 10 = +1.0 ply (LMR_SCALE centi-ply) per
     // prior alpha-raise.
     (LMR_ALPHA_RAISE_10X, 10, 0, 40, 5.0, false),
-    (FUT_THREATS_MARGIN, 33, 0, 200, 10.0, true),
+    (FUT_THREATS_MARGIN, 35, 0, 200, 10.0, true),
     // Continuation-history weight in quiet move ordering. Range runs to 0 so
     // SPSA can disable the term entirely rather than pinning at a floor.
-    (CONT_HIST_MULT_10X, 21, 0, 80, 15.0, true),
+    (CONT_HIST_MULT_10X, 20, 0, 80, 15.0, true),
     // Pawn-history weight in quiet move ordering, relative to main/cont/etc.
     // core: false — not yet validated Elo-positive, so kept out of --core to
     // avoid contributing loose-knob false gradients to the sweep.
-    (PAWN_HIST_MULT_10X, 14, 0, 80, 10.0, false),
-    (KNIGHT_FORK_BONUS, 8722, 0, 20000, 1000.0, false),
+    (PAWN_HIST_MULT_10X, 17, 0, 80, 10.0, false),
+    (KNIGHT_FORK_BONUS, 8720, 0, 20000, 1000.0, false),
     // Threat ordering lift for a quiet that lands attacking an enemy
     // non-pawn piece: QUIET_CHECK_BONUS * SCALE/100 * t / (t + m*W/100),
     // t = see_value of the best target, m = see_value of the mover (see
@@ -745,17 +745,17 @@ tunables!(
     // Weight on the mover's value in the denominator: > 100 penalises heavy
     // movers (a queen threatening a minor) harder and sharpens the contrast
     // between favourable and even threats; < 100 flattens it.
-    (OFFENSE_MOVER_W_PCT, 102, 25, 400, 20.0, false),
+    (OFFENSE_MOVER_W_PCT, 99, 25, 400, 20.0, false),
     // --- Pruning depth gates ---
     // These are sensitive to eval quality and want re-calibrating after a net
     // change, which is why they are tunable rather than hardcoded.
     //
     // Minimum depth for internal iterative reduction. Floor runs low so SPSA
     // can explore "fire at any depth >= 1" rather than being clamped out of it.
-    (IIR_MIN_DEPTH_10X, 41, 5, 100, 15.0, true),
-    (PROBCUT_MIN_DEPTH_10X, 12, 10, 120, 15.0, false),     // ProbCut activation gate
-    (PROBCUT_ROOT_MIN_DEPTH_10X, 29, 0, 80, 8.0, true),
-    (SEE_CAP_DEPTH_10X, 99, 30, 150, 15.0, true),         // SEE capture prune depth cap
+    (IIR_MIN_DEPTH_10X, 40, 5, 100, 15.0, true),
+    (PROBCUT_MIN_DEPTH_10X, 10, 10, 120, 15.0, false),     // ProbCut activation gate
+    (PROBCUT_ROOT_MIN_DEPTH_10X, 26, 0, 80, 8.0, true),
+    (SEE_CAP_DEPTH_10X, 98, 30, 150, 15.0, true),         // SEE capture prune depth cap
     // Capture-SEE prune margin, a common cross-engine shape: margin =
     // depth*MULT + capt_hist*HIST/1024, prune if SEE < -margin. MULT is
     // ~1.1 pawn/depth; HIST is expressed against Coda's own ±16384 capt-hist
@@ -766,21 +766,21 @@ tunables!(
     // can be lowered without over-pruning them. Dropping the base alone,
     // without the history term, cost +17% bench nodes.
     (SEE_CAP_MULT, 85, 40, 250, 12.0, true),
-    (SEE_CAP_HIST, 11, 0, 40, 2.0, true),
-    (BAD_NOISY_DEPTH_10X, 45, 40, 150, 15.0, true),       // BNFP depth cap
+    (SEE_CAP_HIST, 10, 0, 40, 2.0, true),
+    (BAD_NOISY_DEPTH_10X, 44, 40, 150, 15.0, true),       // BNFP depth cap
     // NMP activation gate (2 sites). This can sit low because RFP runs FIRST:
     // shallow NMP then only sees nodes static pruning could not already cut,
     // so it no longer intercepts free cutoffs. Reordering NMP ahead of RFP
     // would require pushing this gate back up to compensate.
-    (NMP_MIN_DEPTH_10X, 78, 20, 200, 15.0, true),
-    (HINDSIGHT_MIN_DEPTH_10X, 13, 0, 200, 15.0, true),
+    (NMP_MIN_DEPTH_10X, 77, 20, 200, 15.0, true),
+    (HINDSIGHT_MIN_DEPTH_10X, 15, 0, 200, 15.0, true),
     // Net output scale in percent: the final NNUE eval is multiplied by
     // PCT/100. Nets train to very different natural scales (eval RMS has
     // ranged 219-369 across same-recipe runs) while every cp-denominated
     // search margin is calibrated to the production net's scale. This knob
     // rescales a candidate onto that scale so a net-vs-net SPRT measures the
     // net rather than its units. 100 = off.
-    (EVAL_SCALE_PCT, 100, 50, 200, 5.0, false),
+    (EVAL_SCALE_PCT, 98, 50, 200, 5.0, false),
     // Piece count at or below which the search runs in threat-REFRESH mode:
     // no per-move delta generation, and the accumulator re-enumerates from the
     // board instead of replaying delta edges.
@@ -799,10 +799,10 @@ tunables!(
     // decided before the first make_move, and both sides must agree — replaying
     // from deltas that were never generated would silently corrupt the
     // accumulator. 0 = off.
-    (THREAT_REFRESH_PIECE_MAX, 9, 0, 32, 2.0, false),
+    (THREAT_REFRESH_PIECE_MAX, 12, 0, 32, 2.0, false),
     // Fail-low prior-countermove cont-hist bonus, % of history_bonus(depth)
     // (SF fail-low history harvesting).
-    (FAIL_LOW_PREV_BONUS_PCT, 59, 0, 150, 15.0, false),
+    (FAIL_LOW_PREV_BONUS_PCT, 60, 0, 150, 15.0, false),
     // Cross-MOVE score-trend TM coefficient (×1e-4). Folds the deterioration
     // across MOVES (prev-`go` final score − current running score) into the
     // score-trend multiplier, giving more time when the position has been
@@ -816,12 +816,12 @@ tunables!(
     // scale needs this moved with it. Non-core, but it carries loose-knob
     // gradient noise — exclude it from full sweeps if it destabilises
     // neighbours.
-    (SEE_MATERIAL_SCALE, 211, 30, 300, 13.5, false),
+    (SEE_MATERIAL_SCALE, 213, 30, 300, 13.5, false),
     // Endgame eval-scaling base: eval *= (MAT_SCALE_BASE + non_pawn_material) / 32768.
     // Lower base = more aggressive damp of the net's output in low-material
     // endgames — the lever against the net over-rating simplified positions.
     // Non-core / experimental.
-    (MAT_SCALE_BASE, 22400, 14000, 30000, 1000.0, false),
+    (MAT_SCALE_BASE, 22104, 14000, 30000, 1000.0, false),
 );
 
 // Demoted loose knobs: cross-tune analysis found SPSA drift dominating signal
