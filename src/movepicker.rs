@@ -74,6 +74,12 @@ pub struct History {
     pub capture: [[[i16; 7]; 64]; 13],
 }
 
+/// All-zero stand-ins for a continuation plane / pawn-history row that does
+/// not exist at this node (see `generate_and_score_quiets`).
+static ZERO_CONT_PLANE: [[std::sync::atomic::AtomicI16; 64]; 13] =
+    [const { [const { std::sync::atomic::AtomicI16::new(0) }; 64] }; 13];
+static ZERO_PAWN_PLANE: [[i16; 64]; 13] = [[0; 64]; 13];
+
 impl History {
     /// Get main history score for a move given enemy threat bitboard.
     #[inline(always)]
@@ -722,6 +728,25 @@ impl MovePicker {
             ((their_pawns & !FILE_A) >> 9) | ((their_pawns & !FILE_H) >> 7)
         };
 
+        // Everything the per-move loop reads from `self` is fixed for this
+        // generation, so it is resolved once here. A look-back ply with no
+        // continuation plane, or a missing pawn-history row, reads an
+        // all-zero plane instead of branching per move: the term adds 0
+        // either way.
+        let threats = self.threats;
+        let threat_sq = self.threat_sq;
+        let checking_sqs = self.checking_sqs;
+        let main_4d = crate::search::FEAT_4D_HISTORY.load(Ordering::Relaxed);
+        let cont_planes: [&[[std::sync::atomic::AtomicI16; 64]; 13]; 4] =
+            std::array::from_fn(|k| match self.cont_hist_subs[k] {
+                Some(sub_ptr) => unsafe { &*sub_ptr },
+                None => &ZERO_CONT_PLANE,
+            });
+        let pawn_plane: &[[i16; 64]; 13] = match self.pawn_hist_ptr {
+            Some(ph_ptr) => unsafe { &*ph_ptr },
+            None => &ZERO_PAWN_PLANE,
+        };
+
         for i in 0..n {
             let m = self.moves.get(i);
 
@@ -731,37 +756,35 @@ impl MovePicker {
             // Hoisted: piece_type_at(from) was previously recomputed in up
             // to 4 score-term blocks below.
             let pt = board.piece_type_at(from);
+            // A generated move always has a piece on its origin square.
+            debug_assert!(piece != NO_PIECE);
+            let gp = go_piece(piece);
 
-            let mut score = history.main_score(from, to, self.threats);
+            let mut score = if main_4d {
+                let ft = ((threats >> from) & 1) as usize;
+                let tt = ((threats >> to) & 1) as usize;
+                history.main[ft][tt][from as usize][to as usize] as i32
+            } else {
+                history.main[0][0][from as usize][to as usize] as i32
+            };
 
             // Continuation history: plies 1,2 at CONT_HIST_MULT weight, plies 4,6 at 1x weight.
             // Matches Obsidian/Alexandria/Berserk pattern (default 3).
-            if piece != NO_PIECE {
-                let gp = go_piece(piece);
-                for (i, &w) in cont_weights.iter().enumerate() {
-                    if let Some(sub_ptr) = self.cont_hist_subs[i] {
-                        let sub = unsafe { &*sub_ptr };
-                        score += w * sub[gp][to as usize].load(std::sync::atomic::Ordering::Relaxed) as i32;
-                    }
-                }
+            for (plane, &w) in cont_planes.iter().zip(cont_weights.iter()) {
+                score += w * plane[gp][to as usize].load(Ordering::Relaxed) as i32;
             }
 
             // Pawn history (weight tunable via PAWN_HIST_MULT_10X)
-            if let Some(ph_ptr) = self.pawn_hist_ptr {
-                if piece != NO_PIECE {
-                    let ph = unsafe { &*ph_ptr };
-                    score += pw * ph[go_piece(piece)][to as usize] as i32;
-                }
-            }
+            score += pw * pawn_plane[gp][to as usize] as i32;
 
             // Null-move threat: bonus for escaping the threatened square
-            if self.threat_sq >= 0 && from as i32 == self.threat_sq {
+            if threat_sq >= 0 && from as i32 == threat_sq {
                 score += null_threat_escape_bonus;
             }
 
             // Escape-capture bonus: bonus for moving a piece off a threatened
             // square. All four (Q/R/B/N) now tunable.
-            if self.threats & (1u64 << from) != 0 && piece != NO_PIECE {
+            if threats & (1u64 << from) != 0 {
                 // Table instead of a match on piece type (jump table, mispredicts).
                 score += escape_bonus_by_pt[pt.min(7) as usize];
             }
@@ -776,11 +799,10 @@ impl MovePicker {
             // pre-move test `gives_direct_check`, called only for the rare
             // moves that can qualify: a discovered-check candidate moving,
             // or a castle.
-            let gives_check = (pt < 6 && self.checking_sqs[pt as usize] & (1u64 << to) != 0)
+            let gives_check = (pt < 6 && checking_sqs[pt as usize] & (1u64 << to) != 0)
                 || ((dc_candidates & (1u64 << from) != 0 || move_flags(m) == FLAG_CASTLE)
                     && board.gives_direct_check(m));
-            if piece != NO_PIECE
-                && gives_check
+            if gives_check
                 && see_ge(board, m, -quiet_check_see_margin) {
                 score += quiet_check_bonus;
             }
@@ -803,38 +825,36 @@ impl MovePicker {
             // can sharpen or flatten that contrast (see OFFENSE_SCALE_PCT).
             // Safety filter: skip if `to` is attacked by an enemy pawn (the
             // pawn recapture would be net negative for any non-pawn mover).
-            if piece != NO_PIECE {
-                if pt < 6 {
-                    // We'd be on `to` after the move; compute attacks from `to` by our piece type.
-                    let attacks_from_to = match pt {
-                        0 => pawn_attacks(us, to as u32),  // pawn
-                        1 => knight_attacks(to as u32),
-                        2 => bishop_attacks(to as u32, occ & !(1u64 << from)),  // bishop: occ minus our from-square
-                        3 => rook_attacks(to as u32, occ & !(1u64 << from)),    // rook
-                        4 => queen_attacks(to as u32, occ & !(1u64 << from)),   // queen
-                        _ => 0,  // king — no threat lift, too risky
-                    };
-                    if attacks_from_to & enemy_non_pawns != 0 {
-                        // Only skip if WE would be a bigger target than a pawn
-                        let unsafe_square = pt != 0 && (enemy_pawn_attacks & (1u64 << to)) != 0;
-                        if !unsafe_square {
-                            let mut hits = attacks_from_to & enemy_non_pawns;
-                            let mut t_val = 0;
-                            while hits != 0 {
-                                let t_sq = hits.trailing_zeros() as u8;
-                                hits &= hits - 1;
-                                t_val = t_val.max(see_value(board.piece_type_at(t_sq)));
-                            }
-                            score += offense_base * t_val
-                                / (t_val + see_value(pt) * offense_mover_w / 100);
+            if pt < 6 {
+                // We'd be on `to` after the move; compute attacks from `to` by our piece type.
+                let attacks_from_to = match pt {
+                    0 => pawn_attacks(us, to as u32),  // pawn
+                    1 => knight_attacks(to as u32),
+                    2 => bishop_attacks(to as u32, occ & !(1u64 << from)),  // bishop: occ minus our from-square
+                    3 => rook_attacks(to as u32, occ & !(1u64 << from)),    // rook
+                    4 => queen_attacks(to as u32, occ & !(1u64 << from)),   // queen
+                    _ => 0,  // king — no threat lift, too risky
+                };
+                if attacks_from_to & enemy_non_pawns != 0 {
+                    // Only skip if WE would be a bigger target than a pawn
+                    let unsafe_square = pt != 0 && (enemy_pawn_attacks & (1u64 << to)) != 0;
+                    if !unsafe_square {
+                        let mut hits = attacks_from_to & enemy_non_pawns;
+                        let mut t_val = 0;
+                        while hits != 0 {
+                            let t_sq = hits.trailing_zeros() as u8;
+                            hits &= hits - 1;
+                            t_val = t_val.max(see_value(board.piece_type_at(t_sq)));
                         }
-                        // Knight-fork bonus: knight move attacking 2+ enemy
-                        // non-pawn pieces from `to` is a fork. Tunable
-                        // (KNIGHT_FORK_BONUS), stacks on top of offense.
-                        if kf_bonus > 0 && pt == 1 && !unsafe_square
-                            && popcount(attacks_from_to & enemy_non_pawns) >= 2 {
-                            score += kf_bonus;
-                        }
+                        score += offense_base * t_val
+                            / (t_val + see_value(pt) * offense_mover_w / 100);
+                    }
+                    // Knight-fork bonus: knight move attacking 2+ enemy
+                    // non-pawn pieces from `to` is a fork. Tunable
+                    // (KNIGHT_FORK_BONUS), stacks on top of offense.
+                    if kf_bonus > 0 && pt == 1 && !unsafe_square
+                        && popcount(attacks_from_to & enemy_non_pawns) >= 2 {
+                        score += kf_bonus;
                     }
                 }
             }
