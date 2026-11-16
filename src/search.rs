@@ -4415,11 +4415,19 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
         // MoveOverhead off, as the clock path does, but never more than a
         // fifth of the movetime: a short movetime keeps most of its budget,
         // and a fifth of 250 ms (50 ms) still covers the measured p99 overrun
-        // (81 ms) once added to the GUI's own tolerance. Only for a plain
+        // (81 ms) once added to the GUI's own tolerance. A fifth turned out
+        // to be far too much at longer movetimes: at 0.5 s/move the cap equals
+        // the default 100 ms overhead, so Coda searched 0.40 s where the field
+        // searches ~0.50 s (Adam's 0.5 s/move RR, 2026-11-16), a ~20% time
+        // handicap on fixed-time rating lists. With no margin at all, replies at
+        // `go movetime 500` overran by median 13 / p90 32 / max 45 ms at load 17,
+        // so a twentieth (25 ms at 0.5 s, 12 ms at 0.25 s) plus a GUI tolerance
+        // of the usual 100 ms covers the measured overruns, including the 81 ms
+        // p99 above. Only for a plain
         // `go movetime`: the ponderhit fresh-search also arrives as a movetime,
         // but it is already budgeted from the clock and carries abs_clock.
         let margin = if limits.abs_clock == 0 {
-            info.move_overhead.min(limits.movetime / 5)
+            info.move_overhead.min(limits.movetime / 20)
         } else {
             0
         };
