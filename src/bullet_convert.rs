@@ -242,13 +242,9 @@ pub fn convert_v7(
     queen_buckets: crate::nnue::QueenBuckets,
 ) -> Result<(), String> {
     use crate::nnue::{HiddenGate, QueenBuckets};
-    // Queen output buckets (trainer --queen-buckets): the output layer has
-    // 8 material buckets x the queen-state count; L1/L2 are untouched. Only
-    // defined with shared hidden layers.
-    if queen_buckets != QueenBuckets::None && bucketed_hidden {
-        return Err("--queen-buckets requires shared (unbucketed) hidden layers \
-                    (no --bucketed-hidden)".to_string());
-    }
+    // Queen output buckets (trainer --queen-buckets): every material bucket is
+    // split by queen state, giving 8 x {1,2,4} buckets. The output layer always
+    // has one row per bucket; with --bucketed-hidden the L1/L2 stacks do too.
     let num_ob = NNUE_OUTPUT_BUCKETS * queen_buckets.multiplier();
     // Gated L2 (trainer --hidden-gate): l2 emits a gate half and a value half,
     // so its weight/bias arrays carry 2*l2_size output rows (gate rows first).
@@ -274,10 +270,10 @@ pub fn convert_v7(
     let l1w_bytes_per = if int8_l1 { 1 } else { 2 };
     // Bucketed: Bullet bakes output buckets into hidden layer dimensions
     // Unbucketed: hidden layers are shared, only output is bucketed
-    let bl1 = if bucketed_hidden { NNUE_OUTPUT_BUCKETS * l1_size } else { l1_size };
+    let bl1 = if bucketed_hidden { num_ob * l1_size } else { l1_size };
     // Stored L2 output rows: doubled for a gated L2 (the layer that feeds the
     // output still has l2_size units — the gate product halves it again).
-    let bl2 = l2_rows_mul * if bucketed_hidden { NNUE_OUTPUT_BUCKETS * l2_size } else { l2_size };
+    let bl2 = l2_rows_mul * if bucketed_hidden { num_ob * l2_size } else { l2_size };
     // i16 hidden: all hidden layer weights/biases are i16 (GoChess-style)
     // f32 hidden (default): l1b is f32, l2/l3 are f32
     let hbytes = if int16_hidden { 2 } else { 4 }; // bytes per hidden weight/bias element

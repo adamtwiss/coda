@@ -3928,8 +3928,11 @@ impl NNUENet {
 
         // Read L1 hidden layer weights (v7)
         // Bucketed: actual array sizes are BUCKETS * l1_size / BUCKETS * l2_size
-        let bl1 = if bucketed_hidden { NNUE_OUTPUT_BUCKETS * l1_size } else { l1_size };
-        let bl2 = if bucketed_hidden { NNUE_OUTPUT_BUCKETS * l2_size } else { l2_size };
+        // Queen buckets split every material bucket, so a bucketed-hidden
+        // net carries 8 * multiplier stacks of L1/L2, one per output bucket.
+        let hidden_buckets = NNUE_OUTPUT_BUCKETS * queen_buckets.multiplier();
+        let bl1 = if bucketed_hidden { hidden_buckets * l1_size } else { l1_size };
+        let bl2 = if bucketed_hidden { hidden_buckets * l2_size } else { l2_size };
         let mut l1_weights = Vec::new();
         let mut l1_biases = Vec::new();
         if l1_size > 0 {
@@ -3970,12 +3973,6 @@ impl NNUENet {
         } else {
             2 * hidden_size
         };
-        // Queen buckets multiply the OUTPUT rows only. A bucketed-hidden net
-        // bakes the material buckets into L1/L2 as well, and splitting those by
-        // queen state is not defined, so refuse the combination.
-        if queen_buckets != QueenBuckets::None && bucketed_hidden {
-            return Err("queen output buckets require shared (unbucketed) hidden layers".to_string());
-        }
         let num_output_buckets = NNUE_OUTPUT_BUCKETS * queen_buckets.multiplier();
         let mut output_weights = vec![0i16; num_output_buckets * out_width];
         read_i16_slice(reader, &mut output_weights)?;
@@ -4073,8 +4070,8 @@ impl NNUENet {
                 let total_input = if use_pairwise { hidden_size } else { 2 * hidden_size };
                 if bucketed_hidden {
                     let section = (total_input / 4) * l1_size * 4;
-                    let mut all: Vec<i8> = Vec::with_capacity(section * NNUE_OUTPUT_BUCKETS);
-                    for b in 0..NNUE_OUTPUT_BUCKETS {
+                    let mut all: Vec<i8> = Vec::with_capacity(section * hidden_buckets);
+                    for b in 0..hidden_buckets {
                         all.extend_from_slice(&crate::sparse_l1::transpose_weights_for_sparse_range(
                             &l1_weights_8t, total_input, bl1, b * l1_size, l1_size));
                     }
@@ -4166,7 +4163,7 @@ impl NNUENet {
         // section — across a section boundary the pairing is meaningless.
         let x2_safe = !l1_weights_sparse.is_empty()
             && if sparse_bucket_stride > 0 {
-                (0..NNUE_OUTPUT_BUCKETS).all(|b| {
+                (0..hidden_buckets).all(|b| {
                     let lo = b * sparse_bucket_stride;
                     crate::sparse_l1::x2_fusion_safe(
                         &l1_weights_sparse[lo..lo + sparse_bucket_stride], l1_size)
@@ -5310,7 +5307,7 @@ impl NNUENet {
                 let l2 = if self.bucketed_hidden { self.l2_per_bucket } else { self.l2_size };
                 let l2_off = if self.bucketed_hidden { bucket * l2 } else { 0 };
                 let l2_stride = if self.dual_l1 { self.l1_per_bucket * 2 } else { self.l1_per_bucket };
-                let l2_total_stride = if self.bucketed_hidden { l2_stride * NNUE_OUTPUT_BUCKETS } else { l2_stride };
+                let l2_total_stride = if self.bucketed_hidden { l2_stride * self.num_output_buckets } else { l2_stride };
                 let _ = l2_total_stride; // used below
                 let mut h2_storage = std::mem::MaybeUninit::<[f32; 256]>::uninit();
                 let h2_ptr = scratch_ptr!(h2_storage, f32);
@@ -5595,7 +5592,7 @@ impl NNUENet {
             // The accumulator already holds psq + threat (see
             // `NNUEAccumulator::set_threat_fusion`): no combine needed.
             // Fusion is only enabled for nets with hidden layers.
-            let bucket = self.output_bucket(piece_count);
+            let bucket = self.output_bucket(key);
             let (stm_acc, ntm_acc) = if stm == WHITE {
                 (acc.white(), acc.black())
             } else {
@@ -10977,10 +10974,15 @@ mod queen_bucket_tests {
                     let want = spec_bucket(fen, mode);
                     let e = eval_fen(&net, fen);
                     if row == want {
-                        // 0.25 output units; truncation to cp may cost 1.
+                        // 0.25 output units. evaluate_nnue then applies the
+                        // material and halfmove eval scaling (a few percent
+                        // below 1 on these FENs), and truncation to cp may cost
+                        // 1, so the shift lands just under 0.25 * EVAL_SCALE.
+                        // What this test pins is WHICH row moves; the leak
+                        // check below covers every other row.
                         let d = (e - base_evals[i]) as f64;
                         let exp = 0.25 * EVAL_SCALE as f64;
-                        assert!((d - exp).abs() <= 1.0, "{mode:?} row {row} {fen}: moved {d}, expected {exp}");
+                        assert!(d >= 0.9 * exp && d <= exp + 1.0, "{mode:?} row {row} {fen}: moved {d}, expected about {exp}");
                         rows_hit.insert(row);
                     } else {
                         assert_eq!(e, base_evals[i], "{mode:?} row {row} leaked into {fen} (spec row {want})");
