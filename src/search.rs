@@ -1107,6 +1107,9 @@ pub static FEAT_4D_HISTORY: AtomicBool = AtomicBool::new(true); // threat-aware 
 // Diagnostic-only (env RFP_AUDIT=1): null-verify every RFP cutoff and count
 // false positives per depth. NOT a play feature — costs NPS; bench/EPD use.
 pub static RFP_AUDIT: AtomicBool = AtomicBool::new(false);
+// Research toggles (draw recognition): env DRAW_JITTER=1, SHUFFLE_NO_SE=1.
+pub static DRAW_JITTER: AtomicBool = AtomicBool::new(false);
+pub static SHUFFLE_NO_SE: AtomicBool = AtomicBool::new(false);
 
 /// Disable all features (pure negamax + eval)
 pub fn disable_all_features() {
@@ -3094,6 +3097,8 @@ pub(crate) fn init_feature_flags() {
             if std::env::var("NO_4D_HISTORY").is_ok() { FEAT_4D_HISTORY.store(false, Ordering::Relaxed); }
         }
         // Diagnostic audit modes (orthogonal to DISABLE_ALL/NO_XXX).
+        if std::env::var("DRAW_JITTER").is_ok() { DRAW_JITTER.store(true, Ordering::Relaxed); }
+        if std::env::var("SHUFFLE_NO_SE").is_ok() { SHUFFLE_NO_SE.store(true, Ordering::Relaxed); }
         if std::env::var("RFP_AUDIT").is_ok() {
             RFP_AUDIT.store(true, Ordering::Relaxed);
             eprintln!("RFP_AUDIT enabled: null-verifying every RFP cutoff (diagnostic, slow)");
@@ -5629,7 +5634,7 @@ fn negamax(
     // nonzero scaled eval — eval doesn't know about insufficient material
     // or repetition (only halfmove via the scale itself handles 50mr).
     if ply > 0 {
-        let draw_score: i32 = 0;
+        let draw_score: i32 = if DRAW_JITTER.load(Ordering::Relaxed) { (info.nodes & 2) as i32 - 1 } else { 0 };
         if is_rule50_draw(board) {
             return draw_score;
         }
@@ -7001,7 +7006,20 @@ fn negamax(
         // node-end TT store are all gated on excluded_move during the
         // verification search.
         let mut singular_extension = 0i32;
+        // Research toggle: a quiet move that only undoes our last two moves
+        // (piece shuttling back) after 12+ halfmoves without progress is not a
+        // singular candidate.
+        let shuffle_skip = SHUFFLE_NO_SE.load(Ordering::Relaxed)
+            && board.halfmove >= 12 && !board.is_capture(mv) && {
+                let n = board.undo_stack.len();
+                n >= 4 && {
+                    let m2 = board.undo_stack[n - 2].mv;
+                    let m4 = board.undo_stack[n - 4].mv;
+                    move_from(mv) == move_to(m2) && move_from(m2) == move_to(m4)
+                }
+            };
         if mv == tt_move
+            && !shuffle_skip
             && tt_move != NO_MOVE
             && ply > 0
             // Shallow searches start singular verification later — see SE_ROOT_KNEE.
@@ -8273,7 +8291,7 @@ fn quiescence_with_depth(
     }
 
     // Draw detection: repetition and 50-move rule. No contempt term.
-    let draw_score = 0;
+    let draw_score: i32 = if DRAW_JITTER.load(Ordering::Relaxed) { (info.nodes & 2) as i32 - 1 } else { 0 };
     if is_rule50_draw(board) {
         return draw_score;
     }
