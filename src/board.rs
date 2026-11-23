@@ -3,6 +3,7 @@
 //! Bitboards: pieces[6] (by type) + colors[2] (by color).
 //! Mailbox: mailbox[64] for O(1) piece-at-square lookup.
 
+pub static TT_HM_KEY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 use crate::bitboard::*;
 use crate::attacks::*;
 use crate::types::*;
@@ -447,6 +448,28 @@ impl Board {
         // 0 → both dark, 2 → both light, 1 → mixed (not drawn).
         bishops_light != 1
     }
+    /// Key used for the transposition table. Below `TT_HM_KEY_START` it is the
+    /// Zobrist hash; from there on a per-bucket key for the halfmove clock is
+    /// XORed in, so a score found at a low 50-move count is not reused for the
+    /// same position at a higher one (graph-history interaction). Derived from
+    /// Coda's own eval damp, which shrinks the eval 0.5% per halfmove: the
+    /// buckets start where the damp reaches 10% (hm 20) and each spans another
+    /// 5% (10 plies). Research toggle: env TT_HM_KEY=1.
+    #[inline]
+    pub fn tt_key(&self) -> u64 {
+        const TT_HM_KEY_START: u16 = 20;
+        const TT_HM_KEY_WIDTH: u16 = 10;
+        if self.halfmove < TT_HM_KEY_START || !TT_HM_KEY.load(std::sync::atomic::Ordering::Relaxed) {
+            return self.hash;
+        }
+        let bucket = ((self.halfmove - TT_HM_KEY_START) / TT_HM_KEY_WIDTH) as u64 + 1;
+        // splitmix64 of the bucket index: fixed, well-mixed, independent of Zobrist keys
+        let mut z = bucket.wrapping_mul(0x9E3779B97F4A7C15);
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
+        self.hash ^ (z ^ (z >> 31))
+    }
+
 
     /// True if the current position is repetition-drawn from a search node at
     /// `ply`.

@@ -2673,7 +2673,7 @@ fn tt_cutoff_child_disagrees(
     if !board.make_move(tt_move) {
         return false;
     }
-    let child = info.tt.probe(board.hash);
+    let child = info.tt.probe(board.tt_key());
     let child_halfmove = board.halfmove; // 50mr clock of the CHILD position
     board.unmake_move();
     if !child.hit {
@@ -3094,6 +3094,9 @@ pub(crate) fn init_feature_flags() {
             if std::env::var("NO_4D_HISTORY").is_ok() { FEAT_4D_HISTORY.store(false, Ordering::Relaxed); }
         }
         // Diagnostic audit modes (orthogonal to DISABLE_ALL/NO_XXX).
+        if std::env::var("TT_HM_KEY").is_ok() {
+            crate::board::TT_HM_KEY.store(true, Ordering::Relaxed);
+        }
         if std::env::var("RFP_AUDIT").is_ok() {
             RFP_AUDIT.store(true, Ordering::Relaxed);
             eprintln!("RFP_AUDIT enabled: null-verifying every RFP cutoff (diagnostic, slow)");
@@ -4133,7 +4136,7 @@ fn build_pv_string(info: &SearchInfo, board: &Board, target_depth: i32) -> Strin
             if pv_board.halfmove >= 100 { break; }
             seen_hashes.push(pv_board.hash);
 
-            let pv_tt = info.tt.probe(pv_board.hash);
+            let pv_tt = info.tt.probe(pv_board.tt_key());
             if !pv_tt.hit || pv_tt.best_move == NO_MOVE { break; }
             let pv_legal = generate_legal_moves(&pv_board);
             let mut found = NO_MOVE;
@@ -4527,7 +4530,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
         // position) over raw movegen order as the
         // emergency fallback — nearly free, and the move actually emitted
         // if abs_deadline expires before depth 1 completes.
-        let tt_entry = info.tt.probe(board.hash);
+        let tt_entry = info.tt.probe(board.tt_key());
         if tt_entry.hit && tt_entry.best_move != NO_MOVE {
             for i in 0..root_legal.len {
                 if root_legal.get(i) == tt_entry.best_move {
@@ -4740,7 +4743,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             }
         } else {
             // Fallback: probe TT
-            let tt_entry = info.tt.probe(board.hash);
+            let tt_entry = info.tt.probe(board.tt_key());
             if tt_entry.hit && tt_entry.best_move != NO_MOVE {
                 for i in 0..root_legal.len {
                     let m = root_legal.get(i);
@@ -4909,7 +4912,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                     if pv_board.halfmove >= 100 { break; }
                     seen_hashes.push(pv_board.hash);
 
-                    let pv_tt = info.tt.probe(pv_board.hash);
+                    let pv_tt = info.tt.probe(pv_board.tt_key());
                     if !pv_tt.hit || pv_tt.best_move == NO_MOVE { break; }
                     let pv_legal = generate_legal_moves(&pv_board);
                     let mut found = NO_MOVE;
@@ -5693,7 +5696,7 @@ fn negamax(
     }
 
     // Prefetch TT bucket early to hide memory latency
-    info.tt.prefetch(board.hash);
+    info.tt.prefetch(board.tt_key());
 
     // Threat-aware history indexing: upgrade from pawn-only to all-enemy-pieces.
     // `enemy_attacks` keys the 4D main history slot (from_threatened, to_threatened);
@@ -5846,7 +5849,7 @@ fn negamax(
     // Probe transposition table
     let mut tt_move = NO_MOVE;
     let alpha_orig = alpha;
-    let tt_entry = info.tt.probe(board.hash);
+    let tt_entry = info.tt.probe(board.tt_key());
     let tt_hit = tt_entry.hit;
 
     // Prefetch the five correction-history rows corrected_eval will read
@@ -6181,7 +6184,7 @@ fn negamax(
             //   - tt_pv carries current node's is_pv context so PV
             //     propagation is correct on re-visit.
             if !tt_hit && FEAT_TT_STORE.load(Ordering::Relaxed) {
-                info.tt.store(board.hash, -2, -INFINITY, TT_FLAG_UPPER, NO_MOVE, raw_eval, is_pv);
+                info.tt.store(board.tt_key(), -2, -INFINITY, TT_FLAG_UPPER, NO_MOVE, raw_eval, is_pv);
             }
         }
         scaled_eval = apply_halfmove_scale(raw_eval, board.halfmove);
@@ -6468,7 +6471,7 @@ fn negamax(
         }
 
         board.make_null_move();
-        info.tt.prefetch(board.hash);
+        info.tt.prefetch(board.tt_key());
         let null_key = board.hash; // save hash for threat detection after unmake
         if let Some(acc) = &mut info.nnue_acc { acc.push(DirtyPiece::null_move()); }
         if info.threat_stack.active { info.threat_stack.push(crate::types::NO_MOVE, crate::types::NO_PIECE_TYPE); }
@@ -6652,7 +6655,7 @@ fn negamax(
                     if info.threat_stack.active {
                         info.threat_stack.absorb_deltas(board);
                     }
-            info.tt.prefetch(board.hash);
+            info.tt.prefetch(board.tt_key());
 
             // Record this move on the cont-hist context stack before recursing.
             // ProbCut was the only recursion site that skipped this; without it
@@ -6699,7 +6702,7 @@ fn negamax(
                 // `improving` reduced pc_depth, and stored -1/0 for the
                 // qsearch-only shallow case (SF stores 1 there).
                 info.tt.store(
-                    board.hash, pc_depth.max(0) + 1, score_to_tt(score, ply),
+                    board.tt_key(), pc_depth.max(0) + 1, score_to_tt(score, ply),
                     TT_FLAG_LOWER, mv, raw_eval, tt_pv,
                 );
                 if is_decisive(score) {
@@ -7454,7 +7457,7 @@ let singular_beta = tt_score_local - depth;
                 // when the child is in check (no static eval there) and when
                 // alpha is a decisive score (the gap would be meaningless).
                 if !gives_check && !crate::tt::is_decisive(alpha) && ply_u + 1 <= MAX_PLY {
-                    let child_tt = info.tt.probe(board.hash);
+                    let child_tt = info.tt.probe(board.tt_key());
                     let child_raw = if FEAT_TT_STATIC_EVAL.load(Ordering::Relaxed)
                         && child_tt.hit && child_tt.static_eval > -4095
                     {
@@ -8075,7 +8078,7 @@ let singular_beta = tt_score_local - depth;
             // the opponent's last move was good and this node belongs to the PV
             // region on revisit. Inherit the parent's tt_pv into the store.
             let tt_pv = tt_pv || (best_score <= alpha_orig && ply_u > 0 && info.tt_pv_stack[ply_u - 1]);
-            info.tt.store(board.hash, depth, store_score, flag, best_move, raw_eval, tt_pv);
+            info.tt.store(board.tt_key(), depth, store_score, flag, best_move, raw_eval, tt_pv);
         }
     }
 
@@ -8301,7 +8304,7 @@ fn quiescence_with_depth(
     // Prefetch TT bucket early. (No correction-row prefetch here, unlike
     // negamax: measured no gain on the stand-pat read, and it would fetch
     // five lines at every TT-cutoff and in-check QS node.)
-    info.tt.prefetch(board.hash);
+    info.tt.prefetch(board.tt_key());
 
     info.nodes += 1;
 
@@ -8331,7 +8334,7 @@ fn quiescence_with_depth(
     }
 
     // Probe transposition table
-    let tt_entry = info.tt.probe(board.hash);
+    let tt_entry = info.tt.probe(board.tt_key());
     let tt_move = if tt_entry.hit { tt_entry.best_move } else { NO_MOVE };
 
     let tt_hit = tt_entry.hit;
@@ -8457,7 +8460,7 @@ fn quiescence_with_depth(
                     if info.threat_stack.active {
                         info.threat_stack.absorb_deltas(board);
                     }
-            info.tt.prefetch(board.hash);
+            info.tt.prefetch(board.tt_key());
             move_count += 1;
 
             let score = -quiescence_with_depth(board, info, -beta, -alpha, ply + 1, qs_depth + 1);
@@ -8499,7 +8502,7 @@ fn quiescence_with_depth(
             TT_FLAG_UPPER
         };
         if FEAT_TT_STORE.load(Ordering::Relaxed) && !info.stop.load(Ordering::Relaxed) {
-            info.tt.store(board.hash, -1, store_score, flag, best_move, -INFINITY, false);
+            info.tt.store(board.tt_key(), -1, store_score, flag, best_move, -INFINITY, false);
         }
         return best_score;
     }
@@ -8584,7 +8587,7 @@ fn quiescence_with_depth(
             && FEAT_TT_STORE.load(Ordering::Relaxed)
             && !info.stop.load(Ordering::Relaxed)
         {
-            info.tt.store(board.hash, -1, score_to_tt(best_score, ply),
+            info.tt.store(board.tt_key(), -1, score_to_tt(best_score, ply),
                 TT_FLAG_LOWER, NO_MOVE, raw_stand_pat, false);
         }
         // QS beta blending, applied regardless of node type — none of the 6
@@ -8705,7 +8708,7 @@ fn quiescence_with_depth(
         if info.threat_stack.active {
             info.threat_stack.absorb_deltas(board);
         }
-        info.tt.prefetch(board.hash);
+        info.tt.prefetch(board.tt_key());
         let score = -quiescence_with_depth(board, info, -beta, -alpha, ply + 1, qs_depth + 1);
         board.unmake_move();
         if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
@@ -8740,7 +8743,7 @@ fn quiescence_with_depth(
         // Store the halfmove-INDEPENDENT value so later probes at a
         // different halfmove get a correct scale — see the doc comment
         // in `SearchInfo::eval`.
-        info.tt.store(board.hash, -1, store_score, flag, best_move, raw_stand_pat, false);
+        info.tt.store(board.tt_key(), -1, store_score, flag, best_move, raw_stand_pat, false);
     }
 
     // QS beta blending, regardless of node type (see the stand-pat exit).
