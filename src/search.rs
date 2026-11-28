@@ -8580,13 +8580,14 @@ fn quiescence_with_depth(
             }
     }
 
-    // Horizon verification: a stand-pat cut at the node main search handed to
-    // quiescence (qs_depth 0) that clears beta only narrowly is the least
+    // Horizon verification: a non-PV stand-pat cut at the node main search
+    // handed to quiescence (qs_depth 0) that clears beta only narrowly is the least
     // trustworthy cut in the tree, since no quiet move was ever looked at.
     // Search it one real ply instead. Never nested: everything below a running
     // verification (including any extension inside it) cuts on stand-pat.
     if best_score >= beta
         && qs_depth == 0
+        && beta - alpha == 1
         && best_score - beta < tp(&HX_MARGIN)
         && !is_decisive(best_score)
         && (ply as usize) + 2 <= MAX_PLY
