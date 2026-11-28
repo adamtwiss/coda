@@ -80,6 +80,7 @@ jobs:
         env:
           RUSTFLAGS: "${{ matrix.cpuflags }} -Cprofile-generate=${{ github.workspace }}/pgo-raw"
         run: |
+          rustc -V
           rustup component add llvm-tools-preview
           HOST=$(rustc -vV | sed -n 's/^host: //p')
           PROFDATA="$(rustc --print sysroot)/lib/rustlib/$HOST/bin/llvm-profdata"
@@ -99,6 +100,8 @@ jobs:
                                           and drop.search(r.strip().split('\n')[0]))]
           open('pgo.txt', 'w').write('\n\n'.join(keep))
           print(f'profile records: {len(recs)}, threat paths dropped: {len(recs) - len(keep)}')
+          for r in recs:
+              if r not in keep: print('  dropped:', r.strip().split('\n')[0][-110:])
           # Full-profile PGO is a measured loss on Zen 5; never ship it by accident.
           assert len(recs) - len(keep) >= 20, 'threat-path filter matched too little'
           PYEOF
