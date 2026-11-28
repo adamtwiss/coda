@@ -34,9 +34,9 @@ jobs:
       matrix:
         include:
           - { os: ubuntu-latest,    name: linux-x86-64-v2,   target: x86_64-unknown-linux-musl,  cpuflags: "-C target-cpu=x86-64-v2" }
-          - { os: ubuntu-latest,    name: linux-x86-64-v3,   target: x86_64-unknown-linux-musl,  cpuflags: "-C target-cpu=x86-64-v3" }
+          - { os: ubuntu-latest,    name: linux-x86-64-v3,   target: x86_64-unknown-linux-musl,  cpuflags: "-C target-cpu=x86-64-v3", pgo: true }
           - { os: ubuntu-24.04-arm, name: linux-aarch64,     target: aarch64-unknown-linux-musl, cpuflags: "" }
-          - { os: windows-latest,   name: windows-x86-64-v3, target: x86_64-pc-windows-msvc,     cpuflags: "-C target-cpu=x86-64-v3 -C target-feature=+crt-static", ext: ".exe" }
+          - { os: windows-latest,   name: windows-x86-64-v3, target: x86_64-pc-windows-msvc,     cpuflags: "-C target-cpu=x86-64-v3 -C target-feature=+crt-static", ext: ".exe", pgo: true }
           - { os: macos-latest,     name: macos-aarch64,     target: aarch64-apple-darwin,       cpuflags: "-C target-cpu=apple-m1" }
     runs-on: ${{ matrix.os }}
     defaults:
@@ -68,10 +68,50 @@ jobs:
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
           echo "BIN=$BIN" >> "$GITHUB_ENV"
 
+      # PGO (v3 builds). The profile is trained on the AVX2 kernels whatever
+      # CPU the runner has (CODA_ISA_MAX=1), and the threat-accumulator family
+      # is dropped from it before the optimised build: with that code in the
+      # profile, profile-guided block placement there raised branch misses by
+      # a fifth and the build ran no faster; without it, measured per node vs
+      # a plain build: +5-6% Zen 3, +3% Coffee Lake, +1% Zen 5 on AVX2
+      # kernels, ~0 on AVX-512. Bench node counts are unchanged.
+      - name: PGO profile (instrumented build + bench, threat paths stripped)
+        if: matrix.pgo
+        env:
+          RUSTFLAGS: "${{ matrix.cpuflags }} -Cprofile-generate=${{ github.workspace }}/pgo-raw"
+        run: |
+          rustc -V
+          rustup component add llvm-tools-preview
+          HOST=$(rustc -vV | sed -n 's/^host: //p')
+          PROFDATA="$(rustc --print sysroot)/lib/rustlib/$HOST/bin/llvm-profdata"
+          CODA_EVALFILE="$(pwd)/$NET_FILE" cargo build --release \
+            --features embedded-net --target ${{ matrix.target }}
+          CODA_ISA_MAX=1 LLVM_PROFILE_FILE="${{ github.workspace }}/pgo-raw/coda_%m_%p.profraw" \
+            ./target/${{ matrix.target }}/release/coda${{ matrix.ext }} bench 13 | tail -1
+          "$PROFDATA" merge --text pgo-raw/*.profraw -o pgo.txt
+          PY=$(command -v python3 || command -v python)
+          "$PY" - <<'PYEOF'
+          import re
+          drop = re.compile(r'acc_fused|materialize_fused|push_threats|finny_|collect_refresh_rows|'
+                            r'materialize_deltas|apply_fused_perspective|ThreatStack|4coda7threats|'
+                            r'12threat_accum|push_pawn_pair|9pawn_pair')
+          recs = open('pgo.txt').read().split('\n\n')
+          keep = [r for r in recs if not (r.strip() and not r.lstrip().startswith('#')
+                                          and drop.search(r.strip().split('\n')[0]))]
+          open('pgo.txt', 'w').write('\n\n'.join(keep))
+          print(f'profile records: {len(recs)}, threat paths dropped: {len(recs) - len(keep)}')
+          for r in recs:
+              if r not in keep: print('  dropped:', r.strip().split('\n')[0][-110:])
+          # Full-profile PGO is a measured loss on Zen 5; never ship it by accident.
+          assert len(recs) - len(keep) >= 20, 'threat-path filter matched too little'
+          PYEOF
+          "$PROFDATA" merge pgo.txt -o pgo.profdata
+          echo "PGO_FLAGS=-Cprofile-use=${{ github.workspace }}/pgo.profdata -Cllvm-args=-pgo-warn-missing-function=false" >> "$GITHUB_ENV"
+
       - name: Build (embedded net, static)
         env:
           # Env RUSTFLAGS overrides the repo's .cargo/config.toml target-cpu=native.
-          RUSTFLAGS: "${{ matrix.cpuflags }}"
+          RUSTFLAGS: "${{ matrix.cpuflags }} ${{ env.PGO_FLAGS }}"
         run: |
           CODA_EVALFILE="$(pwd)/$NET_FILE" cargo rustc --release \
             --features embedded-net --target ${{ matrix.target }} \
