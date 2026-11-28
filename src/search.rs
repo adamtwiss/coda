@@ -125,6 +125,12 @@ tunables!(
     (RFP_DEPTH, 18, 2, 20, 2.0, true),
     (RFP_MARGIN_IMP, 27, 0, 150, 6.0, true),
     (RFP_MARGIN_NOIMP, 38, 0, 200, 7.5, true),
+    // Horizon verification band (see quiescence's stand-pat cut): a cut taken
+    // at the depth-0 horizon that clears beta by less than this is searched
+    // one real ply instead of trusted. Seeded from RFP_MARGIN_IMP: the
+    // stand-pat cut is the depth-0 limit of RFP, and a cut inside one
+    // depth-1 RFP step is one RFP would not have trusted a ply further up.
+    (HX_MARGIN, 27, 0, 100, 5.0, false),
     // Root-depth-aware RFP relaxation (single-set, self-adapts STC<->LTC):
     // demand MORE static-eval confidence to RFP-cut as the OVERALL search
     // depth grows past RFP_ROOT_THRESH (diminishing-returns of depth — the
@@ -1785,6 +1791,9 @@ pub struct SearchInfo {
     tt_pv_stack: [bool; MAX_PLY + 1],
     /// LMR reduction applied at each ply (for hindsight reduction gating)
     reductions: [i32; MAX_PLY + 1],
+    /// Horizon-verification searches currently on the stack. Verification is
+    /// never nested: anything below a running one takes its stand-pat as usual.
+    hx_nesting: u32,
     /// Excluded move for singular extension verification search (always NoMove when disabled)
     pub excluded_move: [Move; MAX_PLY + 1],
     /// Double extension counter — propagated from parent, capped to prevent search explosion
@@ -1923,6 +1932,7 @@ impl SearchInfo {
             eval_hint: [(0, 0); MAX_PLY + 1],
             tt_pv_stack: [false; MAX_PLY + 1],
             reductions: [0; MAX_PLY + 1],
+            hx_nesting: 0,
             excluded_move: [NO_MOVE; MAX_PLY + 1],
             double_ext_count: [0; MAX_PLY + 1],
             cutoff_count: [0; MAX_PLY + 4],
@@ -8568,6 +8578,24 @@ fn quiescence_with_depth(
             {
                 best_score = tt_score;
             }
+    }
+
+    // Horizon verification: a stand-pat cut at the node main search handed to
+    // quiescence (qs_depth 0) that clears beta only narrowly is the least
+    // trustworthy cut in the tree, since no quiet move was ever looked at.
+    // Search it one real ply instead. Never nested: everything below a running
+    // verification (including any extension inside it) cuts on stand-pat.
+    if best_score >= beta
+        && qs_depth == 0
+        && best_score - beta < tp(&HX_MARGIN)
+        && !is_decisive(best_score)
+        && (ply as usize) + 2 <= MAX_PLY
+        && info.hx_nesting == 0
+    {
+        info.hx_nesting += 1;
+        let v = negamax(board, info, alpha, beta, 1, ply, true);
+        info.hx_nesting -= 1;
+        return v;
     }
 
     if best_score >= beta {
