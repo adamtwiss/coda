@@ -607,7 +607,8 @@ impl MovePicker {
                 continue;
             }
             // Dynamic SEE threshold: captures with strong history get a more
-            // forgiving threshold. Use captHist only (not MVV) to avoid inflation.
+            // forgiving threshold, captures with poor history a stricter one.
+            // Use captHist only (not MVV) to avoid inflation.
             let capt_hist = capt_hist_score_static(board, history, m);
             // In flat QS ordering, history also helps decide which captures
             // survive the searched-move budget. Give it 1.25x weight here as
@@ -627,7 +628,14 @@ impl MovePicker {
                 kept += 1;
                 continue;
             }
-            let see_threshold = -capt_hist / 18;
+            // Scale: capture history lives in ±MAX_HISTORY (gravity update),
+            // and a saturated entry moves the bar by one rook on the
+            // see_value scale. A rook is the largest exchange loss history
+            // alone may forgive: minor-for-pawn, rook-for-minor and
+            // queen-for-rook all lose less, while giving a queen for a
+            // pawn or a minor loses more and stays a bad capture whatever
+            // the history says.
+            let see_threshold = -capt_hist * see_value(ROOK) / MAX_HISTORY;
             if !see_ge(board, m, see_threshold) {
                 // Bad capture. The 256 cap must stay generous: a smaller one
                 // silently drops moves in pathological tactical positions
